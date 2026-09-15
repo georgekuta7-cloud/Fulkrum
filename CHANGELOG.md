@@ -6,6 +6,19 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **The container execution boundary.** Agent commands run in a fresh container
+  per command: no network, read-only root filesystem with only the workspace
+  writable, non-root user, all capabilities dropped, `no-new-privileges`, memory
+  and CPU and process limits, and a timeout that stops and removes the container.
+  The argv is passed as an array, so no shell interprets it on either side.
+- **The command surface is open inside that boundary.** The git-only argument
+  allowlist is gone: it was survivable rather than contained (pager, hooks,
+  textconv, `--no-index`), and the container is what does the work now. The build
+  worker can compile, test, and inspect a repository offline.
+- **No engine means no execution.** With no container engine reachable, command
+  execution is disabled and reported as such at boot, in the permission dock, and
+  in `/api/health`. It never falls back to running on the host, and WSL2 is not
+  offered as a boundary because its interop layer can execute Windows binaries.
 - **Denying a call.** An approval can be refused, and the worker receives the
   denial as a typed error so it can choose another approach instead of retrying.
 - **Run-scoped approvals.** "Approve for this run" records a grant so the same

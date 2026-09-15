@@ -106,6 +106,51 @@ bridge is killed mid-run, the next start marks the run `interrupted` instead of
 leaving it looking alive forever, and the control room offers **Resume** (which
 continues from the last completed step) or **Abandon**.
 
+## Execution boundary
+
+Agent commands run inside a container and never on the host. Windows has no
+Seatbelt, Landlock, or bubblewrap, so a container is the only boundary available
+— and an argument allowlist is not one. The previous git-only allowlist was
+survivable rather than contained: a pager, a repo hook, a `.gitattributes`
+textconv driver, or `--no-index` each offered a way out of it.
+
+The container is created per command with:
+
+- no network (`--network none`)
+- a read-only root filesystem, with only the workspace mounted writable
+- a non-root user, all capabilities dropped, and `no-new-privileges`
+- a tmpfs `/tmp`, plus memory, CPU, and process-count limits
+- a wall-clock timeout that stops the container and removes it
+
+The argv is passed as an array, so no shell interprets it on either side of the
+boundary. Because the boundary does the work, the command surface is open: the
+build worker can compile, run tests, and inspect a repository offline.
+
+**WSL2 is where the engine runs, not what contains it.** A WSL distribution can
+execute Windows binaries through its interop layer, so "inside WSL" would still
+mean "can run things on Windows". Fulkrum therefore does not offer WSL2 as a
+fallback boundary: without a container engine, command execution is disabled and
+the app says so rather than running unsandboxed.
+
+Set it up once:
+
+```bash
+# Inside the Ubuntu distribution
+sudo apt-get update && sudo apt-get install -y docker.io
+sudo service docker start
+sudo usermod -aG docker "$USER"     # then re-open the shell
+
+# From the project root
+docker build -t fulkrum-runner:local server/runner
+docker run --rm hello-world
+```
+
+Then either leave `FULKRUM_CONTAINER_ENGINE` unset for auto-detection, or set it
+to `docker` (CLI on PATH), `docker-wsl` (engine inside the default distribution),
+or `podman`. The permission dock shows which boundary is live, and `/api/health`
+reports the same thing: `commands: docker container` or `commands: disabled` with
+the reason.
+
 ## Cost, budgets, and traces
 
 Every model call — chat, planning, and each worker step — is written to a ledger

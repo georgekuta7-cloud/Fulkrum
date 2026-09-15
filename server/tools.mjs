@@ -59,15 +59,15 @@ export const toolSchemas = {
   },
   'shell.exec': {
     kind: 'shell',
-    description: 'Run a read-only git inspection (status, diff, log) in the workspace. Arbitrary commands are not available.',
+    description: 'Run a command inside the sandboxed workspace container. The container has no network, a read-only filesystem outside the workspace, and a non-root user. Arguments are passed as an array, so no shell interprets them.',
     parameters: {
       type: 'object',
       properties: {
-        command: { type: 'string', enum: ['git'], description: 'Only git is available.' },
-        args: { type: 'array', items: { type: 'string' }, description: 'Arguments, for example ["status", "--short"].' },
-        cwd: { type: 'string', description: 'Working directory relative to the workspace root.' },
+        command: { type: 'string', description: 'Program to run, for example "git", "node", or "./scripts/build.sh".' },
+        args: { type: 'array', items: { type: 'string' }, description: 'Arguments, one per array entry. No quoting is needed or interpreted.' },
+        cwd: { type: 'string', description: 'Working directory inside the workspace. Defaults to the workspace root.' },
       },
-      required: ['command', 'args'],
+      required: ['command'],
       additionalProperties: false,
     },
   },

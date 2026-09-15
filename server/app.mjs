@@ -101,7 +101,7 @@ const resumableStatuses = new Set(['paused', 'executing', 'budget_exceeded'])
  * instead of rejecting the server's callback promise, which Node would treat as
  * an unhandled rejection and use to terminate the process, orphaning every run.
  */
-export function createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, planService, pricing, allowedOrigins = new Set(), ownerId = 'local' }) {
+export function createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, planService, pricing, execution = null, allowedOrigins = new Set(), ownerId = 'local' }) {
   const isAllowedOrigin = (origin) => !origin || allowedOrigins.has(origin)
   let draining = null
 
@@ -208,21 +208,24 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       }
 
       if (request.method === 'GET' && requestUrl.pathname === '/api/health') {
+        const boundary = execution ? await execution.status() : { available: false, reason: 'No execution runtime is configured.' }
         sendJson(response, 200, {
           ok: true,
           service: 'fulkrum-api',
           workspaceRoot: toolBroker.workspaceRoot,
           tools: toolBroker.list().length,
-          execution: 'host-restricted',
+          execution: boundary,
           store: store.stats(),
         })
         return
       }
 
       if (request.method === 'GET' && requestUrl.pathname === '/api/tools') {
+        const boundary = execution ? await execution.status() : { available: false, reason: 'No execution runtime is configured.' }
         sendJson(response, 200, {
           workspaceRoot: toolBroker.workspaceRoot,
           tools: toolBroker.list(),
+          execution: boundary,
           roles: Object.fromEntries(Object.entries(agentRoles).map(([name, role]) => [name, { label: role.label, readOnly: role.readOnly, tools: role.tools }])),
           policy: permissionMatrix.map((rule) => ({ id: rule.id, decision: rule.decision })),
         })

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { findSecrets, redact } from '../server/redaction.mjs'
-import { FulkrumToolBroker, validateGitArgv } from '../server/toolBroker.mjs'
+import { FulkrumToolBroker } from '../server/toolBroker.mjs'
 import { withWorkspace } from './helpers.mjs'
 
 test('the broker refuses to read credentials', async () => {
@@ -27,26 +27,26 @@ test('search does not surface secrets and listings hide them', async () => {
   })
 })
 
-test('shell execution is limited to read-only git inspection', async () => {
+test('shell execution goes through the container boundary, never the host', async () => {
   await withWorkspace(async (directory) => {
-    const broker = new FulkrumToolBroker({ workspaceRoot: directory })
-    await assert.rejects(() => broker.execute('shell.exec', { command: 'node', args: ['-e', 'console.log(1)'], cwd: '.' }), /Only read-only git commands/)
-    await assert.rejects(() => broker.execute('shell.exec', { command: 'powershell', args: ['-Command', 'whoami'], cwd: '.' }), /Only read-only git commands/)
-    await assert.rejects(() => broker.execute('shell.exec', { command: 'git', args: ['push'], cwd: '.' }), /status, diff, and log/)
+    // No runtime configured: the broker must refuse rather than run anything.
+    const hostless = new FulkrumToolBroker({ workspaceRoot: directory })
+    await assert.rejects(() => hostless.execute('shell.exec', { command: 'node', args: ['-e', 'console.log(1)'], cwd: '.' }), /Execution is disabled/)
 
-    // The argument vector is validated, not just the first element.
-    assert.throws(() => validateGitArgv({ argv: ['git', 'diff', '--no-index', '/etc/passwd', '/etc/hosts'], workspaceRoot: directory }), /not allowlisted/)
-    assert.throws(() => validateGitArgv({ argv: ['git', '-c', 'core.pager=sh', 'log'], workspaceRoot: directory }), /not allowlisted|status, diff, and log/)
-    assert.throws(() => validateGitArgv({ argv: ['git', 'diff', '--ext-diff'], workspaceRoot: directory }), /not allowlisted/)
-    assert.throws(() => validateGitArgv({ argv: ['git', 'log', '--config-env=core.pager=EVIL'], workspaceRoot: directory }), /not allowlisted/)
-    assert.throws(() => validateGitArgv({ argv: ['git', 'diff', '--', '../outside.txt'], workspaceRoot: directory }), /inside the Fulkrum workspace/)
-    assert.throws(() => validateGitArgv({ argv: ['git', 'status', '--output=/tmp/x'], workspaceRoot: directory }), /not allowlisted/)
-
-    // A read-only inspection of the workspace is allowed.
-    const allowed = validateGitArgv({ argv: ['git', 'status', '--short'], workspaceRoot: directory })
-    assert.deepEqual(allowed.argv, ['git', 'status', '--short'])
-    const diff = validateGitArgv({ argv: ['git', 'diff', '--stat'], workspaceRoot: directory })
-    assert.deepEqual(diff.argv, ['git', 'diff', '--no-textconv', '--no-ext-diff', '--stat'])
+    // With a runtime, the command becomes container argv and the host is untouched.
+    const calls = []
+    const execution = {
+      image: 'fulkrum-runner:local',
+      run: async (argv, options) => {
+        calls.push({ argv, options })
+        return { stdout: 'container output\n', stderr: '' }
+      },
+    }
+    const broker = new FulkrumToolBroker({ workspaceRoot: directory, execution })
+    const result = await broker.execute('shell.exec', { command: 'node', args: ['-e', 'console.log(1)'], cwd: '.' })
+    assert.equal(result.boundary, 'container')
+    assert.deepEqual(calls[0].argv, ['node', '-e', 'console.log(1)'])
+    assert.equal(result.stdout, 'container output\n')
   })
 })
 

@@ -17,8 +17,11 @@ export const agentRoles = {
     name: 'Forge',
     label: 'Build worker',
     readOnly: false,
-    tools: ['workspace.list', 'workspace.read', 'workspace.search', 'workspace.write'],
-    instructions: 'Turn the direction and the research findings into a small proof-of-value. Read before you write, keep the change narrow, and state the checks that prove it works.',
+    // The container is the boundary for command execution, which is what makes a
+    // general command tool defensible here. Research stays without one: it has no
+    // need to run anything, and a narrower surface is a narrower surface.
+    tools: ['workspace.list', 'workspace.read', 'workspace.search', 'workspace.write', 'shell.exec'],
+    instructions: 'Turn the direction and the research findings into a small proof-of-value. Read before you write, keep the change narrow, and state the checks that prove it works. Commands you run execute inside a sandboxed container with no network access, so build and test offline.',
   },
 }
 

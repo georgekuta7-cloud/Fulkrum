@@ -15,10 +15,12 @@ test('each role only sees its own tools', () => {
   const builder = toolsForRole(agentRoles.builder).map((tool) => tool.name)
 
   assert.equal(research.includes('workspace.write'), false, 'a read-only role must not be offered write')
-  assert.equal(research.includes('shell.exec'), false)
+  assert.equal(research.includes('shell.exec'), false, 'research has no need to run commands')
   assert.equal(builder.includes('workspace.write'), true)
+  assert.equal(builder.includes('shell.exec'), true, 'the build worker may run commands inside the container')
   assert.equal(isToolAllowedForRole(agentRoles.research, 'workspace.read'), true)
   assert.equal(isToolAllowedForRole(agentRoles.research, 'workspace.write'), false)
+  assert.equal(isToolAllowedForRole(agentRoles.research, 'shell.exec'), false)
   assert.equal(agentRoles.research.readOnly, true)
   assert.equal(agentRoles.builder.readOnly, false, 'writes must be serialized by the scheduler')
 
@@ -36,8 +38,12 @@ test('tool arguments are validated before they reach the broker', () => {
   assert.equal(validateToolArguments('workspace.read', {}).ok, false, 'a required property must be enforced')
   assert.equal(validateToolArguments('workspace.read', { path: 42 }).ok, false)
   assert.equal(validateToolArguments('workspace.read', { path: 'a.txt', extra: 1 }).ok, false, 'unknown properties are refused')
-  assert.equal(validateToolArguments('shell.exec', { command: 'rm', args: [] }).ok, false, 'the enum must be enforced')
+  // The command surface is open now that execution is containerized, so the
+  // schema checks shape rather than an allowlist of programs.
+  assert.equal(validateToolArguments('shell.exec', { command: 'node', args: ['--version'] }).ok, true)
   assert.equal(validateToolArguments('shell.exec', { command: 'git', args: ['status'] }).ok, true)
+  assert.equal(validateToolArguments('shell.exec', { args: ['status'] }).ok, false, 'a command is required')
+  assert.equal(validateToolArguments('shell.exec', { command: 'ls', args: 'not-an-array' }).ok, false)
   assert.equal(validateToolArguments('nonexistent.tool', {}).ok, false)
   assert.equal(validateToolArguments('workspace.read', null).ok, false)
 })

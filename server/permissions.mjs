@@ -140,8 +140,12 @@ export function resolveToolCall({ name, input = {}, workspaceRoot }) {
     if (name === 'shell.exec') {
       const command = String(raw.command ?? '').trim()
       const args = Array.isArray(raw.args) ? raw.args.map(String) : []
+      if (!command) throw new Error('A command is required.')
+      if ([command, ...args].some((part) => part.includes('\u0000'))) throw new Error('A command argument contained a null byte.')
       const target = resolveWorkspacePath(workspaceRoot, raw.cwd)
-      return { ok: true, resolved: { tool: name, command: path.basename(command).toLowerCase(), argv: [path.basename(command).toLowerCase(), ...args], cwd: target.resolved }, sensitive: false }
+      // The command is kept exactly as given: it is resolved inside the container,
+      // where a path like ./scripts/build.sh means something.
+      return { ok: true, resolved: { tool: name, argv: [command, ...args], cwd: target.resolved }, sensitive: false }
     }
 
     if (name === 'http.request') {

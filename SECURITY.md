@@ -45,11 +45,16 @@ act:
    unparseable calls — still refuse. Both the grant and its revocation are events
    in the audit log. Persistent "always allow" is refused rather than
    approximated, because a standing exception needs a place to review it.
-4. **Arbitrary command execution is not available on the host.** `shell.exec` is
-   limited to a fixed set of read-only git subcommands, and the whole argument
-   vector is validated, not just the first element. General code execution is
-   planned to run inside a container (see "Execution boundary" below); until
-   that lands, the capability is absent rather than unsandboxed.
+4. **Arbitrary command execution happens only inside a container.** `shell.exec`
+   runs a fresh container per command: no network, read-only root filesystem with
+   only the workspace mounted writable, non-root user, all capabilities dropped,
+   `no-new-privileges`, resource limits, and a wall-clock timeout that stops and
+   removes the container. The argv is an array, so no shell interprets it on either
+   side. Because the container is the boundary, the command surface is open by
+   design — the isolation does the work, not an argument allowlist, which previous
+   rounds demonstrated was escapable. With no container engine reachable,
+   execution is disabled rather than falling back to the host, and WSL2 is not
+   used as a boundary because its interop layer can execute Windows binaries.
 5. **Egress is default-deny** and is the last line of defense. The `http.request`
    tool refuses private, loopback, link-local, and multicast targets, validates
    every redirect hop, and requires an explicit host allowlist.
@@ -60,17 +65,26 @@ act:
 ## Execution boundary
 
 Windows has no equivalent of macOS Seatbelt or Linux Landlock/bubblewrap, so
-there is no cheap way to sandbox a child process on this platform. Command
-execution is therefore designed to run inside a container (one container per
-run, read-only root filesystem, workspace mounted read-write, no network by
-default, non-root user, dropped capabilities, resource limits).
+there is no way to sandbox a child process in place. Command execution therefore
+runs inside a container: one per command, no network, read-only root filesystem
+with only the workspace writable, non-root user, dropped capabilities, resource
+limits, and a timeout.
 
-Until that runner is implemented, Fulkrum does not execute arbitrary commands at
-all: the only shell capability is the read-only git subset described above. When
-the container runner lands, this section will describe how to verify it, and the
-`FULKRUM_*` variables that control it are already reserved in `.env.example`
-(`FULKRUM_RUNNER_IMAGE`, `FULKRUM_CONTAINER_MEMORY`, `FULKRUM_CONTAINER_CPUS`,
-`FULKRUM_EXEC_TIMEOUT_MS`).
+The image (`server/runner/Dockerfile`) also neutralizes the repository-controlled
+execution paths that made a host-side git allowlist unsafe: `GIT_CONFIG_GLOBAL`
+and `GIT_CONFIG_SYSTEM` point at nothing, system config is disabled, the pager is
+`cat`, external diff is unset, terminal prompts are off, and `core.hooksPath`
+points at an empty directory the runner cannot write to.
+
+Two deliberate limits:
+
+- **WSL2 is not the boundary.** A WSL distribution can execute Windows binaries
+  through its interop layer, so "inside WSL" would still mean "can run things on
+  Windows". WSL2 hosts the engine; the container is what contains the work.
+- **No engine means no execution.** The app reports `commands: disabled` and
+  refuses the tool rather than running anything on the host. `FULKRUM_CONTAINER_ENGINE`
+  selects the engine (`docker`, `docker-wsl`, `podman`) or leaves it to
+  auto-detection.
 
 ## What the audit log does and does not cover
 

@@ -2561,3 +2561,26 @@ select {
 .provider-test.failed {
   color: #b0604f;
 }
+
+.exec-chip {
+  margin-left: auto;
+  padding: 3px 9px;
+  border: 1px solid #d3d9d0;
+  border-radius: 999px;
+  font-family: 'IBM Plex Mono', Consolas, monospace;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.exec-chip.ready {
+  border-color: #83aa9b;
+  background: #f1f7f3;
+  color: #4a7f68;
+}
+
+.exec-chip.disabled {
+  border-color: #d9a05b;
+  background: #fdf6ec;
+  color: #8a6134;
+}
