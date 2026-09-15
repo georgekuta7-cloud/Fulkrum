@@ -594,6 +594,45 @@ export class FulkrumStore {
     })
   }
 
+  /**
+   * Record that the user allowed a tool for the rest of a run. A grant only ever
+   * turns "ask" into "allow": deny rules are evaluated first and are never
+   * overridden, so credentials and path escapes stay refused.
+   */
+  grantApproval({ runId, toolName, kind, grantedBy = 'user' }) {
+    this.database.prepare(`INSERT INTO approval_grants(id, run_id, tool_name, kind, granted_at, granted_by, revoked_at)
+      VALUES(?, ?, ?, ?, ?, ?, NULL)
+      ON CONFLICT(run_id, tool_name) DO UPDATE SET granted_at = excluded.granted_at, granted_by = excluded.granted_by, kind = excluded.kind, revoked_at = NULL`)
+      .run(`grant-${randomUUID()}`, runId, toolName, kind, Date.now(), grantedBy)
+    return this.findActiveGrant(runId, toolName)
+  }
+
+  findActiveGrant(runId, toolName) {
+    const row = this.database.prepare('SELECT * FROM approval_grants WHERE run_id = ? AND tool_name = ? AND revoked_at IS NULL').get(runId, toolName)
+    if (!row) return null
+    return { id: row.id, runId: row.run_id, toolName: row.tool_name, kind: row.kind, grantedAt: Number(row.granted_at), grantedBy: row.granted_by }
+  }
+
+  listApprovalGrants(runId, { includeRevoked = false } = {}) {
+    const rows = includeRevoked
+      ? this.database.prepare('SELECT * FROM approval_grants WHERE run_id = ? ORDER BY granted_at ASC').all(runId)
+      : this.database.prepare('SELECT * FROM approval_grants WHERE run_id = ? AND revoked_at IS NULL ORDER BY granted_at ASC').all(runId)
+    return rows.map((row) => ({
+      id: row.id,
+      runId: row.run_id,
+      toolName: row.tool_name,
+      kind: row.kind,
+      grantedAt: Number(row.granted_at),
+      grantedBy: row.granted_by,
+      revokedAt: row.revoked_at === null || row.revoked_at === undefined ? null : Number(row.revoked_at),
+    }))
+  }
+
+  revokeApprovalGrant(runId, toolName) {
+    const result = this.database.prepare('UPDATE approval_grants SET revoked_at = ? WHERE run_id = ? AND tool_name = ? AND revoked_at IS NULL').run(Date.now(), runId, toolName)
+    return Number(result.changes) > 0
+  }
+
   listCustomProviders() {
     return this.database.prepare('SELECT * FROM provider_configs ORDER BY label ASC').all().map((row) => ({
       id: row.id,

@@ -1,4 +1,5 @@
 import http from 'node:http'
+import { diffHunks } from './diff.mjs'
 import { privateProviderUrlsAllowed, validateOutboundUrl } from './networkPolicy.mjs'
 import { fingerprintToolCall, permissionMatrix } from './permissions.mjs'
 import { agentRoles } from './roles.mjs'
@@ -522,7 +523,13 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           return
         }
 
-        const scope = ['once', 'run', 'always'].includes(body.scope) ? body.scope : 'once'
+        const scope = body.scope === 'run' ? 'run' : 'once'
+        if (body.scope === 'always') {
+          // A standing exception needs somewhere to review and revoke it, which
+          // does not exist yet, so it is refused rather than quietly downgraded.
+          sendJson(response, 400, { error: 'Only "once" and "run" scopes are supported. A persistent exception needs a management view first.' })
+          return
+        }
         const resolution = toolCall.resolved ? { ok: true, resolved: toolCall.resolved, sensitive: false } : toolBroker.resolve(toolCall.name, toolCall.input)
         if (!resolution.ok) {
           store.updateToolCall(toolCall.id, { status: 'denied', error: resolution.error })
@@ -540,6 +547,10 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         }
 
         store.markToolCallApproved(toolCall.id, scope)
+        if (scope === 'run') {
+          const grant = store.grantApproval({ runId, toolName: toolCall.name, kind: toolCall.kind })
+          store.appendEvent({ runId, type: 'approval.granted', agentId: toolCall.agentId ?? 'head', payload: { toolName: toolCall.name, kind: toolCall.kind, scope: 'run', grantId: grant.id } })
+        }
         const resumed = await orchestrator.approveToolCall(toolCallId)
         if (resumed.handled) {
           sendJson(response, 200, { resumed: true, result: resumed.result, toolCall: store.getToolCall(toolCallId) })
@@ -550,6 +561,86 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         // so execute it directly and record that no run resumed.
         const result = await runToolCall({ runId, toolCall: store.getToolCall(toolCallId), input: toolCall.input, resolved: resolution, approved: true })
         sendJson(response, result.ok ? 200 : 502, result.ok ? { output: result.output, toolCall: store.getToolCall(toolCallId), resumed: false } : { error: result.error, toolCall: store.getToolCall(toolCallId) })
+        return
+      }
+
+      const toolDenialMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/tools\/([^/]+)\/deny$/)
+      if (request.method === 'POST' && toolDenialMatch) {
+        const runId = decodeURIComponent(toolDenialMatch[1])
+        const toolCallId = decodeURIComponent(toolDenialMatch[2])
+        const run = store.getRun(runId)
+        const toolCall = store.getToolCall(toolCallId)
+        if (!run || !toolCall || toolCall.runId !== runId || toolCall.status !== 'approval_required') {
+          sendJson(response, 409, { error: 'Tool call is no longer awaiting approval.' })
+          return
+        }
+        const body = await readJson(request)
+        const reason = typeof body.reason === 'string' && body.reason.trim() ? body.reason.trim().slice(0, 500) : 'Denied by the user.'
+        store.updateToolCall(toolCall.id, { status: 'denied', error: reason })
+        store.appendEvent({ runId, type: 'tool.denied', agentId: toolCall.agentId ?? 'head', payload: { toolCallId, name: toolCall.name, reason, rule: 'deny.user', fingerprint: toolCall.fingerprint, resolved: toolCall.resolved } })
+        // The worker is waiting on this call, so tell it no: a denial it can read
+        // is information it can act on.
+        const handled = orchestrator.denyToolCall(toolCallId, reason)
+        sendJson(response, 200, { denied: true, resumed: handled.handled, toolCall: store.getToolCall(toolCallId) })
+        return
+      }
+
+      const runGrantsMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/grants$/)
+      if (request.method === 'GET' && runGrantsMatch) {
+        const runId = decodeURIComponent(runGrantsMatch[1])
+        if (!store.getRun(runId)) {
+          sendJson(response, 404, { error: 'Run not found.' })
+          return
+        }
+        sendJson(response, 200, { grants: store.listApprovalGrants(runId) })
+        return
+      }
+
+      const runGrantMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/grants\/([^/]+)$/)
+      if (request.method === 'DELETE' && runGrantMatch) {
+        const runId = decodeURIComponent(runGrantMatch[1])
+        const toolName = decodeURIComponent(runGrantMatch[2])
+        if (!store.getRun(runId)) {
+          sendJson(response, 404, { error: 'Run not found.' })
+          return
+        }
+        const revoked = store.revokeApprovalGrant(runId, toolName)
+        if (revoked) store.appendEvent({ runId, type: 'approval.revoked', agentId: 'head', payload: { toolName, source: 'user' } })
+        sendJson(response, revoked ? 200 : 404, revoked ? { revoked: toolName, grants: store.listApprovalGrants(runId) } : { error: 'No active grant for that tool.' })
+        return
+      }
+
+      const runArtifactsMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/artifacts$/)
+      if (request.method === 'GET' && runArtifactsMatch) {
+        const runId = decodeURIComponent(runArtifactsMatch[1])
+        if (!store.getRun(runId)) {
+          sendJson(response, 404, { error: 'Run not found.' })
+          return
+        }
+        // Every completed write is an artifact. The diff comes from the snapshot
+        // taken immediately before the write, so it is the real change.
+        const artifacts = store.listToolCalls(runId)
+          .filter((call) => call.kind === 'write' && call.status === 'completed')
+          .map((call) => {
+            const output = call.output ?? {}
+            const after = String(call.input?.content ?? '')
+            const before = typeof output.previousContent === 'string' ? output.previousContent : ''
+            const snapshotAvailable = output.created === true || typeof output.previousContent === 'string'
+            const diff = snapshotAvailable ? diffHunks(before, after) : null
+            return {
+              toolCallId: call.id,
+              agentId: call.agentId,
+              path: output.path ?? call.resolved?.relative ?? String(call.input?.path ?? 'unknown'),
+              bytes: output.bytes ?? Buffer.byteLength(after, 'utf8'),
+              created: Boolean(output.created),
+              previousBytes: output.previousBytes ?? null,
+              previousTruncated: Boolean(output.previousTruncated),
+              diffAvailable: Boolean(diff),
+              diff,
+              at: call.completedAt ?? call.createdAt,
+            }
+          })
+        sendJson(response, 200, { artifacts, grants: store.listApprovalGrants(runId) })
         return
       }
 

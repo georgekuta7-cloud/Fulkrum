@@ -1,4 +1,5 @@
 import { execFile as execFileCallback } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -9,6 +10,7 @@ import { redact } from './redaction.mjs'
 
 const execFile = promisify(execFileCallback)
 const MAX_FILE_BYTES = 500_000
+const MAX_SNAPSHOT_BYTES = Number(process.env.FULKRUM_MAX_SNAPSHOT_BYTES ?? 64_000)
 const MAX_OUTPUT_BYTES = 100_000
 const MAX_SEARCH_FILES = 400
 const MAX_REDIRECTS = 3
@@ -80,6 +82,34 @@ async function walkFiles(directory, root, results, query) {
     } catch {
       // Binary or unreadable files are skipped by the search tool.
     }
+  }
+}
+
+/**
+ * Record a file's previous state before it is overwritten. The content is stored
+ * so the change can be shown later; oversized files keep their size and hash but
+ * not their bytes.
+ */
+async function snapshotFile(absolutePath) {
+  try {
+    const handle = await fs.open(absolutePath, 'r')
+    try {
+      const stats = await handle.stat()
+      if (stats.isDirectory()) return null
+      const bytes = Number(stats.size)
+      const snapshot = { previousBytes: bytes, previousSha256: null, previousTruncated: bytes > MAX_SNAPSHOT_BYTES }
+      if (bytes <= MAX_SNAPSHOT_BYTES) {
+        const content = await handle.readFile({ encoding: 'utf8' })
+        snapshot.previousContent = content
+        snapshot.previousSha256 = createHash('sha256').update(content, 'utf8').digest('hex')
+      }
+      return snapshot
+    } finally {
+      await handle.close()
+    }
+  } catch {
+    // The file does not exist yet, which makes this a creation.
+    return null
   }
 }
 
@@ -217,9 +247,17 @@ export class FulkrumToolBroker {
     if (name === 'workspace.write') {
       const content = String(input?.content ?? '')
       if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new Error(`File exceeds the ${MAX_FILE_BYTES}-byte write limit.`)
+      // Capture what was there first. Without it a write is auditable but not
+      // reviewable: you can see that a file changed, not what changed.
+      const previous = await snapshotFile(resolved.path)
       await fs.mkdir(path.dirname(resolved.path), { recursive: true })
       await fs.writeFile(resolved.path, content, 'utf8')
-      return { path: resolved.relative, bytes: Buffer.byteLength(content, 'utf8') }
+      return {
+        path: resolved.relative,
+        bytes: Buffer.byteLength(content, 'utf8'),
+        created: previous === null,
+        ...(previous ?? {}),
+      }
     }
 
     if (name === 'shell.exec') {

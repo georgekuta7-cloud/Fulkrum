@@ -37,7 +37,14 @@ act:
    normalized, resolved arguments (`sha256` over the tool name, resolved absolute
    paths, final argv, and destination host). An approval for one payload cannot
    execute a different one, and the audit record and the executed call cannot
-   diverge.
+   diverge. A call can also be denied, which the worker receives as a typed error.
+4. **A run-scoped grant can only soften an "ask".** "Approve for this run" records
+   a grant so a tool stops re-prompting, and it can be revoked from the control
+   room. The permission matrix is evaluated first: a grant is consulted only when
+   the decision was already "ask", so deny rules — credentials, path escapes,
+   unparseable calls — still refuse. Both the grant and its revocation are events
+   in the audit log. Persistent "always allow" is refused rather than
+   approximated, because a standing exception needs a place to review it.
 4. **Arbitrary command execution is not available on the host.** `shell.exec` is
    limited to a fixed set of read-only git subcommands, and the whole argument
    vector is validated, not just the first element. General code execution is

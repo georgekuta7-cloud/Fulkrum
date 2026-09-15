@@ -6,6 +6,23 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **Denying a call.** An approval can be refused, and the worker receives the
+  denial as a typed error so it can choose another approach instead of retrying.
+- **Run-scoped approvals.** "Approve for this run" records a grant so the same
+  tool stops re-prompting. A grant only ever turns *ask* into *allow* — deny rules
+  are evaluated first and never overridden — and grants are listed in the UI,
+  revocable, and recorded in the audit log. Persistent "always allow" is refused
+  rather than approximated.
+- **Artifacts with real diffs.** The contents of a file are snapshotted
+  immediately before each write, so the artifacts tab shows the actual change.
+  Files written before snapshots existed report that no diff is available, and
+  oversized files say they are too large to diff rather than showing nothing.
+- **Provider connectivity checks** in workspace settings, wired to the existing
+  test endpoint, with the local-gateway requirement (`FULKRUM_ALLOW_PRIVATE_PROVIDER_URLS`)
+  stated where the provider form is.
+- **An error boundary** around the interface, so a render failure shows what broke
+  instead of a blank page, and the composer's keyboard shortcut now actually
+  works with a platform-correct label.
 - **Cost accounting.** Every model call (chat, planning, and each worker step) is
   recorded with input, output, cache-read, cache-write, and reasoning tokens,
   latency, and computed cost, priced from a versioned table. `GET
@@ -59,6 +76,10 @@ All notable changes to Fulkrum are documented here. This project follows
 - The event stream resumes from the last event the UI saw. It previously reset its
   cursor on every reconnect and replayed the whole run, and the feed de-duplicated
   by title, which could drop genuinely distinct events.
+- The interface no longer invents identity: the sidebar shows your real projects
+  and workspace, and dead controls (a non-functional project picker, an account
+  row, notifications, help, and two navigation entries with nothing behind them)
+  were removed rather than left clickable.
 
 ### Fixed
 - A malformed JSON body to `/api/runs/:id/control`, `/api/runs/:id/tools`, or the

@@ -2,20 +2,15 @@ import { type FormEvent, useEffect, useRef, useState } from 'react'
 import {
   Activity,
   ArrowUpRight,
-  Bell,
   Bot,
   Check,
   CheckCircle2,
-  ChevronDown,
   ChevronRight,
-  CircleHelp,
   Clock3,
-  Code2,
   Eye,
   FileText,
   GitBranch,
   LayoutGrid,
-  MessageCircle,
   MoreHorizontal,
   Pause,
   Play,
@@ -33,6 +28,19 @@ import {
   Zap,
 } from 'lucide-react'
 import './App.css'
+import { ArtifactsPanel, type Artifact, type Grant } from './ArtifactsPanel'
+
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
+const shortcutLabel = isMac ? '⌘' : 'Ctrl'
+
+/** Artifacts and grants for a run, kept outside the component so effects stay dependency-free. */
+async function fetchArtifacts(runId: string): Promise<{ artifacts?: Artifact[]; grants?: Grant[] } | null> {
+  const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/artifacts`).catch(() => null)
+  if (!response?.ok) return null
+  return (await response.json().catch(() => null)) as { artifacts?: Artifact[]; grants?: Grant[] } | null
+}
+
+type ProviderTest = { state: 'testing' | 'ok' | 'failed'; latencyMs?: number; error?: string }
 
 type Mode = 'plan' | 'execute' | 'review'
 type PermissionMode = 'guided' | 'selective' | 'autopilot'
@@ -410,6 +418,12 @@ function App() {
   const [spend, setSpend] = useState<WorkspaceSpend | null>(null)
   const [budget, setBudget] = useState<WorkspaceBudget | null>(null)
   const [isBudgetExceeded, setIsBudgetExceeded] = useState(false)
+  const [artifacts, setArtifacts] = useState<Artifact[]>([])
+  const [grants, setGrants] = useState<Grant[]>([])
+  const [panelTab, setPanelTab] = useState<'feed' | 'artifacts'>('feed')
+  const [projectName, setProjectName] = useState('')
+  const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([])
+  const [providerTests, setProviderTests] = useState<Record<string, ProviderTest>>({})
   const eventCursor = useRef(0)
 
   const selected = agents.find((agent) => agent.id === selectedAgent) ?? agents[0]
@@ -482,6 +496,12 @@ function App() {
 
       if (!activeRun || cancelled) return
       setProjectId(project.id)
+      setProjectName(project.name)
+      const projectListResponse = await fetch('/api/projects')
+      if (projectListResponse.ok) {
+        const projectList = (await projectListResponse.json()) as { projects?: Array<{ id: string; name: string }> }
+        if (!cancelled) setProjects(projectList.projects ?? [])
+      }
       setRunId(activeRun.id)
       setPermissionMode(activeRun.permissionMode as PermissionMode)
       setRunStartedAt(activeRun.createdAt)
@@ -563,6 +583,13 @@ function App() {
       if (approval) setPendingApproval(approval)
       if (['tool.completed', 'tool.failed', 'tool.denied'].includes(event.type) && event.payload.toolCallId === pendingApproval?.toolCallId) setPendingApproval(null)
       if (event.type.startsWith('task.') || event.type.startsWith('run.budget') || event.type === 'run.plan.loaded') void refreshRunState()
+      if (['tool.completed', 'tool.denied', 'approval.granted', 'approval.revoked'].includes(event.type)) {
+        void fetchArtifacts(runId).then((payload) => {
+          if (!payload) return
+          if (payload.artifacts) setArtifacts(payload.artifacts)
+          if (payload.grants) setGrants(payload.grants)
+        })
+      }
       const mapped = activityFromEvent(event)
       if (!mapped) return
       // Key on the event id: two genuinely different events can share a title.
@@ -645,6 +672,21 @@ function App() {
     ])
   }
 
+  // Load the artifact list when the panel is opened, so a run that finished
+  // earlier still shows what it changed.
+  useEffect(() => {
+    if (!runId || panelTab !== 'artifacts') return
+    let cancelled = false
+    void fetchArtifacts(runId).then((payload) => {
+      if (cancelled || !payload) return
+      setArtifacts(payload.artifacts ?? [])
+      setGrants(payload.grants ?? [])
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [runId, panelTab])
+
   // Draft (or reload) the plan whenever a run is waiting for approval. The server
   // reuses the stored plan unless regeneration is asked for, so this is safe to
   // run on every state change.
@@ -705,15 +747,66 @@ function App() {
     }
   }
 
-  const approveToolCall = async () => {
+  const approveToolCall = async (scope: 'once' | 'run' = 'once') => {
     if (!runId || !pendingApproval) return
     try {
-      const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/tools/${encodeURIComponent(pendingApproval.toolCallId)}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fingerprint: pendingApproval.fingerprint, scope: 'once' }) })
-      const payload = (await response.json().catch(() => ({}))) as { error?: string }
+      const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/tools/${encodeURIComponent(pendingApproval.toolCallId)}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fingerprint: pendingApproval.fingerprint, scope }) })
+      const payload = (await response.json().catch(() => ({}))) as { error?: string; resumed?: boolean }
       if (!response.ok) throw new Error(payload.error ?? 'Tool approval failed.')
       setPendingApproval(null)
+      if (scope === 'run') {
+        addActivity({
+          kind: 'system',
+          title: `${pendingApproval.name} is now allowed for this run`,
+          detail: 'Further calls to this tool will not ask again. Deny rules still apply, and you can revoke this from the artifacts panel.',
+          tag: 'POLICY',
+        })
+      }
     } catch (error) {
       addActivity({ kind: 'system', title: 'Could not approve the tool call', detail: error instanceof Error ? error.message : 'Tool approval failed.', tag: 'API ERROR' })
+    }
+  }
+
+  /** Refusing a call tells the worker no, so it can choose another approach. */
+  const denyToolCall = async () => {
+    if (!runId || !pendingApproval) return
+    const toolName = pendingApproval.name
+    try {
+      const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/tools/${encodeURIComponent(pendingApproval.toolCallId)}/deny`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: 'Denied from the control room.' }) })
+      const payload = (await response.json().catch(() => ({}))) as { error?: string }
+      if (!response.ok) throw new Error(payload.error ?? 'Could not deny the tool call.')
+      setPendingApproval(null)
+      addActivity({ kind: 'system', title: `You denied ${toolName}`, detail: 'The worker received the denial and can adapt instead of retrying it.', tag: 'DENIED' })
+    } catch (error) {
+      addActivity({ kind: 'system', title: 'Could not deny the tool call', detail: error instanceof Error ? error.message : 'Denial failed.', tag: 'API ERROR' })
+    }
+  }
+
+  const revokeGrant = async (toolName: string) => {
+    if (!runId) return
+    try {
+      const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/grants/${encodeURIComponent(toolName)}`, { method: 'DELETE' })
+      const payload = (await response.json().catch(() => ({}))) as { grants?: Grant[]; error?: string }
+      if (!response.ok) throw new Error(payload.error ?? 'Could not revoke the grant.')
+      setGrants(payload.grants ?? [])
+      addActivity({ kind: 'system', title: `${toolName} will ask again`, detail: 'The run-scoped approval was revoked.', tag: 'POLICY' })
+    } catch (error) {
+      addActivity({ kind: 'system', title: 'Could not revoke the grant', detail: error instanceof Error ? error.message : 'Revoke failed.', tag: 'API ERROR' })
+    }
+  }
+
+  const testProvider = async (provider: ProviderStatus) => {
+    setProviderTests((current) => ({ ...current, [provider.id]: { state: 'testing' } }))
+    try {
+      const response = await fetch(`/api/providers/${encodeURIComponent(provider.id)}/test`, { method: 'POST' })
+      const payload = (await response.json().catch(() => ({}))) as { result?: { reachable?: boolean; latencyMs?: number; error?: string; reason?: string } }
+      const result = payload.result ?? {}
+      setProviderTests((current) => ({
+        ...current,
+        [provider.id]: result.reachable ? { state: 'ok', latencyMs: result.latencyMs } : { state: 'failed', error: result.error ?? result.reason ?? 'Not reachable.' },
+      }))
+    } catch (error) {
+      setProviderTests((current) => ({ ...current, [provider.id]: { state: 'failed', error: error instanceof Error ? error.message : 'Test failed.' } }))
     }
   }
 
@@ -930,17 +1023,17 @@ function App() {
     <div className="fulkrum-app">
       <aside className="sidebar">
         <div className="brand-lockup"><div className="brand-mark"><Sparkles size={17} strokeWidth={2.5} /></div><span>fulkrum</span></div>
-        <button className="workspace-picker" type="button"><span className="workspace-avatar">A</span><span className="workspace-copy"><strong>Atlas studio</strong><small>Personal workspace</small></span><ChevronDown size={15} /></button>
-        <nav className="primary-nav" aria-label="Primary navigation"><p className="nav-label">Workspace</p><button className="nav-item active" type="button"><LayoutGrid size={17} /><span>Command center</span><span className="nav-count">1</span></button><button className="nav-item" type="button"><MessageCircle size={17} /><span>Conversations</span></button><button className="nav-item" type="button"><FileText size={17} /><span>Artifacts</span></button><button className="nav-item" type="button"><Activity size={17} /><span>Run history</span></button></nav>
-        <div className="project-section"><div className="section-label-row"><p className="nav-label">Projects</p><button className="icon-button subtle" type="button" title="New project"><Plus size={15} /></button></div><button className="project-item active" type="button"><span className="project-dot coral"></span><span><strong>Launch plan</strong><small>3 agents · active</small></span><MoreHorizontal size={16} /></button><button className="project-item" type="button"><span className="project-dot teal"></span><span><strong>Website refresh</strong><small>2 agents · idle</small></span></button></div>
-        <div className="sidebar-bottom"><div className="sidebar-note"><ShieldCheck size={16} /><span>Keys stay server-side</span></div><button className="account-row" type="button"><span className="account-avatar">AR</span><span><strong>Alex Rivera</strong><small>Builder account</small></span><MoreHorizontal size={16} /></button></div>
+<div className="workspace-picker"><span className="workspace-avatar">{(projectName || 'F').slice(0, 1).toUpperCase()}</span><span className="workspace-copy"><strong>{projectName || 'Loading workspace...'}</strong><small>Local workspace · single user</small></span></div>
+        <nav className="primary-nav" aria-label="Primary navigation"><p className="nav-label">Workspace</p><button className="nav-item active" type="button"><LayoutGrid size={17} /><span>Command center</span></button><button className={`nav-item ${panelTab === 'artifacts' ? 'active' : ''}`} type="button" onClick={() => setPanelTab('artifacts')}><FileText size={17} /><span>Artifacts</span>{artifacts.length ? <span className="nav-count">{artifacts.length}</span> : null}</button></nav>
+        <div className="project-section"><div className="section-label-row"><p className="nav-label">Projects</p></div>{projects.length ? projects.map((item, index) => <div className={`project-item ${item.id === projectId ? 'active' : ''}`} key={item.id}><span className={`project-dot ${index % 2 ? 'teal' : 'coral'}`}></span><span><strong>{item.name}</strong><small>{item.id === projectId ? 'showing now' : 'idle'}</small></span></div>) : <p className="sidebar-empty">No projects yet.</p>}</div>
+        <div className="sidebar-bottom"><div className="sidebar-note"><ShieldCheck size={16} /><span>Keys stay server-side</span></div><div className="sidebar-note"><GitBranch size={16} /><span>Runs and events are stored locally</span></div></div>
       </aside>
 
       <main className="main-column">
-        <header className="topbar"><div className="breadcrumb"><span>Atlas studio</span><ChevronRight size={14} /><strong>Launch plan</strong></div><div className="topbar-actions"><span className="live-pill"><span className="live-dot"></span>{runLabel}</span><button className="icon-button" type="button" title="Notifications"><Bell size={17} /></button><button className="help-button" type="button"><CircleHelp size={16} /> Help</button><button className="user-avatar" type="button">AR</button></div></header>
+        <header className="topbar"><div className="breadcrumb"><span>{projectName || 'Workspace'}</span><ChevronRight size={14} /><strong>{runId ? runId.slice(0, 14) : 'no run yet'}</strong></div><div className="topbar-actions"><span className="live-pill"><span className="live-dot"></span>{runLabel}</span></div></header>
 
         <div className="content-wrap">
-          <section className="page-heading"><div><p className="eyebrow">Project 04 / team room</p><h1>Work with your AI team</h1><p className="heading-copy">Talk to Head AI, watch Scout and Forge work, and keep every meaningful action visible.</p></div><button className="routing-button" type="button" onClick={() => setSettingsOpen(true)}><SlidersHorizontal size={17} /><span><strong>Workspace settings</strong><small>Providers, routing, and permissions</small></span><ArrowUpRight size={16} /></button></section>
+          <section className="page-heading"><div><p className="eyebrow">{projectName || 'Workspace'} / team room</p><h1>Work with your AI team</h1><p className="heading-copy">Talk to Head AI, approve a plan, and watch every action the workers take.</p></div><button className="routing-button" type="button" onClick={() => setSettingsOpen(true)}><SlidersHorizontal size={17} /><span><strong>Workspace settings</strong><small>Providers, routing, and permissions</small></span><ArrowUpRight size={16} /></button></section>
 
           <div className="mode-row"><div className="mode-switch" role="tablist" aria-label="Run mode">{modes.map((item) => <button key={item.id} className={`mode-tab ${mode === item.id ? 'selected' : ''} ${item.id === 'execute' && !approved ? 'locked' : ''}`} type="button" role="tab" aria-selected={mode === item.id} onClick={() => changeMode(item.id)}><span className="mode-number">{item.number}</span><span>{item.label}</span>{item.id === 'execute' && !approved ? <ShieldCheck size={14} /> : null}</button>)}</div><div className="run-controls"><span className="run-id"><GitBranch size={14} /> {runId ? runId.slice(0, 14) : 'no run yet'}</span>{approved ? <button className="control-button" type="button" onClick={togglePause}>{isPaused ? <Play size={15} /> : <Pause size={15} />}{isPaused ? 'Resume' : 'Pause'}</button> : null}<button className="control-button stop" type="button" onClick={stopRun}><Square size={13} fill="currentColor" /> Stop</button></div></div>
 
@@ -950,20 +1043,20 @@ function App() {
 
           <div className="focus-strip"><span className="focus-icon"><Bot size={16} /></span><span><strong>{selected.name} selected</strong><small>{selected.id === 'head' ? 'You are speaking to the Head AI. It sees the full team context.' : `${selected.name} is visible to Head AI and can contribute to the shared task room.`}</small></span><span className="focus-spacer"></span><span className="focus-model">{routing[selected.id]}</span></div>
 
-          <section className="provider-setup-panel"><div className="provider-setup-heading"><div><p className="eyebrow">Bring your own model</p><h2>Add a custom API</h2><p>OpenAI-compatible endpoints such as DeepSeek, GLM, Kimi, or a private gateway can join the team without changing the UI.</p></div><span className="provider-count"><Bot size={14} />{routeOptions('head').length} routes</span></div><form className="provider-setup-form" onSubmit={addCustomProvider}><label><span>Provider name</span><input value={customProvider.label} onChange={(event) => setCustomProvider((current) => ({ ...current, label: event.target.value }))} placeholder="e.g. Local gateway" /></label><label><span>Base URL</span><input value={customProvider.baseUrl} onChange={(event) => setCustomProvider((current) => ({ ...current, baseUrl: event.target.value }))} placeholder="https://api.example.com/v1" /></label><label><span>Model</span><input value={customProvider.model} onChange={(event) => setCustomProvider((current) => ({ ...current, model: event.target.value }))} placeholder="model-name" /></label><label><span>Environment key</span><input value={customProvider.envKey} onChange={(event) => setCustomProvider((current) => ({ ...current, envKey: event.target.value }))} placeholder="CUSTOM_API_KEY" /></label><button className="primary-button provider-submit" type="submit" disabled={isAddingProvider}>{isAddingProvider ? 'Adding...' : <><Plus size={15} />Add provider</>}</button></form>{customProviderError ? <p className="provider-form-error">{customProviderError}</p> : null}</section>
+          <section className="provider-setup-panel"><div className="provider-setup-heading"><div><p className="eyebrow">Bring your own model</p><h2>Add a custom API</h2><p>OpenAI-compatible endpoints such as DeepSeek, GLM, Kimi, or a private gateway can join the team without changing the UI. A private address needs <code>FULKRUM_ALLOW_PRIVATE_PROVIDER_URLS=1</code> in <code>.env.local</code>, because loopback and private hosts are blocked by default.</p></div><span className="provider-count"><Bot size={14} />{routeOptions('head').length} routes</span></div><form className="provider-setup-form" onSubmit={addCustomProvider}><label><span>Provider name</span><input value={customProvider.label} onChange={(event) => setCustomProvider((current) => ({ ...current, label: event.target.value }))} placeholder="e.g. Local gateway" /></label><label><span>Base URL</span><input value={customProvider.baseUrl} onChange={(event) => setCustomProvider((current) => ({ ...current, baseUrl: event.target.value }))} placeholder="https://api.example.com/v1" /></label><label><span>Model</span><input value={customProvider.model} onChange={(event) => setCustomProvider((current) => ({ ...current, model: event.target.value }))} placeholder="model-name" /></label><label><span>Environment key</span><input value={customProvider.envKey} onChange={(event) => setCustomProvider((current) => ({ ...current, envKey: event.target.value }))} placeholder="CUSTOM_API_KEY" /></label><button className="primary-button provider-submit" type="submit" disabled={isAddingProvider}>{isAddingProvider ? 'Adding...' : <><Plus size={15} />Add provider</>}</button></form>{customProviderError ? <p className="provider-form-error">{customProviderError}</p> : null}</section>
 
-          <section className="workbench-grid"><section className="panel activity-panel"><header className="panel-header"><div><p className="eyebrow">Live coordination</p><h2>Team feed</h2></div><span className="event-counter"><Radio size={13} />{activity.length} events</span></header><div className="activity-list">{activity.length === 0 ? <p className="empty-note">Nothing has happened yet. Send a direction to the Head AI, then approve the plan to let Scout and Forge work.</p> : null}{activity.map((item) => { const Icon = item.kind === 'head' ? Sparkles : item.kind === 'research' ? Eye : item.kind === 'builder' ? Code2 : Radio; const speaker = item.kind === 'head' ? 'Head AI' : item.kind === 'research' ? 'Scout' : item.kind === 'builder' ? 'Forge' : 'You'; return <article className={`activity-item ${item.kind}`} key={item.id}><div className="activity-icon"><Icon size={16} /></div><div className="activity-body"><div className="activity-title"><strong>{item.title}</strong><span className="activity-tag">{item.tag}</span></div><p>{item.detail}</p><div className="activity-footer"><span>{speaker}</span><span>{item.stamp}</span></div></div></article> })}</div><footer className="activity-note"><Activity size={14} /><span>Everything the agents do appears here before it becomes part of the final result.</span></footer></section>
+          <section className="workbench-grid"><section className="panel activity-panel"><header className="panel-header"><div><p className="eyebrow">Live coordination</p><div className="panel-tabs"><button type="button" className={panelTab === 'feed' ? 'active' : ''} onClick={() => setPanelTab('feed')}>Team feed</button><button type="button" className={panelTab === 'artifacts' ? 'active' : ''} onClick={() => setPanelTab('artifacts')}>Artifacts{artifacts.length ? ` (${artifacts.length})` : ''}</button></div></div><span className="event-counter"><Radio size={13} />{activity.length} events</span></header>{panelTab === 'artifacts' ? <ArtifactsPanel artifacts={artifacts} grants={grants} onRevoke={(toolName) => void revokeGrant(toolName)} isLoading={false} /> : <div className="activity-list">{activity.length === 0 ? <p className="empty-note">Nothing has happened yet. Send a direction to the Head AI, then approve the plan to let Scout and Forge work.</p> : null}{activity.map((item) => { const Icon = item.kind === 'head' ? Sparkles : item.kind === 'research' ? Eye : item.kind === 'builder' ? Bot : Radio; const speaker = item.kind === 'head' ? 'Head AI' : item.kind === 'research' ? 'Scout' : item.kind === 'builder' ? 'Forge' : 'You'; return <article className={`activity-item ${item.kind}`} key={item.id}><div className="activity-icon"><Icon size={16} /></div><div className="activity-body"><div className="activity-title"><strong>{item.title}</strong><span className="activity-tag">{item.tag}</span></div><p>{item.detail}</p><div className="activity-footer"><span>{speaker}</span><span>{item.stamp}</span></div></div></article> })}</div>}<footer className="activity-note"><Activity size={14} /><span>Everything the agents do appears here before it becomes part of the final result.</span></footer></section>
 
-            <section className="panel chat-panel"><header className="panel-header chat-header"><div className="chat-title"><span className="head-avatar"><Sparkles size={16} /></span><div><p className="eyebrow">Private channel</p><h2>Head AI</h2></div><span className={`online-indicator ${headProviderReady ? '' : 'demo'}`}>{headProviderReady ? 'api ready' : 'demo mode'}</span></div><button className="icon-button" type="button" title="Head AI settings"><Settings2 size={17} /></button></header><div className="chat-context"><Users size={14} /><span>Full team context</span><span className="context-dot">·</span><span>{approved ? 'Execution is live' : 'Planning together'}</span><span className="context-spacer"></span><span className="route-context">{headProviderLabel}</span></div><div className="messages" aria-live="polite">{messages.length === 0 ? <p className="empty-note">No messages yet. Direct the Head AI below to shape a plan.</p> : null}{messages.map((item, index) => <div className={`message-row ${item.role}`} key={`${item.stamp}-${index}`}><div className="message-avatar">{item.role === 'head' ? <Sparkles size={14} /> : 'AR'}</div><div className="message-bubble"><div className="message-meta"><strong>{item.role === 'head' ? 'Head AI' : 'You'}</strong><span>{item.stamp}</span></div><p>{item.text}</p></div></div>)}</div><form className="composer" onSubmit={sendMessage}><textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder={isPaused ? 'Resume the run to send a direction...' : isSending ? 'Head AI is thinking...' : 'Direct the Head AI...'} rows={2} disabled={isPaused || isSending} /><div className="composer-footer"><span><span className="key-hint">⌘</span> + Enter to direct the team</span><button className="send-button" type="submit" title="Send direction" disabled={!message.trim() || isPaused || isSending}>{isSending ? <span className="send-spinner"></span> : <Send size={16} />}</button></div></form></section></section>
+            <section className="panel chat-panel"><header className="panel-header chat-header"><div className="chat-title"><span className="head-avatar"><Sparkles size={16} /></span><div><p className="eyebrow">Private channel</p><h2>Head AI</h2></div><span className={`online-indicator ${headProviderReady ? '' : 'demo'}`}>{headProviderReady ? 'api ready' : 'demo mode'}</span></div><button className="icon-button" type="button" title="Head AI settings"><Settings2 size={17} /></button></header><div className="chat-context"><Users size={14} /><span>Full team context</span><span className="context-dot">·</span><span>{approved ? 'Execution is live' : 'Planning together'}</span><span className="context-spacer"></span><span className="route-context">{headProviderLabel}</span></div><div className="messages" aria-live="polite">{messages.length === 0 ? <p className="empty-note">No messages yet. Direct the Head AI below to shape a plan.</p> : null}{messages.map((item, index) => <div className={`message-row ${item.role}`} key={`${item.stamp}-${index}`}><div className="message-avatar">{item.role === 'head' ? <Sparkles size={14} /> : 'AR'}</div><div className="message-bubble"><div className="message-meta"><strong>{item.role === 'head' ? 'Head AI' : 'You'}</strong><span>{item.stamp}</span></div><p>{item.text}</p></div></div>)}</div><form className="composer" onSubmit={sendMessage}><textarea value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} placeholder={isPaused ? 'Resume the run to send a direction...' : isSending ? 'Head AI is thinking...' : 'Direct the Head AI...'} rows={2} disabled={isPaused || isSending} /><div className="composer-footer"><span><span className="key-hint">{shortcutLabel}</span> + Enter to direct the team</span><button className="send-button" type="submit" title="Send direction" disabled={!message.trim() || isPaused || isSending}>{isSending ? <span className="send-spinner"></span> : <Send size={16} />}</button></div></form></section></section>
         </div>
       </main>
 
       <div className="permission-dock"><ShieldCheck size={15} /><span><strong>Permission mode</strong><small>{permissionMode === 'guided' ? 'Ask before consequential actions' : permissionMode === 'selective' ? 'Pause on risky actions' : 'Run within approved boundaries'}</small></span><select aria-label="Permission mode" value={permissionMode} onChange={(event) => void changePermissionMode(event.target.value as PermissionMode)}><option value="guided">Guided</option><option value="selective">Selective</option><option value="autopilot">Autopilot</option></select></div>
 
-      {settingsOpen ? <div className="routing-layer settings-layer"><button className="drawer-backdrop" type="button" aria-label="Close workspace settings" onClick={() => setSettingsOpen(false)}></button><aside className="routing-drawer settings-drawer"><header className="drawer-header"><div><p className="eyebrow">Workspace settings</p><h2>Make the team yours</h2></div><button className="icon-button" type="button" title="Close workspace settings" onClick={() => setSettingsOpen(false)}><X size={18} /></button></header><p className="drawer-copy">Connect the models you already use, assign one to each role, and choose how much autonomy this run has.</p><section className="settings-section"><div className="settings-section-heading"><div><p className="drawer-section-label">Provider APIs</p><small>Built-ins stay available. Custom endpoints can be removed at any time.</small></div><span className="provider-count"><Bot size={14} />{providerStatus.filter((provider) => provider.configured).length} connected</span></div><div className="settings-provider-list">{providerStatus.map((provider) => <div className="settings-provider-row" key={provider.id}><span className="settings-provider-main"><span className={`provider-state-dot ${provider.configured ? 'connected' : ''}`}></span><span><strong>{provider.label}</strong><small>{provider.model} · {provider.envKey}</small></span></span><span className="settings-provider-actions"><span className={`provider-state ${provider.configured ? 'connected' : ''}`}>{provider.configured ? 'Connected' : 'Add key'}</span>{provider.custom ? <button className="icon-button danger" type="button" title={`Remove ${provider.label}`} onClick={() => void removeProvider(provider)}><Trash2 size={15} /></button> : <span className="provider-built-in">Built-in</span>}</span></div>)}</div></section><section className="settings-section"><p className="drawer-section-label">Add custom OpenAI-compatible API</p><form className="settings-provider-form" onSubmit={addCustomProvider}><label><span>Name</span><input value={customProvider.label} onChange={(event) => setCustomProvider((current) => ({ ...current, label: event.target.value }))} placeholder="Local gateway" /></label><label><span>Base URL</span><input value={customProvider.baseUrl} onChange={(event) => setCustomProvider((current) => ({ ...current, baseUrl: event.target.value }))} placeholder="https://api.example.com/v1" /></label><label><span>Model</span><input value={customProvider.model} onChange={(event) => setCustomProvider((current) => ({ ...current, model: event.target.value }))} placeholder="model-name" /></label><label><span>Environment key</span><input value={customProvider.envKey} onChange={(event) => setCustomProvider((current) => ({ ...current, envKey: event.target.value }))} placeholder="CUSTOM_API_KEY" /></label><button className="primary-button" type="submit" disabled={isAddingProvider}>{isAddingProvider ? 'Adding...' : <><Plus size={15} />Add API</>}</button></form>{customProviderError ? <p className="provider-form-error">{customProviderError}</p> : null}</section><section className="settings-section"><p className="drawer-section-label">Role routing</p><div className="settings-routing-list">{agents.map((agent) => <label className="route-field" key={agent.id}><span className={`route-avatar ${agent.tone}`}>{agent.avatar}</span><span className="route-label"><strong>{agent.name}</strong><small>{agent.role}</small></span><select value={routing[agent.id]} onChange={(event) => setRouting((current) => ({ ...current, [agent.id]: event.target.value }))}>{modelOptions[agent.id].map((option) => <option key={option}>{option}</option>)}</select></label>)}</div></section><section className="settings-section"><div className="settings-permission"><span><strong>Permission mode</strong><small>{permissionMode === 'guided' ? 'Ask before consequential actions' : permissionMode === 'selective' ? 'Pause on risky actions' : 'Run inside approved boundaries'}</small></span><select aria-label="Permission mode" value={permissionMode} onChange={(event) => void changePermissionMode(event.target.value as PermissionMode)}><option value="guided">Guided</option><option value="selective">Selective</option><option value="autopilot">Autopilot</option></select></div></section><footer className="drawer-footer"><button className="primary-button" type="button" onClick={() => setSettingsOpen(false)}><Check size={16} />Done</button></footer></aside></div> : null}
+      {settingsOpen ? <div className="routing-layer settings-layer"><button className="drawer-backdrop" type="button" aria-label="Close workspace settings" onClick={() => setSettingsOpen(false)}></button><aside className="routing-drawer settings-drawer"><header className="drawer-header"><div><p className="eyebrow">Workspace settings</p><h2>Make the team yours</h2></div><button className="icon-button" type="button" title="Close workspace settings" onClick={() => setSettingsOpen(false)}><X size={18} /></button></header><p className="drawer-copy">Connect the models you already use, assign one to each role, and choose how much autonomy this run has.</p><section className="settings-section"><div className="settings-section-heading"><div><p className="drawer-section-label">Provider APIs</p><small>Built-ins stay available. Custom endpoints can be removed at any time.</small></div><span className="provider-count"><Bot size={14} />{providerStatus.filter((provider) => provider.configured).length} connected</span></div><div className="settings-provider-list">{providerStatus.map((provider) => { const test = providerTests[provider.id]; return <div className="settings-provider-row" key={provider.id}><span className="settings-provider-main"><span className={`provider-state-dot ${provider.configured ? 'connected' : ''}`}></span><span><strong>{provider.label}</strong><small>{provider.model} · {provider.envKey}</small></span></span><span className="settings-provider-actions"><span className={`provider-state ${provider.configured ? 'connected' : ''}`}>{provider.configured ? 'Connected' : 'Add key'}</span><button className="icon-button" type="button" title={`Test ${provider.label} connectivity`} disabled={test?.state === 'testing'} onClick={() => void testProvider(provider)}><Zap size={15} /></button>{test && test.state !== 'testing' ? <span className={`provider-test ${test.state}`}>{test.state === 'ok' ? `ok · ${test.latencyMs ?? 0}ms` : test.error}</span> : null}{provider.custom ? <button className="icon-button danger" type="button" title={`Remove ${provider.label}`} onClick={() => void removeProvider(provider)}><Trash2 size={15} /></button> : <span className="provider-built-in">Built-in</span>}</span></div> })}</div></section><section className="settings-section"><p className="drawer-section-label">Add custom OpenAI-compatible API</p><form className="settings-provider-form" onSubmit={addCustomProvider}><label><span>Name</span><input value={customProvider.label} onChange={(event) => setCustomProvider((current) => ({ ...current, label: event.target.value }))} placeholder="Local gateway" /></label><label><span>Base URL</span><input value={customProvider.baseUrl} onChange={(event) => setCustomProvider((current) => ({ ...current, baseUrl: event.target.value }))} placeholder="https://api.example.com/v1" /></label><label><span>Model</span><input value={customProvider.model} onChange={(event) => setCustomProvider((current) => ({ ...current, model: event.target.value }))} placeholder="model-name" /></label><label><span>Environment key</span><input value={customProvider.envKey} onChange={(event) => setCustomProvider((current) => ({ ...current, envKey: event.target.value }))} placeholder="CUSTOM_API_KEY" /></label><button className="primary-button" type="submit" disabled={isAddingProvider}>{isAddingProvider ? 'Adding...' : <><Plus size={15} />Add API</>}</button></form>{customProviderError ? <p className="provider-form-error">{customProviderError}</p> : null}</section><section className="settings-section"><p className="drawer-section-label">Role routing</p><div className="settings-routing-list">{agents.map((agent) => <label className="route-field" key={agent.id}><span className={`route-avatar ${agent.tone}`}>{agent.avatar}</span><span className="route-label"><strong>{agent.name}</strong><small>{agent.role}</small></span><select value={routing[agent.id]} onChange={(event) => setRouting((current) => ({ ...current, [agent.id]: event.target.value }))}>{modelOptions[agent.id].map((option) => <option key={option}>{option}</option>)}</select></label>)}</div></section><section className="settings-section"><div className="settings-permission"><span><strong>Permission mode</strong><small>{permissionMode === 'guided' ? 'Ask before consequential actions' : permissionMode === 'selective' ? 'Pause on risky actions' : 'Run inside approved boundaries'}</small></span><select aria-label="Permission mode" value={permissionMode} onChange={(event) => void changePermissionMode(event.target.value as PermissionMode)}><option value="guided">Guided</option><option value="selective">Selective</option><option value="autopilot">Autopilot</option></select></div></section><footer className="drawer-footer"><button className="primary-button" type="button" onClick={() => setSettingsOpen(false)}><Check size={16} />Done</button></footer></aside></div> : null}
 
       {routingOpen ? <div className="routing-layer"><button className="drawer-backdrop" type="button" aria-label="Close routing panel" onClick={() => setRoutingOpen(false)}></button><aside className="routing-drawer"><header className="drawer-header"><div><p className="eyebrow">Model routing</p><h2>Choose the brains</h2></div><button className="icon-button" type="button" title="Close routing" onClick={() => setRoutingOpen(false)}><X size={18} /></button></header><p className="drawer-copy">Choose a model for each role. Add the matching key to <code>.env.local</code>; the browser only sees connection status.</p><div className="provider-connections"><p className="drawer-section-label">Provider connections</p>{providerStatus.map((provider) => <div className="provider-row" key={provider.id}><span><strong>{provider.label}</strong><small>{provider.envKey}</small></span><span className={`provider-state ${provider.configured ? 'connected' : ''}`}><span></span>{provider.configured ? 'Connected' : 'Add key'}</span></div>)}</div><div className="route-fields"><p className="drawer-section-label">Role routing</p>{agents.map((agent) => <label className="route-field" key={agent.id}><span className={`route-avatar ${agent.tone}`}>{agent.avatar}</span><span className="route-label"><strong>{agent.name}</strong><small>{agent.role}</small></span><select value={routing[agent.id]} onChange={(event) => setRouting((current) => ({ ...current, [agent.id]: event.target.value }))}>{modelOptions[agent.id].map((option) => <option key={option}>{option}</option>)}</select></label>)}</div><div className="drawer-callout"><ShieldCheck size={17} /><span><strong>API keys are not stored in the browser.</strong><small>Fulkrum sends chat requests through the local server adapter.</small></span></div><footer className="drawer-footer"><button className="secondary-button" type="button" onClick={() => setRoutingOpen(false)}>Cancel</button><button className="primary-button" type="button" onClick={() => setRoutingOpen(false)}><Check size={16} />Save routing</button></footer></aside></div> : null}
-      {pendingApproval ? <div className="tool-approval-banner"><ShieldCheck size={17} /><span><strong>Approval needed for {pendingApproval.name}</strong><small>{pendingApproval.reason}{pendingApproval.summary ? ` · ${pendingApproval.summary}` : ''}</small></span><button className="primary-button" type="button" onClick={() => void approveToolCall()}><Check size={15} />Approve once</button></div> : null}
+      {pendingApproval ? <div className="tool-approval-banner"><ShieldCheck size={17} /><span><strong>Approval needed for {pendingApproval.name}</strong><small>{pendingApproval.reason}{pendingApproval.summary ? ` · ${pendingApproval.summary}` : ''}</small></span><button className="secondary-button" type="button" onClick={() => void denyToolCall()}><X size={15} />Deny</button><button className="secondary-button" type="button" onClick={() => void approveToolCall('run')}><Check size={15} />Approve for this run</button><button className="primary-button" type="button" onClick={() => void approveToolCall('once')}><Check size={15} />Approve once</button></div> : null}
       {isInterrupted ? <div className="tool-approval-banner"><ShieldCheck size={17} /><span><strong>This run was interrupted</strong><small>{interruptionReason || 'The API bridge stopped while this run was in flight.'} Completed steps are kept; the interrupted step runs again.</small></span><button className="primary-button" type="button" onClick={() => void resumeRun()}><Play size={15} />Resume</button><button className="secondary-button" type="button" onClick={() => void stopRun()}>Abandon</button></div> : null}
       {isBudgetExceeded ? <div className="tool-approval-banner"><ShieldCheck size={17} /><span><strong>This run reached its budget</strong><small>{spendLabel || 'Spend recorded'} against {effectiveRunBudget ? `$${effectiveRunBudget.toFixed(2)}` : 'a configured ceiling'}. Work already done is kept, and the step that was refused runs again once the ceiling is raised.</small></span><button className="primary-button" type="button" onClick={() => void raiseBudgetAndResume()}><Play size={15} />Raise &amp; resume</button><button className="secondary-button" type="button" onClick={() => void stopRun()}>Stop</button></div> : null}
     </div>

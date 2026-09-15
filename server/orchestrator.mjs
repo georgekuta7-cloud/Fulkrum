@@ -18,6 +18,17 @@ class BudgetExceededError extends Error {
   }
 }
 
+/**
+ * Keep the tool result the model sees small. The stored record keeps the previous
+ * file contents so the change can be reviewed, but replaying 64 kB of the old
+ * file into every following prompt would waste the context it is there to serve.
+ */
+function forModel(output) {
+  if (!output || typeof output !== 'object' || !('previousContent' in output)) return output
+  const { previousContent, ...rest } = output
+  return { ...rest, previousContentOmittedBytes: Buffer.byteLength(String(previousContent ?? ''), 'utf8') }
+}
+
 export function createRunOrchestrator({ store, providerRegistry, toolBroker, callModel, pricing, ownerId = 'orchestrator', leaseMs = 60_000 }) {
   const activeRuns = new Map()
   const approvalWaiters = new Map()
@@ -149,7 +160,13 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
     const run = store.getRun(runId)
     const tool = toolBroker?.get(name)
     const resolution = toolBroker?.resolve(name, input) ?? { ok: false, error: 'Tool broker is unavailable.' }
-    const authorization = toolBroker?.authorize({ mode: run?.permissionMode, tool, resolution }) ?? { allowed: false, requiresApproval: false, reason: 'Tool broker is unavailable.' }
+    const decision = toolBroker?.authorize({ mode: run?.permissionMode, tool, resolution }) ?? { allowed: false, requiresApproval: false, reason: 'Tool broker is unavailable.', decision: 'deny', ruleId: 'deny.broker-unavailable' }
+    // A run grant can only soften an "ask". Deny stays deny, which is what keeps
+    // "approve for this run" from also approving a credential read.
+    const grant = decision.decision === 'ask' ? store.findActiveGrant(runId, name) : null
+    const authorization = grant
+      ? { ...decision, decision: 'allow', allowed: true, requiresApproval: false, ruleId: 'allow.run-grant', reason: `Allowed for this run by a grant approved ${new Date(grant.grantedAt).toLocaleString()}.` }
+      : decision
     const safeInput = toolBroker?.redact(input) ?? input
     const toolCall = store.createToolCall({
       runId,
@@ -261,7 +278,7 @@ Rules:
         results.push({
           id: toolCall.id,
           name: toolCall.name,
-          content: outcome.ok ? JSON.stringify(outcome.output) : `Error: ${outcome.error}`,
+          content: outcome.ok ? JSON.stringify(forModel(outcome.output)) : `Error: ${outcome.error}`,
           isError: !outcome.ok,
         })
 

@@ -84,7 +84,22 @@ Two properties are worth knowing as a user:
 over its normalized, resolved arguments — absolute paths, the final argument
 vector, the destination host. The approval prompt shows those resolved arguments,
 not a model-written summary, and approving executes exactly that call. Approving
-one payload cannot run a different one.
+one payload cannot run a different one. You can also **deny** a call, which tells
+the worker no so it can choose another approach instead of retrying.
+
+**A decision can cover the rest of the run.** "Approve for this run" records a
+grant so the same tool stops asking. A grant only ever turns *ask* into *allow*:
+deny rules are evaluated first and are never overridden, so a grant for
+`workspace.write` still cannot write a credential file. Active grants are shown
+above the artifact list with a revoke button, and both the grant and its
+revocation are events in the audit log. Persistent "always allow" is deliberately
+not offered — a standing exception needs somewhere to review it first.
+
+**You can see what changed.** The Artifacts tab lists every file a run wrote, with
+a real diff: the contents immediately before each write are snapshotted, so the
+diff is the actual change rather than a guess. Files written before snapshots
+existed say so instead of showing an empty diff, and oversized files report that
+they are too large to diff.
 
 **Interrupted runs are recoverable.** A run holds a lease while it works. If the
 bridge is killed mid-run, the next start marks the run `interrupted` instead of
