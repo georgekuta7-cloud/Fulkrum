@@ -1,6 +1,7 @@
 import http from 'node:http'
 import { privateProviderUrlsAllowed, validateOutboundUrl } from './networkPolicy.mjs'
-import { fingerprintToolCall } from './permissions.mjs'
+import { fingerprintToolCall, permissionMatrix } from './permissions.mjs'
+import { agentRoles } from './roles.mjs'
 
 export const MAX_JSON_BODY_BYTES = 100_000
 export const MAX_TOOL_BODY_BYTES = 600_000
@@ -99,7 +100,7 @@ const resumableStatuses = new Set(['paused', 'executing'])
  * instead of rejecting the server's callback promise, which Node would treat as
  * an unhandled rejection and use to terminate the process, orphaning every run.
  */
-export function createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, allowedOrigins = new Set(), ownerId = 'local' }) {
+export function createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, planService, allowedOrigins = new Set(), ownerId = 'local' }) {
   const isAllowedOrigin = (origin) => !origin || allowedOrigins.has(origin)
   let draining = null
 
@@ -214,7 +215,12 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       }
 
       if (request.method === 'GET' && requestUrl.pathname === '/api/tools') {
-        sendJson(response, 200, { workspaceRoot: toolBroker.workspaceRoot, tools: toolBroker.list() })
+        sendJson(response, 200, {
+          workspaceRoot: toolBroker.workspaceRoot,
+          tools: toolBroker.list(),
+          roles: Object.fromEntries(Object.entries(agentRoles).map(([name, role]) => [name, { label: role.label, readOnly: role.readOnly, tools: role.tools }])),
+          policy: permissionMatrix.map((rule) => ({ id: rule.id, decision: rule.decision })),
+        })
         return
       }
 
@@ -371,6 +377,28 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         return
       }
 
+      const runPlanMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/plan$/)
+      if (runPlanMatch) {
+        const runId = decodeURIComponent(runPlanMatch[1])
+        const run = store.getRun(runId)
+        if (!run) {
+          sendJson(response, 404, { error: 'Run not found.' })
+          return
+        }
+        if (request.method === 'GET') {
+          const plan = store.getLatestPlanForRun(runId)
+          sendJson(response, plan ? 200 : 404, plan ? { ...plan, roles: agentRoles } : { error: 'This run has no plan yet.' })
+          return
+        }
+        if (request.method === 'POST') {
+          const body = await readJson(request)
+          const routing = body.routing ?? store.getProject(run.projectId)?.project?.settings?.routing ?? {}
+          const drafted = await planService.ensureDraft(run, { regenerate: body.regenerate === true, routing })
+          sendJson(response, 200, { ...drafted.plan, created: Boolean(drafted.created), demo: Boolean(drafted.demo), fallbackReason: drafted.fallbackReason ?? null })
+          return
+        }
+      }
+
       const runControlMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/control$/)
       if (request.method === 'POST' && runControlMatch) {
         const runId = decodeURIComponent(runControlMatch[1])
@@ -395,6 +423,35 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           return
         }
 
+        const routing = body.routing ?? store.getProject(run.projectId)?.project?.settings?.routing ?? {}
+        let approvalPayload = null
+
+        if (body.action === 'approve-plan') {
+          // A plan is required to approve one. If the caller has not drafted one
+          // yet, draft it now so the run is always bound to a stored artifact.
+          let plan = typeof body.planId === 'string' ? store.getPlan(body.planId) : store.getLatestPlanForRun(runId)
+          if (!plan) {
+            const drafted = await planService.ensureDraft(run, { routing })
+            plan = drafted.plan
+          }
+          if (plan.plan.runId && plan.plan.runId !== runId) {
+            sendJson(response, 409, { error: 'That plan belongs to a different run.' })
+            return
+          }
+          // Approval binds to the exact plan content the user was shown.
+          if (typeof body.planHash === 'string' && body.planHash !== plan.plan.contentHash) {
+            store.appendEvent({ runId, type: 'plan.approval.rejected', agentId: 'head', payload: { planId: plan.plan.id, expected: plan.plan.contentHash, received: body.planHash } })
+            sendJson(response, 409, { error: 'This plan changed since it was shown. Review the current version and approve again.' })
+            return
+          }
+          if (plan.plan.status !== 'approved') {
+            store.approvePlan(plan.plan.id)
+            store.updateRun(runId, { planId: plan.plan.id, planVersion: plan.plan.version })
+            store.appendEvent({ runId, type: 'plan.approved', agentId: 'head', payload: { planId: plan.plan.id, version: plan.plan.version, hash: plan.plan.contentHash, tasks: plan.tasks.length, source: plan.plan.source } })
+          }
+          approvalPayload = { planId: plan.plan.id, planVersion: plan.plan.version, planHash: plan.plan.contentHash, taskCount: plan.tasks.length }
+        }
+
         if (body.action === 'resume' && !resumableStatuses.has(run.status) && run.status !== 'interrupted') {
           sendJson(response, 409, { error: `A run in ${run.status} state cannot be resumed.` })
           return
@@ -406,9 +463,9 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           patch.interruptionReason = null
         }
         const nextRun = store.updateRun(runId, patch)
-        const event = store.appendEvent({ runId, type: transition[1], payload: { source: 'user', previousStatus: run.status } })
+        const event = store.appendEvent({ runId, type: transition[1], payload: { source: 'user', previousStatus: run.status, ...(approvalPayload ?? {}) } })
         if (body.action === 'approve-plan' || body.action === 'resume') {
-          orchestrator.start(runId, { routing: body.routing ?? store.getProject(run.projectId)?.project?.settings?.routing ?? {} })
+          orchestrator.start(runId, { routing })
         }
         sendJson(response, 200, { run: nextRun, event })
         return

@@ -34,6 +34,7 @@ function runFromRow(row) {
     mode: row.mode,
     permissionMode: row.permission_mode,
     planVersion: Number(row.plan_version),
+    planId: row.plan_id ?? null,
     ownerId: row.owner_id ?? null,
     heartbeatAt: row.heartbeat_at === null || row.heartbeat_at === undefined ? null : Number(row.heartbeat_at),
     leaseExpiresAt: row.lease_expires_at === null || row.lease_expires_at === undefined ? null : Number(row.lease_expires_at),
@@ -41,6 +42,35 @@ function runFromRow(row) {
     interruptionReason: row.interruption_reason ?? null,
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
+  }
+}
+
+function planFromRow(row) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    runId: row.run_id ?? null,
+    version: Number(row.version),
+    objective: row.objective,
+    contentHash: row.content_hash,
+    status: row.status,
+    source: row.source,
+    approvedAt: row.approved_at === null || row.approved_at === undefined ? null : Number(row.approved_at),
+    createdAt: Number(row.created_at),
+  }
+}
+
+function planTaskFromRow(row) {
+  return {
+    id: row.id,
+    planId: row.plan_id,
+    orderIndex: Number(row.order_index),
+    role: row.role,
+    title: row.title,
+    instructions: row.instructions,
+    acceptanceCheck: row.acceptance_check ?? '',
+    dependsOn: parseJson(row.depends_on_json, []),
+    createdAt: Number(row.created_at),
   }
 }
 
@@ -80,6 +110,8 @@ function taskFromRow(row) {
     instructions: row.instructions,
     status: row.status,
     result: row.result,
+    planTaskId: row.plan_task_id ?? null,
+    stepCount: Number(row.step_count ?? 0),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   }
@@ -179,14 +211,15 @@ export class FulkrumStore {
       mode: patch.mode ?? current.mode,
       permissionMode: patch.permissionMode ?? current.permissionMode,
       planVersion: patch.planVersion ?? current.planVersion,
+      planId: patch.planId === undefined ? current.planId : patch.planId,
       ownerId: patch.ownerId === undefined ? current.ownerId : patch.ownerId,
       heartbeatAt: patch.heartbeatAt === undefined ? current.heartbeatAt : patch.heartbeatAt,
       leaseExpiresAt: patch.leaseExpiresAt === undefined ? current.leaseExpiresAt : patch.leaseExpiresAt,
       interruptedAt: patch.interruptedAt === undefined ? current.interruptedAt : patch.interruptedAt,
       interruptionReason: patch.interruptionReason === undefined ? current.interruptionReason : patch.interruptionReason,
     }
-    this.database.prepare('UPDATE runs SET status = ?, mode = ?, permission_mode = ?, plan_version = ?, owner_id = ?, heartbeat_at = ?, lease_expires_at = ?, interrupted_at = ?, interruption_reason = ?, updated_at = ? WHERE id = ?')
-      .run(next.status, next.mode, next.permissionMode, next.planVersion, next.ownerId, next.heartbeatAt, next.leaseExpiresAt, next.interruptedAt, next.interruptionReason, Date.now(), runId)
+    this.database.prepare('UPDATE runs SET status = ?, mode = ?, permission_mode = ?, plan_version = ?, plan_id = ?, owner_id = ?, heartbeat_at = ?, lease_expires_at = ?, interrupted_at = ?, interruption_reason = ?, updated_at = ? WHERE id = ?')
+      .run(next.status, next.mode, next.permissionMode, next.planVersion, next.planId, next.ownerId, next.heartbeatAt, next.leaseExpiresAt, next.interruptedAt, next.interruptionReason, Date.now(), runId)
     return this.getRun(runId)
   }
 
@@ -315,9 +348,9 @@ export class FulkrumStore {
     }
   }
 
-  createTask({ runId, agentId, title, instructions, id = `task-${randomUUID()}` }) {
+  createTask({ runId, agentId, title, instructions, planTaskId = null, id = `task-${randomUUID()}` }) {
     const now = Date.now()
-    this.database.prepare('INSERT INTO run_tasks(id, run_id, agent_id, title, instructions, status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)').run(id, runId, agentId, title, instructions, 'queued', now, now)
+    this.database.prepare('INSERT INTO run_tasks(id, run_id, agent_id, title, instructions, status, plan_task_id, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, runId, agentId, title, instructions, 'queued', planTaskId, now, now)
     return this.getTask(id)
   }
 
@@ -332,8 +365,9 @@ export class FulkrumStore {
     const next = {
       status: patch.status ?? current.status,
       result: patch.result ?? current.result,
+      stepCount: patch.stepCount ?? current.stepCount,
     }
-    this.database.prepare('UPDATE run_tasks SET status = ?, result = ?, updated_at = ? WHERE id = ?').run(next.status, next.result, Date.now(), taskId)
+    this.database.prepare('UPDATE run_tasks SET status = ?, result = ?, step_count = ?, updated_at = ? WHERE id = ?').run(next.status, next.result, next.stepCount, Date.now(), taskId)
     return this.getTask(taskId)
   }
 
@@ -389,6 +423,70 @@ export class FulkrumStore {
     const run = this.getRun(runId)
     if (!run) return null
     return { run, messages: this.listMessages(runId), tasks: this.listTasks(runId), toolCalls: this.listToolCalls(runId), events: this.listEvents(runId) }
+  }
+
+  nextPlanVersion(projectId) {
+    const row = this.database.prepare('SELECT COALESCE(MAX(version), 0) + 1 AS next_version FROM plans WHERE project_id = ?').get(projectId)
+    return Number(row?.next_version ?? 1)
+  }
+
+  /**
+   * Store a plan. Drafts for the same run are superseded, so an approval can only
+   * ever point at the newest version the user was actually shown.
+   */
+  createPlan({ projectId, runId = null, objective, tasks, contentHash, source = 'model', id = `plan-${randomUUID()}` }) {
+    const now = Date.now()
+    const version = this.nextPlanVersion(projectId)
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      if (runId) this.database.prepare("UPDATE plans SET status = 'superseded' WHERE run_id = ? AND status = 'draft'").run(runId)
+      this.database.prepare('INSERT INTO plans(id, project_id, run_id, version, objective, content_hash, status, source, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, projectId, runId, version, objective, contentHash, 'draft', source, now)
+      const insertTask = this.database.prepare('INSERT INTO plan_tasks(id, plan_id, order_index, role, title, instructions, acceptance_check, depends_on_json, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      tasks.forEach((task, index) => {
+        insertTask.run(`plantask-${randomUUID()}`, id, index, task.role, task.title, task.instructions, task.acceptanceCheck ?? '', JSON.stringify(task.dependsOn ?? []), now)
+      })
+      this.database.exec('COMMIT')
+    } catch (error) {
+      this.database.exec('ROLLBACK')
+      throw error
+    }
+    return this.getPlan(id)
+  }
+
+  getPlan(planId) {
+    const row = this.database.prepare('SELECT * FROM plans WHERE id = ?').get(planId)
+    if (!row) return null
+    return {
+      plan: planFromRow(row),
+      tasks: this.database.prepare('SELECT * FROM plan_tasks WHERE plan_id = ? ORDER BY order_index ASC').all(planId).map(planTaskFromRow),
+    }
+  }
+
+  getLatestPlanForRun(runId) {
+    const row = this.database.prepare('SELECT * FROM plans WHERE run_id = ? ORDER BY version DESC LIMIT 1').get(runId)
+    return row ? this.getPlan(row.id) : null
+  }
+
+  approvePlan(planId) {
+    this.database.prepare("UPDATE plans SET status = 'approved', approved_at = ? WHERE id = ?").run(Date.now(), planId)
+    return this.getPlan(planId)
+  }
+
+  /** Create the execution rows for a plan, reusing any that already exist. */
+  materializeRunTasks({ runId, plan }) {
+    const existing = this.listTasks(runId)
+    return plan.tasks.map((planTask) => {
+      const match = existing.find((task) => task.planTaskId === planTask.id)
+      if (match) return match
+      return this.createTask({
+        runId,
+        agentId: planTask.role,
+        title: planTask.title,
+        instructions: planTask.instructions,
+        planTaskId: planTask.id,
+      })
+    })
   }
 
   listCustomProviders() {

@@ -45,6 +45,32 @@ model gateway such as Ollama, set `FULKRUM_ALLOW_PRIVATE_PROVIDER_URLS=1`.
 
 ## How a run behaves
 
+A run executes a **plan**, not a fixed script. The Head AI turns your direction
+into a plan — an objective plus tasks with roles, acceptance checks, and
+dependencies — and that plan is stored with a content hash before you see it.
+
+`Approve & start run` approves that exact content. If the plan changes after you
+were shown it, the approval is refused (`This plan changed since it was shown`)
+rather than applied to work you did not read. **Redraft plan** asks the Head AI
+for a new version, which supersedes the old draft.
+
+Tasks then run in dependency layers. Read-only research may overlap; anything
+that can write is serialized, because parallel writers conflict over the same
+files and parallel readers do not. Each task hands its findings to the tasks that
+depend on it.
+
+Inside a task the worker is an actual agent: it is given its own tool allowlist
+and decides which tools to call, sees the typed result, and continues until it
+answers or hits its step budget (`FULKRUM_MAX_TOOL_STEPS`, default 8). When the
+budget runs out it is asked for a summary with no tools, so a run still produces
+something reviewable.
+
+Role tool scopes are enforced twice: a tool outside a role's allowlist is not
+even described to the model, and a call to one is refused with a typed error the
+model can read and act on. Arguments are validated against the tool's JSON Schema
+before the broker sees them, and the broker then re-resolves and re-checks
+everything from scratch.
+
 Each run has a permission mode: `Guided` pauses consequential actions,
 `Selective` allows low-level work while guarding risky actions, and `Autopilot`
 proceeds within the approved plan and configured boundaries. Routing decisions
@@ -81,7 +107,7 @@ the audit log does **not** cover.
 
 ## Current limits
 
-- **Execution is host-restricted.** `shell.exec` is limited to read-only `git status`, `git diff`, and `git log` with a validated argument vector. Windows has no OS sandbox primitive (no Seatbelt, Landlock, or bubblewrap), so general command execution is deliberately absent rather than run unsandboxed. The container runner is the next phase; `FULKRUM_RUNNER_IMAGE` and friends are reserved in `.env.example`.
-- **Workers still use fixed tools.** The research and build workers each call one preconfigured tool rather than choosing tools themselves, so the approval-and-resume path stays dormant in a normal run.
-- **No cost accounting yet.** The Autopilot description mentions budget boundaries; nothing enforces a budget so far.
-- **The UI carries placeholder identity.** Names such as "Atlas studio" and "Alex Rivera" are still hardcoded in the interface.
+- **Execution is host-restricted.** `shell.exec` is limited to read-only `git status`, `git diff`, and `git log` with a validated argument vector, so no worker can currently run an arbitrary command. Windows has no OS sandbox primitive (no Seatbelt, Landlock, or bubblewrap), so general command execution is deliberately absent rather than run unsandboxed. The container runner is the next phase; `FULKRUM_RUNNER_IMAGE` and friends are reserved in `.env.example`.
+- **No cost accounting yet.** The Autopilot description mentions budget boundaries; nothing enforces a budget so far, and token usage is captured but not priced.
+- **The UI still carries placeholder identity.** Names such as "Atlas studio" and "Alex Rivera" are hardcoded in the interface, and the artifacts view is not built.
+- **Plan quality depends on the model.** With no provider key the workers cannot run at all, and the plan falls back to a labelled template. When a model plan cannot be parsed, the fallback is recorded in the audit log rather than hidden.

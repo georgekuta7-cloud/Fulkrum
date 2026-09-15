@@ -107,6 +107,38 @@ type WorkspaceProject = {
   runs?: WorkspaceRun[]
 }
 
+type PlanTask = {
+  id: string
+  orderIndex: number
+  role: string
+  title: string
+  instructions: string
+  acceptanceCheck?: string
+  dependsOn: number[]
+}
+
+type WorkspacePlan = {
+  plan: {
+    id: string
+    version: number
+    objective: string
+    contentHash: string
+    status: string
+    source: string
+  }
+  tasks: PlanTask[]
+  fallbackReason?: string | null
+}
+
+type WorkspaceTask = {
+  id: string
+  agentId: string
+  title: string
+  status: string
+  result?: string | null
+  stepCount?: number
+}
+
 type WorkspaceEvent = {
   eventId: string
   runId: string
@@ -311,6 +343,26 @@ const providerCatalog: ProviderStatus[] = [
   { id: 'kimi', label: 'Kimi', envKey: 'KIMI_API_KEY or MOONSHOT_API_KEY', model: 'kimi-k2', protocol: 'openai-compatible', baseUrl: 'https://api.moonshot.ai/v1', configured: false, custom: false },
 ]
 
+/**
+ * Ask the server for the plan a run will execute. The stored plan is what
+ * "Approve & start run" approves, so it has to exist and be visible first.
+ * Kept outside the component so effects depend on no local closures.
+ */
+async function requestPlan(runId: string, regenerate: boolean): Promise<{ ok: true; plan: WorkspacePlan } | { ok: false; error: string }> {
+  try {
+    const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/plan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ regenerate }),
+    })
+    const payload = (await response.json().catch(() => ({}))) as WorkspacePlan & { error?: string }
+    if (!response.ok || !payload.plan) return { ok: false, error: payload.error ?? 'The server did not return a plan.' }
+    return { ok: true, plan: payload }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : 'Plan request failed.' }
+  }
+}
+
 function App() {
   const [mode, setMode] = useState<Mode>('plan')
   const [approved, setApproved] = useState(false)
@@ -333,12 +385,19 @@ function App() {
   const [isAddingProvider, setIsAddingProvider] = useState(false)
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('selective')
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null)
+  const [plan, setPlan] = useState<WorkspacePlan | null>(null)
+  const [tasks, setTasks] = useState<WorkspaceTask[]>([])
+  const [isDraftingPlan, setIsDraftingPlan] = useState(false)
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null)
   const eventCursor = useRef(0)
 
   const selected = agents.find((agent) => agent.id === selectedAgent) ?? agents[0]
   const runLabel = isInterrupted ? 'Interrupted' : isPaused ? 'Paused' : mode === 'review' ? 'Review ready' : approved ? 'Live run' : 'Awaiting approval'
   const headProviderLabel = routing.head.split(' · ')[0]
   const headProviderReady = providerStatus.some((provider) => provider.label === headProviderLabel && provider.configured)
+  const runStartedLabel = runStartedAt ? new Date(runStartedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'not started'
+  const planApproved = plan?.plan.status === 'approved'
+  const planSourceLabel = plan ? (plan.plan.source === 'model' ? 'written by Head AI' : plan.plan.source === 'demo-fallback' ? 'template (Head AI output was unusable)' : 'template') : ''
 
   const routeOptions = (agentId: AgentId) => {
     const configuredOptions = providerStatus.map((provider) => `${provider.label} · ${provider.model}`)
@@ -400,6 +459,7 @@ function App() {
       setProjectId(project.id)
       setRunId(activeRun.id)
       setPermissionMode(activeRun.permissionMode as PermissionMode)
+      setRunStartedAt(activeRun.createdAt)
       const runIsApproved = ['executing', 'paused', 'review'].includes(activeRun.status)
       setApproved(runIsApproved)
       setIsPaused(activeRun.status === 'paused')
@@ -408,7 +468,8 @@ function App() {
       setMode(activeRun.status === 'review' ? 'review' : runIsApproved ? 'execute' : activeRun.mode)
       const snapshotResponse = await fetch(`/api/runs/${encodeURIComponent(activeRun.id)}`)
       if (!snapshotResponse.ok || cancelled) return
-      const snapshot = await snapshotResponse.json() as { messages?: Array<{ role: string; content: string; createdAt: number }>; events?: WorkspaceEvent[] }
+      const snapshot = await snapshotResponse.json() as { messages?: Array<{ role: string; content: string; createdAt: number }>; events?: WorkspaceEvent[]; tasks?: WorkspaceTask[] }
+      if (snapshot.tasks?.length) setTasks(snapshot.tasks)
       if (snapshot.messages?.length) {
         setMessages(snapshot.messages.filter((item) => item.role === 'user' || item.role === 'assistant').map((item) => ({
           role: item.role === 'user' ? 'you' : 'head',
@@ -453,12 +514,20 @@ function App() {
     if (!runId) return
     eventCursor.current = 0
 
+    const refreshTasks = async () => {
+      const response = await fetch(`/api/runs/${encodeURIComponent(runId)}`).catch(() => null)
+      if (!response?.ok) return
+      const snapshot = (await response.json().catch(() => null)) as { tasks?: WorkspaceTask[]; run?: WorkspaceRun } | null
+      if (snapshot?.tasks) setTasks(snapshot.tasks)
+    }
+
     const ingestEvent = (event: WorkspaceEvent) => {
       eventCursor.current = Math.max(eventCursor.current, event.sequence)
       if (event.type === 'run.review.ready') setMode('review')
       const approval = pendingApprovalFromEvent(event)
       if (approval) setPendingApproval(approval)
       if (['tool.completed', 'tool.failed', 'tool.denied'].includes(event.type) && event.payload.toolCallId === pendingApproval?.toolCallId) setPendingApproval(null)
+      if (event.type.startsWith('task.') || event.type === 'run.plan.loaded') void refreshTasks()
       const mapped = activityFromEvent(event)
       if (!mapped) return
       setActivity((current) => {
@@ -544,6 +613,38 @@ function App() {
     ])
   }
 
+  // Draft (or reload) the plan whenever a run is waiting for approval. The server
+  // reuses the stored plan unless regeneration is asked for, so this is safe to
+  // run on every state change.
+  useEffect(() => {
+    if (!runId || approved || isInterrupted) return
+    let cancelled = false
+
+    const draft = async () => {
+      const result = await requestPlan(runId, false)
+      if (cancelled) return
+      if (result.ok) {
+        setPlan(result.plan)
+        if (result.plan.fallbackReason) {
+          setActivity((current) => [
+            { id: `PLAN-${Date.now()}`, kind: 'system' as const, title: 'Head AI did not return a usable plan', detail: `A template plan is being used instead: ${result.plan.fallbackReason}`, stamp: 'just now', tag: 'PLAN' },
+            ...current,
+          ])
+        }
+        return
+      }
+      setActivity((current) => [
+        { id: `PLAN-ERR-${Date.now()}`, kind: 'system' as const, title: 'Could not draft a plan', detail: result.error, stamp: 'just now', tag: 'API ERROR' },
+        ...current,
+      ])
+    }
+
+    void draft()
+    return () => {
+      cancelled = true
+    }
+  }, [runId, approved, isInterrupted])
+
   const controlRun = async (action: 'approve-plan' | 'pause' | 'resume' | 'cancel' | 'set-permission', details: Record<string, unknown> = {}) => {
     if (!runId) return
     const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/control`, {
@@ -584,9 +685,39 @@ function App() {
     }
   }
 
+  /** Replace the stored plan with a freshly drafted one, on user request. */
+  const redraftPlan = async () => {
+    if (!runId || isDraftingPlan) return
+    setIsDraftingPlan(true)
+    const result = await requestPlan(runId, true)
+    setIsDraftingPlan(false)
+    if (result.ok) {
+      setPlan(result.plan)
+      addActivity({ kind: 'system', title: `Drafted plan v${result.plan.plan.version}`, detail: `${result.plan.tasks.length} task(s), ${planSourceLabel || result.plan.plan.source}.`, tag: 'PLAN' })
+      return
+    }
+    addActivity({ kind: 'system', title: 'Could not draft a plan', detail: result.error, tag: 'API ERROR' })
+  }
+
   const approvePlan = async () => {
+    let current = plan
+    if (!current && runId) {
+      setIsDraftingPlan(true)
+      const result = await requestPlan(runId, false)
+      setIsDraftingPlan(false)
+      if (result.ok) {
+        current = result.plan
+        setPlan(result.plan)
+      }
+    }
+    if (!current) {
+      addActivity({ kind: 'system', title: 'Nothing to approve yet', detail: 'No plan could be drafted, so there is nothing to approve.', tag: 'API ERROR' })
+      return
+    }
     try {
-      await controlRun('approve-plan', { routing })
+      // The approval is bound to this exact plan content, not to whatever the
+      // plan happens to be when the run starts.
+      await controlRun('approve-plan', { planId: current.plan.id, planHash: current.plan.contentHash, routing })
     } catch (error) {
       addActivity({ kind: 'system', title: 'Could not approve the plan', detail: error instanceof Error ? error.message : 'Run control request failed.', tag: 'API ERROR' })
       return
@@ -597,9 +728,13 @@ function App() {
     addActivity({
       kind: 'system',
       title: 'You approved the plan and started the run',
-      detail: 'Scout and Forge can now work in parallel. Head AI is overseeing the handoffs.',
+      detail: `${current.tasks.length} task(s) from plan v${current.plan.version}. Approvals for consequential tool calls will appear here.`,
       tag: 'RUN STARTED',
     })
+    if (runId) {
+      const refreshed = await requestPlan(runId, false)
+      if (refreshed.ok) setPlan(refreshed.plan)
+    }
   }
 
   const togglePause = async () => {
@@ -756,9 +891,9 @@ function App() {
         <div className="content-wrap">
           <section className="page-heading"><div><p className="eyebrow">Project 04 / team room</p><h1>Work with your AI team</h1><p className="heading-copy">Talk to Head AI, watch Scout and Forge work, and keep every meaningful action visible.</p></div><button className="routing-button" type="button" onClick={() => setSettingsOpen(true)}><SlidersHorizontal size={17} /><span><strong>Workspace settings</strong><small>Providers, routing, and permissions</small></span><ArrowUpRight size={16} /></button></section>
 
-          <div className="mode-row"><div className="mode-switch" role="tablist" aria-label="Run mode">{modes.map((item) => <button key={item.id} className={`mode-tab ${mode === item.id ? 'selected' : ''} ${item.id === 'execute' && !approved ? 'locked' : ''}`} type="button" role="tab" aria-selected={mode === item.id} onClick={() => changeMode(item.id)}><span className="mode-number">{item.number}</span><span>{item.label}</span>{item.id === 'execute' && !approved ? <ShieldCheck size={14} /> : null}</button>)}</div><div className="run-controls"><span className="run-id"><GitBranch size={14} /> run-014</span>{approved ? <button className="control-button" type="button" onClick={togglePause}>{isPaused ? <Play size={15} /> : <Pause size={15} />}{isPaused ? 'Resume' : 'Pause'}</button> : null}<button className="control-button stop" type="button" onClick={stopRun}><Square size={13} fill="currentColor" /> Stop</button></div></div>
+          <div className="mode-row"><div className="mode-switch" role="tablist" aria-label="Run mode">{modes.map((item) => <button key={item.id} className={`mode-tab ${mode === item.id ? 'selected' : ''} ${item.id === 'execute' && !approved ? 'locked' : ''}`} type="button" role="tab" aria-selected={mode === item.id} onClick={() => changeMode(item.id)}><span className="mode-number">{item.number}</span><span>{item.label}</span>{item.id === 'execute' && !approved ? <ShieldCheck size={14} /> : null}</button>)}</div><div className="run-controls"><span className="run-id"><GitBranch size={14} /> {runId ? runId.slice(0, 14) : 'no run yet'}</span>{approved ? <button className="control-button" type="button" onClick={togglePause}>{isPaused ? <Play size={15} /> : <Pause size={15} />}{isPaused ? 'Resume' : 'Pause'}</button> : null}<button className="control-button stop" type="button" onClick={stopRun}><Square size={13} fill="currentColor" /> Stop</button></div></div>
 
-          <section className={`run-overview ${mode}`}><div className="run-copy"><div className="run-meta"><span className="run-kicker"><Zap size={13} fill="currentColor" /> {mode === 'plan' ? 'PLAN IN REVIEW' : mode === 'execute' ? 'EXECUTION ACTIVE' : 'REVIEW CHECKPOINT'}</span><span className="run-time"><Clock3 size={13} /> started 09:38</span></div><h2>Prove the first release before scaling the machine.</h2><p>Three agents, one approved brief, and a visible handoff at every decision that matters.</p></div><div className="run-action"><span className="approval-label"><span className={`approval-dot ${approved ? 'approved' : ''}`}></span>{approved ? 'Plan approved' : 'Waiting for your approval'}</span>{!approved ? <button className="primary-button" type="button" onClick={approvePlan}><CheckCircle2 size={17} />Approve &amp; start run</button> : <button className="secondary-button" type="button" onClick={() => setMode('review')}><Eye size={16} />Open review</button>}</div><div className="progress-line"><div className="progress-step complete"><span><Check size={14} /></span><small>Brief</small></div><div className={`progress-step ${approved ? 'complete' : 'current'}`}><span>{approved ? <Check size={14} /> : '2'}</span><small>Build</small></div><div className="progress-step"><span>3</span><small>Review</small></div><div className="progress-track"><i className={approved ? 'filled-two' : 'filled-one'}></i></div></div></section>
+          <section className={`run-overview ${mode}`}><div className="run-copy"><div className="run-meta"><span className="run-kicker"><Zap size={13} fill="currentColor" /> {mode === 'plan' ? 'PLAN IN REVIEW' : mode === 'execute' ? 'EXECUTION ACTIVE' : 'REVIEW CHECKPOINT'}</span><span className="run-time"><Clock3 size={13} /> started {runStartedLabel}</span></div><h2>{plan ? plan.plan.objective : 'No plan drafted yet'}</h2><p>{plan ? `Plan v${plan.plan.version} · ${planSourceLabel} · ${plan.tasks.length} task(s) · approved content ${plan.plan.contentHash.slice(0, 10)}` : 'Ask the Head AI for a direction, then draft a plan to see exactly what the workers will do before you approve it.'}</p></div><div className="run-action"><span className="approval-label"><span className={`approval-dot ${approved ? 'approved' : ''}`}></span>{approved ? 'Plan approved' : 'Waiting for your approval'}</span>{!approved && runId ? <button className="secondary-button" type="button" disabled={isDraftingPlan} onClick={() => void redraftPlan()}>{isDraftingPlan ? 'Drafting...' : 'Redraft plan'}</button> : null}{!approved ? <button className="primary-button" type="button" onClick={approvePlan} disabled={isDraftingPlan}><CheckCircle2 size={17} />Approve &amp; start run</button> : <button className="secondary-button" type="button" onClick={() => setMode('review')}><Eye size={16} />Open review</button>}</div><div className="plan-tasks">{plan ? plan.tasks.map((planTask) => { const runTask = tasks.find((task) => task.title === planTask.title && task.agentId === planTask.role); const status = runTask?.status ?? (planApproved ? 'queued' : 'planned'); return <div className={`plan-task ${status}`} key={planTask.id}><span className="plan-task-role">{planTask.role === 'research' ? 'Scout' : 'Forge'}</span><span className="plan-task-title">{planTask.title}</span>{runTask?.stepCount ? <span className="plan-task-steps">{runTask.stepCount} steps</span> : null}<span className="plan-task-status">{status}</span></div> }) : <div className="plan-task planned"><span className="plan-task-title">No plan drafted yet</span></div>}</div></section>
 
           <section className="agents-section"><div className="section-heading"><div><p className="eyebrow">Active crew</p><h2>Three minds, one outcome</h2></div><button className="text-action" type="button" onClick={() => setSettingsOpen(true)}><Settings2 size={16} /> Edit routing</button></div><div className="agents-grid">{agents.map((agent) => { const isSelected = selectedAgent === agent.id; const status = isPaused ? 'Paused' : approved ? (agent.id === 'head' ? 'Overseeing' : 'Working') : agent.status; return <button key={agent.id} className={`agent-card ${agent.tone} ${isSelected ? 'selected' : ''}`} type="button" onClick={() => setSelectedAgent(agent.id)}><div className="agent-card-top"><span className="agent-avatar">{agent.avatar}</span><span className={`agent-status ${status === 'Ready' ? 'ready' : status === 'Paused' ? 'paused' : ''}`}><span></span>{status}</span><MoreHorizontal size={16} /></div><div className="agent-card-body"><strong>{agent.name}</strong><span>{agent.role}</span><p>{agent.description}</p></div><div className="agent-card-footer"><span className="model-label"><Bot size={14} />{routing[agent.id]}</span><ArrowUpRight size={15} /></div></button> })}</div></section>
 

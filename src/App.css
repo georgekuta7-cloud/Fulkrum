@@ -2241,3 +2241,71 @@ select {
   line-height: 1.5;
   text-align: center;
 }
+
+.plan-tasks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.plan-task {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 11px;
+  border: 1px solid #d3d9d0;
+  border-radius: 7px;
+  background: #f8f7f2;
+  font-size: 11px;
+  color: #3d5148;
+}
+
+.plan-task-role {
+  padding-right: 8px;
+  border-right: 1px solid #d3d9d0;
+  font-family: 'IBM Plex Mono', Consolas, monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #5d6b60;
+}
+
+.plan-task-title {
+  font-weight: 600;
+}
+
+.plan-task-steps,
+.plan-task-status {
+  font-family: 'IBM Plex Mono', Consolas, monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #5d6b60;
+}
+
+.plan-task.planned {
+  border-style: dashed;
+}
+
+.plan-task.running {
+  border-color: #d9a05b;
+  background: #fdf6ec;
+}
+
+.plan-task.completed {
+  border-color: #83aa9b;
+  background: #f1f7f3;
+}
+
+.plan-task.completed .plan-task-status {
+  color: #4a7f68;
+}
+
+.plan-task.failed,
+.plan-task.cancelled,
+.plan-task.interrupted,
+.plan-task.denied {
+  border-color: #cf8b7f;
+  background: #fdf1ef;
+}

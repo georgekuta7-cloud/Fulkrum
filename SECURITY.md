@@ -28,20 +28,25 @@ act:
 1. **Deny by default.** A single permission matrix decides every tool call. It is
    evaluated deny → ask → allow, first match wins, and anything unparseable,
    unknown, or ambiguous is denied rather than guessed at.
-2. **Approvals are bound to a fingerprint.** Approving a call approves the
+2. **Capability scoping.** Each role has an explicit tool allowlist, and a tool
+   outside it is neither described to the model nor executable. Arguments are
+   validated against the tool's JSON Schema before the broker sees them, and the
+   broker re-resolves and re-checks the call independently. A denial is returned
+   to the model as a typed error, so it can adapt instead of silently retrying.
+3. **Approvals are bound to a fingerprint.** Approving a call approves the
    normalized, resolved arguments (`sha256` over the tool name, resolved absolute
    paths, final argv, and destination host). An approval for one payload cannot
    execute a different one, and the audit record and the executed call cannot
    diverge.
-3. **Arbitrary command execution is not available on the host.** `shell.exec` is
+4. **Arbitrary command execution is not available on the host.** `shell.exec` is
    limited to a fixed set of read-only git subcommands, and the whole argument
    vector is validated, not just the first element. General code execution is
    planned to run inside a container (see "Execution boundary" below); until
    that lands, the capability is absent rather than unsandboxed.
-4. **Egress is default-deny** and is the last line of defense. The `http.request`
+5. **Egress is default-deny** and is the last line of defense. The `http.request`
    tool refuses private, loopback, link-local, and multicast targets, validates
    every redirect hop, and requires an explicit host allowlist.
-5. **Secrets are not readable by tools.** Known credential paths are refused at
+6. **Secrets are not readable by tools.** Known credential paths are refused at
    the tool boundary, and tool output is scanned for credential shapes before it
    reaches the model or the audit log.
 

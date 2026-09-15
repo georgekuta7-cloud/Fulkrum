@@ -6,6 +6,19 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **Plans are stored artifacts.** The Head AI drafts a plan (objective, tasks with
+  roles, acceptance checks, and dependencies); it is persisted with a content
+  hash, and `Approve & start run` approves that exact content. A plan that changed
+  after it was shown is refused rather than silently approved.
+- **Workers choose their own tools.** Each task runs as a bounded tool-calling
+  loop over OpenAI-compatible, Anthropic, and Google function calling, with
+  per-role tool allowlists, JSON Schema validation of arguments, typed errors the
+  model can act on, and a step budget (`FULKRUM_MAX_TOOL_STEPS`).
+- **Dependency-aware scheduling.** Tasks run in layers: read-only research may
+  overlap, writers are serialized, and each task receives the results of the tasks
+  it depends on.
+- Token usage is captured per model call (input, output, cache read/write,
+  reasoning) as the basis for cost accounting.
 - Crash recovery: runs hold a lease and heartbeat, and a startup reconciler marks
   in-flight runs as interrupted instead of leaving them stranded forever.
 - Approval integrity: every tool call carries a fingerprint over its normalized,
@@ -28,6 +41,10 @@ All notable changes to Fulkrum are documented here. This project follows
 - Request bodies are capped (100 kB by default, 600 kB for tool calls) instead of
   accepting unbounded JSON.
 - SQLite now runs in WAL mode and is checkpointed and closed cleanly on shutdown.
+- The provider layer is one normalized message format translated per protocol, so
+  tool calls, tool results, and usage are handled the same way everywhere.
+- The run overview in the UI shows the stored plan, its source, and per-task
+  status instead of hardcoded copy.
 
 ### Fixed
 - A malformed JSON body to `/api/runs/:id/control`, `/api/runs/:id/tools`, or the

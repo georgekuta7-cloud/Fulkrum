@@ -201,3 +201,146 @@ test('the demo run reaches review without ever requesting an approval', async ()
     assert.equal(store.verifyEventChain(runId).ok, true)
   })
 })
+
+test('a run gets a stored plan, and approval binds to its content hash', async () => {
+  await withServer(async ({ request, store }) => {
+    const project = await request('POST', '/api/projects', { name: 'plan fixture' })
+    const projectId = project.payload.project.id
+    const run = await request('POST', '/api/runs', { projectId, permissionMode: 'selective' })
+    const runId = run.payload.run.id
+
+    const missing = await request('GET', `/api/runs/${runId}/plan`)
+    assert.equal(missing.status, 404, 'a fresh run has no plan until one is drafted')
+
+    const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+    assert.equal(drafted.status, 200)
+    assert.equal(drafted.payload.tasks.length >= 2, true)
+    assert.equal(typeof drafted.payload.plan.contentHash, 'string')
+    assert.equal(drafted.payload.plan.contentHash.length, 64)
+
+    // Drafting again reuses the existing draft rather than churning versions.
+    const second = await request('POST', `/api/runs/${runId}/plan`, {})
+    assert.equal(second.payload.plan.id, drafted.payload.plan.id)
+
+    // Regenerating supersedes the old draft and produces a new version.
+    const regenerated = await request('POST', `/api/runs/${runId}/plan`, { regenerate: true })
+    assert.equal(regenerated.payload.plan.version > drafted.payload.plan.version, true)
+    assert.equal(store.getPlan(drafted.payload.plan.id).plan.status, 'superseded')
+
+    const planId = regenerated.payload.plan.id
+    const planHash = regenerated.payload.plan.contentHash
+
+    // Approving a hash that is not what is stored must be refused.
+    const stale = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId, planHash: 'not-the-real-hash', routing: {} })
+    assert.equal(stale.status, 409)
+    assert.match(String(stale.payload.error), /changed since it was shown/)
+    assert.equal(store.getPlan(planId).plan.status, 'draft', 'a rejected approval must not approve the plan')
+
+    const approved = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId, planHash, routing: {} })
+    assert.equal(approved.status, 200)
+    assert.equal(store.getPlan(planId).plan.status, 'approved')
+    assert.equal(store.getRun(runId).planId, planId)
+
+    const types = store.listEvents(runId).map((event) => event.type)
+    assert.equal(types.includes('plan.approved'), true)
+    assert.equal(store.verifyEventChain(runId).ok, true)
+  })
+})
+
+test('the tool loop runs model-chosen tools, parks for approval, then resumes', async () => {
+  const previousXai = process.env.XAI_API_KEY
+  // A key is what makes the loop engage instead of reporting demo mode; the
+  // model itself is scripted below, so nothing leaves the machine.
+  process.env.XAI_API_KEY = 'sk-test-key-for-loop'
+
+  const transcript = []
+  const model = async ({ messages, options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) {
+      transcript.push('plan')
+      return {
+        text: JSON.stringify({
+          objective: 'Prove the write path end to end.',
+          tasks: [
+            { role: 'research', title: 'Look around', instructions: 'Report what is in the workspace.', dependsOn: [] },
+            { role: 'builder', title: 'Write the proof', instructions: 'Write proof.txt.', acceptanceCheck: 'proof.txt exists.', dependsOn: [0] },
+          ],
+        }),
+        toolCalls: [],
+        usage: null,
+      }
+    }
+    if (instructions.includes('Forge')) {
+      if (!messages.some((message) => message.role === 'tool')) {
+        transcript.push('forge:tool-call')
+        return { text: 'Writing the artifact now.', toolCalls: [{ id: 'forge-1', name: 'workspace.write', arguments: { path: 'proof.txt', content: 'built by forge' } }], usage: null }
+      }
+      transcript.push('forge:final')
+      return { text: 'Wrote proof.txt after approval.', toolCalls: [], usage: null }
+    }
+    transcript.push('research')
+    return { text: 'Scout found the fixture files.', toolCalls: [], usage: null }
+  }
+
+  try {
+    await withServer(async ({ request, store, directory }) => {
+      const project = await request('POST', '/api/projects', { name: 'loop fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'selective' })
+      const runId = run.payload.run.id
+      await request('POST', '/api/chat', { runId, message: 'Prove the write path.', history: [] })
+
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      assert.equal(
+        drafted.payload.plan.source,
+        'model',
+        `the model-written plan should be used (source=${drafted.payload.plan.source} fallback=${drafted.payload.fallbackReason ?? 'none'} modelCalls=${transcript.join('|')} events=${store.listEvents(runId).map((event) => event.type).join(',')})`,
+      )
+      assert.equal(drafted.payload.tasks.length, 2)
+
+      await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+
+      // The build task must park on the write rather than run it.
+      let pending = null
+      const parkDeadline = Date.now() + 8_000
+      while (Date.now() < parkDeadline && !pending) {
+        pending = store.listToolCalls(runId).find((call) => call.status === 'approval_required') ?? null
+        if (!pending) await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      assert.ok(pending, 'the worker should be waiting for approval')
+      assert.equal(pending.name, 'workspace.write')
+      assert.match(pending.error, /approval/, 'the parked call records why it is waiting')
+      assert.equal(typeof pending.fingerprint, 'string')
+      assert.equal(pending.resolved.relative, 'proof.txt')
+
+      const tasksWhileParked = store.listTasks(runId)
+      assert.equal(tasksWhileParked.find((task) => task.agentId === 'builder').status, 'running', 'the build task is in flight, not finished')
+      await assert.rejects(() => readFile(path.join(directory, 'proof.txt'), 'utf8'), /ENOENT/, 'nothing may be written before approval')
+
+      const approved = await request('POST', `/api/runs/${runId}/tools/${pending.id}/approve`, { fingerprint: pending.fingerprint })
+      assert.equal(approved.status, 200)
+      assert.equal(approved.payload.resumed, true, 'approving must resume the waiting worker')
+
+      const deadline = Date.now() + 10_000
+      while (Date.now() < deadline && store.getRun(runId).status === 'executing') {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      assert.equal(store.getRun(runId).status, 'review', `unexpected status ${store.getRun(runId).status}`)
+
+      assert.equal(await readFile(path.join(directory, 'proof.txt'), 'utf8'), 'built by forge')
+      const builderTask = store.listTasks(runId).find((task) => task.agentId === 'builder')
+      assert.equal(builderTask.status, 'completed')
+      assert.match(builderTask.result, /Wrote proof\.txt after approval/)
+      assert.equal(builderTask.stepCount >= 2, true, 'the loop should record two model steps')
+
+      assert.deepEqual(transcript.includes('forge:tool-call') && transcript.includes('forge:final'), true)
+      const types = store.listEvents(runId).map((event) => event.type)
+      assert.equal(types.includes('plan.approved'), true)
+      assert.equal(types.includes('worker.handoff'), true)
+      assert.equal(types.includes('run.review.ready'), true)
+      assert.equal(store.verifyEventChain(runId).ok, true)
+    }, { model })
+  } finally {
+    if (previousXai === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousXai
+  }
+})

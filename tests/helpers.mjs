@@ -4,6 +4,7 @@ import path from 'node:path'
 import { createApp } from '../server/app.mjs'
 import { createProviderRegistry } from '../server/providerRegistry.mjs'
 import { createRunOrchestrator } from '../server/orchestrator.mjs'
+import { createPlanService } from '../server/planService.mjs'
 import { FulkrumStore } from '../server/store.mjs'
 import { FulkrumToolBroker } from '../server/toolBroker.mjs'
 
@@ -42,24 +43,34 @@ export async function withStore(callback) {
 /**
  * Boot the real API bridge on an ephemeral port. Tests drive it over HTTP so
  * they exercise routing, guards, and persistence together.
+ *
+ * `model` scripts the model's replies, which is how the tool-calling loop is
+ * tested without a network call.
  */
-export async function withServer(callback, { workspaceRoot, callProvider } = {}) {
+export async function withServer(callback, { workspaceRoot, callProvider, model } = {}) {
   const directory = workspaceRoot ?? (await mkdtemp(path.join(tmpdir(), 'fulkrum-api-')))
   const store = new FulkrumStore(path.join(directory, 'fulkrum.sqlite'))
   const toolBroker = new FulkrumToolBroker({ workspaceRoot: directory, httpAllowlist: [] })
   const providerRegistry = createProviderRegistry(store)
+  const modelCall = model ?? (async () => ({ text: 'stub model output', toolCalls: [], usage: null }))
   const orchestrator = createRunOrchestrator({
     store,
     providerRegistry,
     toolBroker,
     ownerId: 'test-owner',
-    callModel: async () => 'stub model output',
+    callModel: (provider, modelName, messages, options) => modelCall({ provider, model: modelName, messages, options }),
+  })
+  const planService = createPlanService({
+    store,
+    providerRegistry,
+    callModel: (provider, modelName, messages, options) => modelCall({ provider, model: modelName, messages, options }),
   })
   const app = createApp({
     store,
     toolBroker,
     providerRegistry,
     orchestrator,
+    planService,
     allowedOrigins: new Set(['http://127.0.0.1:5173']),
     callProvider: callProvider ?? (async () => 'stub reply'),
   })
