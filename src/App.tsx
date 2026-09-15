@@ -363,6 +363,12 @@ async function requestPlan(runId: string, regenerate: boolean): Promise<{ ok: tr
   }
 }
 
+function describePlanSource(source: string): string {
+  if (source === 'model') return 'written by Head AI'
+  if (source === 'demo-fallback') return 'template (Head AI output was unusable)'
+  return 'template'
+}
+
 function App() {
   const [mode, setMode] = useState<Mode>('plan')
   const [approved, setApproved] = useState(false)
@@ -397,7 +403,7 @@ function App() {
   const headProviderReady = providerStatus.some((provider) => provider.label === headProviderLabel && provider.configured)
   const runStartedLabel = runStartedAt ? new Date(runStartedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'not started'
   const planApproved = plan?.plan.status === 'approved'
-  const planSourceLabel = plan ? (plan.plan.source === 'model' ? 'written by Head AI' : plan.plan.source === 'demo-fallback' ? 'template (Head AI output was unusable)' : 'template') : ''
+  const planSourceLabel = plan ? describePlanSource(plan.plan.source) : ''
 
   const routeOptions = (agentId: AgentId) => {
     const configuredOptions = providerStatus.map((provider) => `${provider.label} · ${provider.model}`)
@@ -693,7 +699,7 @@ function App() {
     setIsDraftingPlan(false)
     if (result.ok) {
       setPlan(result.plan)
-      addActivity({ kind: 'system', title: `Drafted plan v${result.plan.plan.version}`, detail: `${result.plan.tasks.length} task(s), ${planSourceLabel || result.plan.plan.source}.`, tag: 'PLAN' })
+      addActivity({ kind: 'system', title: `Drafted plan v${result.plan.plan.version}`, detail: `${result.plan.tasks.length} task(s), ${describePlanSource(result.plan.plan.source)}.`, tag: 'PLAN' })
       return
     }
     addActivity({ kind: 'system', title: 'Could not draft a plan', detail: result.error, tag: 'API ERROR' })
