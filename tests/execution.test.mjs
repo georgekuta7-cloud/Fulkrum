@@ -59,7 +59,7 @@ test('paths are translated for an engine that lives inside WSL', () => {
 })
 
 test('an unreachable engine disables execution with an actionable message', async () => {
-  const { execFileImpl } = stubEngine({ fail: 'cannot connect to the Docker daemon' })
+  const { calls, execFileImpl } = stubEngine({ fail: 'cannot connect to the Docker daemon' })
   const runtime = createExecutionRuntime({ engine: 'docker', execFileImpl })
 
   const status = await runtime.status()
@@ -67,7 +67,24 @@ test('an unreachable engine disables execution with an actionable message', asyn
   assert.match(status.reason, /No container engine is reachable/)
   assert.match(status.hint, /WSL2|Docker Desktop/)
 
+  // A failure is re-probed rather than cached forever, so installing an engine
+  // does not require restarting the bridge.
+  const probesAfterFirst = calls.length
+  await runtime.status()
+  assert.equal(calls.length, probesAfterFirst, 'within the retry window the answer is cached')
+  await runtime.status({ refresh: true })
+  assert.equal(calls.length > probesAfterFirst, true, 'an explicit refresh re-probes')
+
   await assert.rejects(() => runtime.run(['git', 'status']), /Execution is disabled/)
+})
+
+test('a failed detection is retried once the retry window passes', async () => {
+  const { calls, execFileImpl } = stubEngine({ fail: 'no daemon' })
+  const runtime = createExecutionRuntime({ engine: 'docker', execFileImpl, failureTtlMs: 0 })
+  await runtime.status()
+  const first = calls.length
+  await runtime.status()
+  assert.equal(calls.length > first, true, 'with no retry window the probe runs again')
 })
 
 test('commands run through the engine, never on the host', async () => {

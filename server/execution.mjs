@@ -90,6 +90,9 @@ export function createExecutionRuntime({
   cpus = process.env.FULKRUM_CONTAINER_CPUS ?? '2',
   pidsLimit = Number(process.env.FULKRUM_CONTAINER_PIDS ?? 256),
   defaultTimeoutMs = Number(process.env.FULKRUM_EXEC_TIMEOUT_MS ?? 120_000),
+  // A success is cached for the process lifetime; a failure is re-probed, so
+  // installing an engine does not require restarting the bridge.
+  failureTtlMs = Number(process.env.FULKRUM_ENGINE_RETRY_MS ?? 30_000),
   execFileImpl = defaultExecFile,
 } = {}) {
   const requested = String(engine).trim()
@@ -115,7 +118,10 @@ export function createExecutionRuntime({
 
     /** Which engine is usable, and why not when none is. */
     async detect({ refresh = false } = {}) {
-      if (detected && !refresh) return detected
+      if (detected && !refresh) {
+        const fresh = detected.available || Date.now() - detected.checkedAt < failureTtlMs
+        if (fresh) return detected
+      }
 
       const failures = []
       for (const candidate of candidates()) {
@@ -127,7 +133,7 @@ export function createExecutionRuntime({
             failures.push(`${label} reported no version`)
             continue
           }
-          detected = { available: true, engine: candidate.id, label, version, image, network: 'none', ...candidate }
+          detected = { available: true, engine: candidate.id, label, version, image, network: 'none', checkedAt: Date.now(), ...candidate }
           return detected
         } catch (error) {
           const detail = error instanceof Error ? error.message.split('\n')[0] : 'unreachable'
@@ -138,6 +144,7 @@ export function createExecutionRuntime({
       detected = {
         available: false,
         engine: null,
+        checkedAt: Date.now(),
         reason: `No container engine is reachable. ${failures.join('; ')}`,
         hint: 'Install Docker Engine inside WSL2 and start it (`sudo service docker start`), or install Docker Desktop with the WSL2 backend, then confirm `docker run --rm hello-world` and reload.',
       }
