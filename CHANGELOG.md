@@ -16,7 +16,8 @@ All notable changes to Fulkrum are documented here. This project follows
   not been edited, and an explicit statement of what the log does not cover.
 - SQLite migration runner (`PRAGMA user_version` + ordered SQL files) so schema
   changes apply to existing databases.
-- Idempotency keys and write-before-execute intent rows for side-effectful tools.
+- Idempotency keys for side-effectful tools, and tool call rows written before
+  execution so a crash between intent and completion is visible.
 - Provider retry with exponential backoff and jitter, honoring `Retry-After`,
   plus optional ordered fallback routes.
 - Continuous integration on Node 22 and 24, on both Linux and Windows.

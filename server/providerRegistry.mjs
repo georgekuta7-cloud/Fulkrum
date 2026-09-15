@@ -76,6 +76,62 @@ export function createProviderRegistry(store) {
       return secretFor(provider)
     },
 
+    /** Fallback routes, in order, from FULKRUM_FALLBACK_ROUTES. */
+    fallbackRoutes() {
+      return String(process.env.FULKRUM_FALLBACK_ROUTES ?? '')
+        .split(',')
+        .map((route) => route.trim())
+        .filter(Boolean)
+    },
+
+    /**
+     * Ask the provider whether it accepts our credentials. Only status and
+     * latency are returned; never the key.
+     */
+    async testConnection(provider, { allowPrivate = false, validateUrl, timeoutMs = 10_000 } = {}) {
+      const secret = secretFor(provider)
+      if (!secret) return { configured: false, reachable: false, reason: `Missing ${provider.envKeys.join(' or ')}` }
+
+      const startedAt = Date.now()
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), timeoutMs)
+      try {
+        const base = validateUrl ? await validateUrl(provider.baseUrl, { allowPrivate }) : new URL(provider.baseUrl)
+        const baseUrl = base.toString().replace(/\/$/, '')
+        let url
+        let headers = {}
+        if (provider.protocol === 'google') {
+          const googleUrl = new URL(`${baseUrl}/models`)
+          googleUrl.searchParams.set('key', secret)
+          googleUrl.searchParams.set('pageSize', '1')
+          url = googleUrl
+        } else if (provider.protocol === 'anthropic') {
+          url = `${baseUrl}/models?limit=1`
+          headers = { 'x-api-key': secret, 'anthropic-version': '2023-06-01' }
+        } else {
+          url = `${baseUrl}/models`
+          headers = { Authorization: `Bearer ${secret}` }
+        }
+
+        const response = await fetch(url, { method: 'GET', headers, signal: controller.signal, redirect: 'manual' })
+        const responseText = await response.text()
+        let error
+        if (!response.ok) {
+          try {
+            const payload = JSON.parse(responseText)
+            error = payload?.error?.message ?? payload?.message ?? `Provider returned ${response.status}`
+          } catch {
+            error = `Provider returned ${response.status}`
+          }
+        }
+        return { configured: true, reachable: response.ok, status: response.status, latencyMs: Date.now() - startedAt, error }
+      } catch (error) {
+        return { configured: true, reachable: false, latencyMs: Date.now() - startedAt, error: error instanceof Error ? error.message : 'Provider connection failed.' }
+      } finally {
+        clearTimeout(timeout)
+      }
+    },
+
     addCustom(input) {
       const provider = validateCustomProvider(input)
       return store.saveCustomProvider(provider)

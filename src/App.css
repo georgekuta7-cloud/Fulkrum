@@ -2229,3 +2229,15 @@ select {
     max-width: none;
   }
 }
+
+.empty-note {
+  margin: 0;
+  padding: 22px 18px;
+  border: 1px dashed #cdd5cb;
+  border-radius: 8px;
+  background: #f8f7f2;
+  color: #5d6b60;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}

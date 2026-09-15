@@ -64,6 +64,8 @@ type PendingApproval = {
   toolCallId: string
   name: string
   reason: string
+  fingerprint?: string
+  summary?: string
 }
 
 type ChatMessage = {
@@ -90,6 +92,7 @@ type WorkspaceRun = {
   mode: Mode
   permissionMode: string
   planVersion: number
+  interruptionReason?: string | null
   createdAt: number
   updatedAt: number
 }
@@ -193,6 +196,17 @@ function activityFromEvent(event: WorkspaceEvent): ActivityItem | null {
     return { id: event.eventId, kind: event.type === 'approval.requested' ? 'system' : workerKind, title: statusText[event.type] ?? `${workerName} used ${toolName}`, detail: reason || 'The action was recorded in the run audit.', stamp: 'just now', tag: tag[event.type] ?? 'TOOL', toolCallId: typeof event.payload.toolCallId === 'string' ? event.payload.toolCallId : undefined, approvalRequired: event.type === 'approval.requested' }
   }
 
+  if (event.type === 'run.interrupted') {
+    const reason = typeof event.payload.reason === 'string' ? event.payload.reason : 'The API bridge stopped while this run was in flight.'
+    return { id: event.eventId, kind: 'system', title: 'The run was interrupted', detail: reason, stamp: 'just now', tag: 'INTERRUPTED' }
+  }
+
+  if (event.type === 'run.provider.fallback') {
+    const from = typeof event.payload.from === 'string' ? event.payload.from : 'the primary route'
+    const to = typeof event.payload.to === 'string' ? event.payload.to : 'a fallback route'
+    return { id: event.eventId, kind: 'system', title: 'Switched provider route', detail: `${from} failed, so the request was retried through ${to}.`, stamp: 'just now', tag: 'FALLBACK' }
+  }
+
   if (event.type === 'run.failed') {
     const error = typeof event.payload.error === 'string' ? event.payload.error : 'The worker run failed.'
     return { id: event.eventId, kind: 'system', title: 'The worker run failed', detail: error, stamp: 'just now', tag: 'RUN ERROR' }
@@ -213,9 +227,30 @@ function activityFromEvent(event: WorkspaceEvent): ActivityItem | null {
   return mapped ? { ...mapped, id: event.eventId, stamp: 'just now' } : null
 }
 
+/**
+ * Describe the resolved call an approval actually authorizes: the absolute path,
+ * the final argv, the destination host. The model's own description of a call is
+ * not evidence of what will run.
+ */
+function describeResolvedCall(resolved: unknown): string {
+  if (!resolved || typeof resolved !== 'object') return ''
+  const call = resolved as Record<string, unknown>
+  const tool = typeof call.tool === 'string' ? call.tool : ''
+  if (tool === 'shell.exec') return Array.isArray(call.argv) ? call.argv.join(' ') : ''
+  if (tool === 'http.request') return `${String(call.method ?? 'GET')} ${String(call.url ?? '')}`
+  if (typeof call.relative === 'string') return call.bytes === undefined ? call.relative : `${call.relative} (${String(call.bytes)} bytes)`
+  return ''
+}
+
 function pendingApprovalFromEvent(event: WorkspaceEvent): PendingApproval | null {
   if (event.type !== 'approval.requested' || typeof event.payload.toolCallId !== 'string' || typeof event.payload.name !== 'string') return null
-  return { toolCallId: event.payload.toolCallId, name: event.payload.name, reason: typeof event.payload.reason === 'string' ? event.payload.reason : 'This action requires your approval.' }
+  return {
+    toolCallId: event.payload.toolCallId,
+    name: event.payload.name,
+    reason: typeof event.payload.reason === 'string' ? event.payload.reason : 'This action requires your approval.',
+    fingerprint: typeof event.payload.fingerprint === 'string' ? event.payload.fingerprint : undefined,
+    summary: describeResolvedCall(event.payload.resolved),
+  }
 }
 
 const agents: Agent[] = [
@@ -280,6 +315,8 @@ function App() {
   const [mode, setMode] = useState<Mode>('plan')
   const [approved, setApproved] = useState(false)
   const [isPaused, setIsPaused] = useState(false)
+  const [isInterrupted, setIsInterrupted] = useState(false)
+  const [interruptionReason, setInterruptionReason] = useState('')
   const [routingOpen, setRoutingOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [selectedAgent, setSelectedAgent] = useState<AgentId>('head')
@@ -299,7 +336,7 @@ function App() {
   const eventCursor = useRef(0)
 
   const selected = agents.find((agent) => agent.id === selectedAgent) ?? agents[0]
-  const runLabel = isPaused ? 'Paused' : mode === 'review' ? 'Review ready' : approved ? 'Live run' : 'Awaiting approval'
+  const runLabel = isInterrupted ? 'Interrupted' : isPaused ? 'Paused' : mode === 'review' ? 'Review ready' : approved ? 'Live run' : 'Awaiting approval'
   const headProviderLabel = routing.head.split(' · ')[0]
   const headProviderReady = providerStatus.some((provider) => provider.label === headProviderLabel && provider.configured)
 
@@ -366,6 +403,8 @@ function App() {
       const runIsApproved = ['executing', 'paused', 'review'].includes(activeRun.status)
       setApproved(runIsApproved)
       setIsPaused(activeRun.status === 'paused')
+      setIsInterrupted(activeRun.status === 'interrupted')
+      setInterruptionReason(typeof activeRun.interruptionReason === 'string' ? activeRun.interruptionReason : '')
       setMode(activeRun.status === 'review' ? 'review' : runIsApproved ? 'execute' : activeRun.mode)
       const snapshotResponse = await fetch(`/api/runs/${encodeURIComponent(activeRun.id)}`)
       if (!snapshotResponse.ok || cancelled) return
@@ -536,7 +575,7 @@ function App() {
   const approveToolCall = async () => {
     if (!runId || !pendingApproval) return
     try {
-      const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/tools/${encodeURIComponent(pendingApproval.toolCallId)}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/tools/${encodeURIComponent(pendingApproval.toolCallId)}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fingerprint: pendingApproval.fingerprint, scope: 'once' }) })
       const payload = (await response.json().catch(() => ({}))) as { error?: string }
       if (!response.ok) throw new Error(payload.error ?? 'Tool approval failed.')
       setPendingApproval(null)
@@ -589,12 +628,37 @@ function App() {
     }
     setApproved(false)
     setIsPaused(false)
+    setIsInterrupted(false)
+    setInterruptionReason('')
     setMode('plan')
     addActivity({
       kind: 'system',
       title: 'You reset the run back to planning',
       detail: 'No worker can make changes until a new plan is approved.',
       tag: 'RESET',
+    })
+  }
+
+  /**
+   * Continue a run the bridge was killed in the middle of. Completed steps are
+   * not repeated; the step that was in flight runs again.
+   */
+  const resumeRun = async () => {
+    try {
+      await controlRun('resume')
+    } catch (error) {
+      addActivity({ kind: 'system', title: 'Could not resume the run', detail: error instanceof Error ? error.message : 'Run control request failed.', tag: 'API ERROR' })
+      return
+    }
+    setIsInterrupted(false)
+    setInterruptionReason('')
+    setApproved(true)
+    setMode('execute')
+    addActivity({
+      kind: 'system',
+      title: 'You resumed the interrupted run',
+      detail: 'Work continues from the last completed step. The step that was in flight runs again.',
+      tag: 'RESUMED',
     })
   }
 
@@ -702,9 +766,9 @@ function App() {
 
           <section className="provider-setup-panel"><div className="provider-setup-heading"><div><p className="eyebrow">Bring your own model</p><h2>Add a custom API</h2><p>OpenAI-compatible endpoints such as DeepSeek, GLM, Kimi, or a private gateway can join the team without changing the UI.</p></div><span className="provider-count"><Bot size={14} />{routeOptions('head').length} routes</span></div><form className="provider-setup-form" onSubmit={addCustomProvider}><label><span>Provider name</span><input value={customProvider.label} onChange={(event) => setCustomProvider((current) => ({ ...current, label: event.target.value }))} placeholder="e.g. Local gateway" /></label><label><span>Base URL</span><input value={customProvider.baseUrl} onChange={(event) => setCustomProvider((current) => ({ ...current, baseUrl: event.target.value }))} placeholder="https://api.example.com/v1" /></label><label><span>Model</span><input value={customProvider.model} onChange={(event) => setCustomProvider((current) => ({ ...current, model: event.target.value }))} placeholder="model-name" /></label><label><span>Environment key</span><input value={customProvider.envKey} onChange={(event) => setCustomProvider((current) => ({ ...current, envKey: event.target.value }))} placeholder="CUSTOM_API_KEY" /></label><button className="primary-button provider-submit" type="submit" disabled={isAddingProvider}>{isAddingProvider ? 'Adding...' : <><Plus size={15} />Add provider</>}</button></form>{customProviderError ? <p className="provider-form-error">{customProviderError}</p> : null}</section>
 
-          <section className="workbench-grid"><section className="panel activity-panel"><header className="panel-header"><div><p className="eyebrow">Live coordination</p><h2>Team feed</h2></div><span className="event-counter"><Radio size={13} />{activity.length} events</span></header><div className="activity-list">{activity.map((item) => { const Icon = item.kind === 'head' ? Sparkles : item.kind === 'research' ? Eye : item.kind === 'builder' ? Code2 : Radio; const speaker = item.kind === 'head' ? 'Head AI' : item.kind === 'research' ? 'Scout' : item.kind === 'builder' ? 'Forge' : 'You'; return <article className={`activity-item ${item.kind}`} key={item.id}><div className="activity-icon"><Icon size={16} /></div><div className="activity-body"><div className="activity-title"><strong>{item.title}</strong><span className="activity-tag">{item.tag}</span></div><p>{item.detail}</p><div className="activity-footer"><span>{speaker}</span><span>{item.stamp}</span></div></div></article> })}</div><footer className="activity-note"><Activity size={14} /><span>Everything the agents do appears here before it becomes part of the final result.</span></footer></section>
+          <section className="workbench-grid"><section className="panel activity-panel"><header className="panel-header"><div><p className="eyebrow">Live coordination</p><h2>Team feed</h2></div><span className="event-counter"><Radio size={13} />{activity.length} events</span></header><div className="activity-list">{activity.length === 0 ? <p className="empty-note">Nothing has happened yet. Send a direction to the Head AI, then approve the plan to let Scout and Forge work.</p> : null}{activity.map((item) => { const Icon = item.kind === 'head' ? Sparkles : item.kind === 'research' ? Eye : item.kind === 'builder' ? Code2 : Radio; const speaker = item.kind === 'head' ? 'Head AI' : item.kind === 'research' ? 'Scout' : item.kind === 'builder' ? 'Forge' : 'You'; return <article className={`activity-item ${item.kind}`} key={item.id}><div className="activity-icon"><Icon size={16} /></div><div className="activity-body"><div className="activity-title"><strong>{item.title}</strong><span className="activity-tag">{item.tag}</span></div><p>{item.detail}</p><div className="activity-footer"><span>{speaker}</span><span>{item.stamp}</span></div></div></article> })}</div><footer className="activity-note"><Activity size={14} /><span>Everything the agents do appears here before it becomes part of the final result.</span></footer></section>
 
-            <section className="panel chat-panel"><header className="panel-header chat-header"><div className="chat-title"><span className="head-avatar"><Sparkles size={16} /></span><div><p className="eyebrow">Private channel</p><h2>Head AI</h2></div><span className={`online-indicator ${headProviderReady ? '' : 'demo'}`}>{headProviderReady ? 'api ready' : 'demo mode'}</span></div><button className="icon-button" type="button" title="Head AI settings"><Settings2 size={17} /></button></header><div className="chat-context"><Users size={14} /><span>Full team context</span><span className="context-dot">·</span><span>{approved ? 'Execution is live' : 'Planning together'}</span><span className="context-spacer"></span><span className="route-context">{headProviderLabel}</span></div><div className="messages" aria-live="polite">{messages.map((item, index) => <div className={`message-row ${item.role}`} key={`${item.stamp}-${index}`}><div className="message-avatar">{item.role === 'head' ? <Sparkles size={14} /> : 'AR'}</div><div className="message-bubble"><div className="message-meta"><strong>{item.role === 'head' ? 'Head AI' : 'You'}</strong><span>{item.stamp}</span></div><p>{item.text}</p></div></div>)}</div><form className="composer" onSubmit={sendMessage}><textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder={isPaused ? 'Resume the run to send a direction...' : isSending ? 'Head AI is thinking...' : 'Direct the Head AI...'} rows={2} disabled={isPaused || isSending} /><div className="composer-footer"><span><span className="key-hint">⌘</span> + Enter to direct the team</span><button className="send-button" type="submit" title="Send direction" disabled={!message.trim() || isPaused || isSending}>{isSending ? <span className="send-spinner"></span> : <Send size={16} />}</button></div></form></section></section>
+            <section className="panel chat-panel"><header className="panel-header chat-header"><div className="chat-title"><span className="head-avatar"><Sparkles size={16} /></span><div><p className="eyebrow">Private channel</p><h2>Head AI</h2></div><span className={`online-indicator ${headProviderReady ? '' : 'demo'}`}>{headProviderReady ? 'api ready' : 'demo mode'}</span></div><button className="icon-button" type="button" title="Head AI settings"><Settings2 size={17} /></button></header><div className="chat-context"><Users size={14} /><span>Full team context</span><span className="context-dot">·</span><span>{approved ? 'Execution is live' : 'Planning together'}</span><span className="context-spacer"></span><span className="route-context">{headProviderLabel}</span></div><div className="messages" aria-live="polite">{messages.length === 0 ? <p className="empty-note">No messages yet. Direct the Head AI below to shape a plan.</p> : null}{messages.map((item, index) => <div className={`message-row ${item.role}`} key={`${item.stamp}-${index}`}><div className="message-avatar">{item.role === 'head' ? <Sparkles size={14} /> : 'AR'}</div><div className="message-bubble"><div className="message-meta"><strong>{item.role === 'head' ? 'Head AI' : 'You'}</strong><span>{item.stamp}</span></div><p>{item.text}</p></div></div>)}</div><form className="composer" onSubmit={sendMessage}><textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder={isPaused ? 'Resume the run to send a direction...' : isSending ? 'Head AI is thinking...' : 'Direct the Head AI...'} rows={2} disabled={isPaused || isSending} /><div className="composer-footer"><span><span className="key-hint">⌘</span> + Enter to direct the team</span><button className="send-button" type="submit" title="Send direction" disabled={!message.trim() || isPaused || isSending}>{isSending ? <span className="send-spinner"></span> : <Send size={16} />}</button></div></form></section></section>
         </div>
       </main>
 
@@ -713,7 +777,8 @@ function App() {
       {settingsOpen ? <div className="routing-layer settings-layer"><button className="drawer-backdrop" type="button" aria-label="Close workspace settings" onClick={() => setSettingsOpen(false)}></button><aside className="routing-drawer settings-drawer"><header className="drawer-header"><div><p className="eyebrow">Workspace settings</p><h2>Make the team yours</h2></div><button className="icon-button" type="button" title="Close workspace settings" onClick={() => setSettingsOpen(false)}><X size={18} /></button></header><p className="drawer-copy">Connect the models you already use, assign one to each role, and choose how much autonomy this run has.</p><section className="settings-section"><div className="settings-section-heading"><div><p className="drawer-section-label">Provider APIs</p><small>Built-ins stay available. Custom endpoints can be removed at any time.</small></div><span className="provider-count"><Bot size={14} />{providerStatus.filter((provider) => provider.configured).length} connected</span></div><div className="settings-provider-list">{providerStatus.map((provider) => <div className="settings-provider-row" key={provider.id}><span className="settings-provider-main"><span className={`provider-state-dot ${provider.configured ? 'connected' : ''}`}></span><span><strong>{provider.label}</strong><small>{provider.model} · {provider.envKey}</small></span></span><span className="settings-provider-actions"><span className={`provider-state ${provider.configured ? 'connected' : ''}`}>{provider.configured ? 'Connected' : 'Add key'}</span>{provider.custom ? <button className="icon-button danger" type="button" title={`Remove ${provider.label}`} onClick={() => void removeProvider(provider)}><Trash2 size={15} /></button> : <span className="provider-built-in">Built-in</span>}</span></div>)}</div></section><section className="settings-section"><p className="drawer-section-label">Add custom OpenAI-compatible API</p><form className="settings-provider-form" onSubmit={addCustomProvider}><label><span>Name</span><input value={customProvider.label} onChange={(event) => setCustomProvider((current) => ({ ...current, label: event.target.value }))} placeholder="Local gateway" /></label><label><span>Base URL</span><input value={customProvider.baseUrl} onChange={(event) => setCustomProvider((current) => ({ ...current, baseUrl: event.target.value }))} placeholder="https://api.example.com/v1" /></label><label><span>Model</span><input value={customProvider.model} onChange={(event) => setCustomProvider((current) => ({ ...current, model: event.target.value }))} placeholder="model-name" /></label><label><span>Environment key</span><input value={customProvider.envKey} onChange={(event) => setCustomProvider((current) => ({ ...current, envKey: event.target.value }))} placeholder="CUSTOM_API_KEY" /></label><button className="primary-button" type="submit" disabled={isAddingProvider}>{isAddingProvider ? 'Adding...' : <><Plus size={15} />Add API</>}</button></form>{customProviderError ? <p className="provider-form-error">{customProviderError}</p> : null}</section><section className="settings-section"><p className="drawer-section-label">Role routing</p><div className="settings-routing-list">{agents.map((agent) => <label className="route-field" key={agent.id}><span className={`route-avatar ${agent.tone}`}>{agent.avatar}</span><span className="route-label"><strong>{agent.name}</strong><small>{agent.role}</small></span><select value={routing[agent.id]} onChange={(event) => setRouting((current) => ({ ...current, [agent.id]: event.target.value }))}>{modelOptions[agent.id].map((option) => <option key={option}>{option}</option>)}</select></label>)}</div></section><section className="settings-section"><div className="settings-permission"><span><strong>Permission mode</strong><small>{permissionMode === 'guided' ? 'Ask before consequential actions' : permissionMode === 'selective' ? 'Pause on risky actions' : 'Run inside approved boundaries'}</small></span><select aria-label="Permission mode" value={permissionMode} onChange={(event) => void changePermissionMode(event.target.value as PermissionMode)}><option value="guided">Guided</option><option value="selective">Selective</option><option value="autopilot">Autopilot</option></select></div></section><footer className="drawer-footer"><button className="primary-button" type="button" onClick={() => setSettingsOpen(false)}><Check size={16} />Done</button></footer></aside></div> : null}
 
       {routingOpen ? <div className="routing-layer"><button className="drawer-backdrop" type="button" aria-label="Close routing panel" onClick={() => setRoutingOpen(false)}></button><aside className="routing-drawer"><header className="drawer-header"><div><p className="eyebrow">Model routing</p><h2>Choose the brains</h2></div><button className="icon-button" type="button" title="Close routing" onClick={() => setRoutingOpen(false)}><X size={18} /></button></header><p className="drawer-copy">Choose a model for each role. Add the matching key to <code>.env.local</code>; the browser only sees connection status.</p><div className="provider-connections"><p className="drawer-section-label">Provider connections</p>{providerStatus.map((provider) => <div className="provider-row" key={provider.id}><span><strong>{provider.label}</strong><small>{provider.envKey}</small></span><span className={`provider-state ${provider.configured ? 'connected' : ''}`}><span></span>{provider.configured ? 'Connected' : 'Add key'}</span></div>)}</div><div className="route-fields"><p className="drawer-section-label">Role routing</p>{agents.map((agent) => <label className="route-field" key={agent.id}><span className={`route-avatar ${agent.tone}`}>{agent.avatar}</span><span className="route-label"><strong>{agent.name}</strong><small>{agent.role}</small></span><select value={routing[agent.id]} onChange={(event) => setRouting((current) => ({ ...current, [agent.id]: event.target.value }))}>{modelOptions[agent.id].map((option) => <option key={option}>{option}</option>)}</select></label>)}</div><div className="drawer-callout"><ShieldCheck size={17} /><span><strong>API keys are not stored in the browser.</strong><small>Fulkrum sends chat requests through the local server adapter.</small></span></div><footer className="drawer-footer"><button className="secondary-button" type="button" onClick={() => setRoutingOpen(false)}>Cancel</button><button className="primary-button" type="button" onClick={() => setRoutingOpen(false)}><Check size={16} />Save routing</button></footer></aside></div> : null}
-      {pendingApproval ? <div className="tool-approval-banner"><ShieldCheck size={17} /><span><strong>Approval needed for {pendingApproval.name}</strong><small>{pendingApproval.reason}</small></span><button className="primary-button" type="button" onClick={() => void approveToolCall()}><Check size={15} />Approve once</button></div> : null}
+      {pendingApproval ? <div className="tool-approval-banner"><ShieldCheck size={17} /><span><strong>Approval needed for {pendingApproval.name}</strong><small>{pendingApproval.reason}{pendingApproval.summary ? ` · ${pendingApproval.summary}` : ''}</small></span><button className="primary-button" type="button" onClick={() => void approveToolCall()}><Check size={15} />Approve once</button></div> : null}
+      {isInterrupted ? <div className="tool-approval-banner"><ShieldCheck size={17} /><span><strong>This run was interrupted</strong><small>{interruptionReason || 'The API bridge stopped while this run was in flight.'} Completed steps are kept; the interrupted step runs again.</small></span><button className="primary-button" type="button" onClick={() => void resumeRun()}><Play size={15} />Resume</button><button className="secondary-button" type="button" onClick={() => void stopRun()}>Abandon</button></div> : null}
     </div>
   )
 }
