@@ -4,13 +4,21 @@ import { demoPlan, planContentHash, planLayers, splitLayerForConcurrency } from 
 import { agentRoles, roleOrDefault } from './roles.mjs'
 import { isToolAllowedForRole, toolsForRole, validateToolArguments } from './tools.mjs'
 
-const terminalStatuses = new Set(['cancelled', 'completed', 'failed', 'interrupted'])
+const terminalStatuses = new Set(['cancelled', 'completed', 'failed', 'interrupted', 'budget_exceeded'])
 const maxStepsPerTask = Number(process.env.FULKRUM_MAX_TOOL_STEPS ?? 8)
 // Read-only work overlaps; writers are serialized. Parallel writers conflict over
 // the same files, parallel readers do not.
 const maxParallelReaders = Math.max(Number(process.env.FULKRUM_MAX_PARALLEL_RESEARCHERS ?? 3), 1)
 
-export function createRunOrchestrator({ store, providerRegistry, toolBroker, callModel, ownerId = 'orchestrator', leaseMs = 60_000 }) {
+/** Thrown when a run cannot afford another model call. */
+class BudgetExceededError extends Error {
+  constructor(message, { scope }) {
+    super(message)
+    this.scope = scope
+  }
+}
+
+export function createRunOrchestrator({ store, providerRegistry, toolBroker, callModel, pricing, ownerId = 'orchestrator', leaseMs = 60_000 }) {
   const activeRuns = new Map()
   const approvalWaiters = new Map()
 
@@ -34,7 +42,37 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
     }
   }
 
-  const callModelWithFallback = async ({ runId, role, route, messages, tools = [], instructions }) => {
+  const startOfToday = () => {
+    const midnight = new Date()
+    midnight.setHours(0, 0, 0, 0)
+    return midnight.getTime()
+  }
+
+  /**
+   * Refuse to start another model call once a ceiling is reached. The check runs
+   * before each call because cost is only known afterwards, so a run can overshoot
+   * by at most one call.
+   */
+  function assertWithinBudget(runId) {
+    const run = store.getRun(runId)
+    const runCap = run?.budgetUsd ?? (Number(process.env.FULKRUM_RUN_BUDGET_USD ?? 0) || null)
+    const dayCap = Number(process.env.FULKRUM_DAILY_BUDGET_USD ?? 0) || null
+
+    if (runCap) {
+      const { costUsd, unpricedCalls } = store.spendForRun(runId)
+      if (unpricedCalls > 0 && !run?.budgetExceededAt) {
+        store.appendEvent({ runId, type: 'run.budget.unmeasurable', agentId: 'head', payload: { unpricedCalls, reason: 'Some calls used a model with no known price, so spend is a lower bound.' } })
+      }
+      if (costUsd >= runCap) throw new BudgetExceededError(`This run reached its $${runCap.toFixed(2)} budget (spent $${costUsd.toFixed(4)}).`, { scope: 'run' })
+    }
+
+    if (dayCap) {
+      const { costUsd } = store.spendSince(startOfToday())
+      if (costUsd >= dayCap) throw new BudgetExceededError(`Today's spend reached the $${dayCap.toFixed(2)} daily budget (spent $${costUsd.toFixed(4)}).`, { scope: 'day' })
+    }
+  }
+
+  const callModelWithFallback = async ({ runId, role, route, messages, tools = [], instructions, parentSpanId = null, taskId = null }) => {
     const attempts = [route ?? '', ...providerRegistry.fallbackRoutes()]
     let lastError
     for (const [index, candidate] of attempts.entries()) {
@@ -44,14 +82,42 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
         continue
       }
       const model = providerRegistry.model(provider, candidate)
+      const span = store.startSpan({
+        runId,
+        parentSpanId,
+        kind: 'llm',
+        name: `chat ${model}`,
+        attributes: { 'gen_ai.operation.name': 'chat', 'gen_ai.provider.name': provider.id, 'gen_ai.request.model': model, 'gen_ai.agent.name': role },
+      })
+      const startedAt = Date.now()
       try {
+        assertWithinBudget(runId)
         const response = await callModel(provider, model, messages, { tools, instructions })
+        const latencyMs = Date.now() - startedAt
+        const cost = pricing ? pricing.costOf({ model, usage: response.usage }) : { costUsd: null, priced: false, version: null }
+        store.recordModelCall({ runId, taskId, spanId: span.id, role, provider: provider.id, model, usage: response.usage, cost, latencyMs })
+        store.endSpan(span.id, {
+          status: 'ok',
+          attributes: {
+            'gen_ai.usage.input_tokens': response.usage?.inputTokens ?? 0,
+            'gen_ai.usage.output_tokens': response.usage?.outputTokens ?? 0,
+            'gen_ai.usage.cache_read.input_tokens': response.usage?.cacheReadTokens ?? 0,
+            'gen_ai.usage.cache_write.input_tokens': response.usage?.cacheWriteTokens ?? 0,
+            'gen_ai.usage.reasoning.output_tokens': response.usage?.reasoningTokens ?? 0,
+            'fulkrum.cost_usd': cost.costUsd,
+            'fulkrum.priced': cost.priced,
+            'fulkrum.tool_calls': response.toolCalls?.length ?? 0,
+          },
+        })
         if (index > 0) {
           store.appendEvent({ runId, type: 'run.provider.fallback', agentId: role, payload: { from: attempts[0] || 'primary', to: candidate, reason: lastError instanceof Error ? lastError.message : 'Primary provider failed.' } })
         }
         return { ...response, provider, model }
       } catch (error) {
+        store.endSpan(span.id, { status: error instanceof BudgetExceededError ? 'blocked' : 'error' })
+        if (error instanceof BudgetExceededError) throw error
         lastError = error
+        store.recordModelCall({ runId, taskId, spanId: span.id, role, provider: provider.id, model, status: 'error', usage: null, cost: { costUsd: null, priced: false, version: pricing?.version ?? null }, latencyMs: Date.now() - startedAt })
       }
     }
     throw lastError ?? new Error('No provider route could serve this request.')
@@ -79,7 +145,7 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
    * approval endpoint resolves, so approving continues the same turn instead of
    * executing a side effect nothing consumes.
    */
-  const invokeTool = async (runId, task, name, input) => {
+  const invokeTool = async ({ runId, task, name, input, parentSpanId = null }) => {
     const run = store.getRun(runId)
     const tool = toolBroker?.get(name)
     const resolution = toolBroker?.resolve(name, input) ?? { ok: false, error: 'Tool broker is unavailable.' }
@@ -96,19 +162,43 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
     })
     store.appendEvent({ runId, type: 'tool.requested', agentId: task.agentId, payload: { toolCallId: toolCall.id, name, kind: tool?.kind ?? 'unknown', input: safeInput, resolved: toolCall.resolved, rule: authorization.ruleId } })
 
+    // A tool span covers the approval wait as well as the execution, so a slow
+    // step is visible as "waiting on a human" rather than "slow tool".
+    const span = store.startSpan({
+      runId,
+      parentSpanId,
+      kind: 'tool',
+      name: `execute_tool ${name}`,
+      attributes: { 'gen_ai.operation.name': 'execute_tool', 'gen_ai.tool.name': name, 'gen_ai.tool.call.id': toolCall.id, 'fulkrum.rule': authorization.ruleId, 'fulkrum.decision': authorization.decision },
+    })
+
     if (!authorization.allowed) {
       const status = authorization.requiresApproval ? 'approval_required' : 'denied'
       store.updateToolCall(toolCall.id, { status, error: authorization.reason })
       store.appendEvent({ runId, type: authorization.requiresApproval ? 'approval.requested' : 'tool.denied', agentId: task.agentId, payload: { toolCallId: toolCall.id, name, reason: authorization.reason, rule: authorization.ruleId, fingerprint: toolCall.fingerprint, resolved: toolCall.resolved } })
       if (authorization.requiresApproval) {
         return new Promise((resolve) => {
-          approvalWaiters.set(toolCall.id, { runId, task, toolCall, input, resolution, resolve })
+          approvalWaiters.set(toolCall.id, {
+            runId,
+            task,
+            toolCall,
+            input,
+            resolution,
+            spanId: span.id,
+            resolve: (result) => {
+              store.endSpan(span.id, { status: result.ok ? 'ok' : 'error', attributes: { 'fulkrum.approved': true } })
+              resolve(result)
+            },
+          })
         })
       }
+      store.endSpan(span.id, { status: 'denied' })
       return { ok: false, denied: true, error: authorization.reason }
     }
 
-    return executeResolvedTool({ runId, task, toolCall, input, resolution })
+    const result = await executeResolvedTool({ runId, task, toolCall, input, resolution })
+    store.endSpan(span.id, { status: result.ok ? 'ok' : 'error' })
+    return result
   }
 
   /**
@@ -116,7 +206,7 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
    * typed results, and decides what to do next until it answers or runs out of
    * steps.
    */
-  const runAgentTask = async ({ runId, task, role, roleInstructions, goal, route, handoff, acceptanceCheck }) => {
+  const runAgentTask = async ({ runId, task, role, roleInstructions, goal, route, handoff, acceptanceCheck, parentSpanId = null }) => {
     const tools = toolsForRole(role)
     const instructions = `You are ${role.name}, ${role.label} inside Fulkrum, working as one agent in a bounded supervised run.
 
@@ -140,7 +230,7 @@ Rules:
     while (steps < maxStepsPerTask) {
       if (!await waitUntilRunnable(runId)) return { cancelled: true, steps, usedTools, text: '' }
 
-      const response = await callModelWithFallback({ runId, role: role.agentId, route, messages, tools, instructions })
+      const response = await callModelWithFallback({ runId, role: role.agentId, route, messages, tools, instructions, parentSpanId, taskId: task.id })
       steps += 1
 
       if (!response.toolCalls?.length) {
@@ -167,7 +257,7 @@ Rules:
           continue
         }
 
-        const outcome = await invokeTool(runId, task, toolCall.name, toolCall.arguments)
+        const outcome = await invokeTool({ runId, task, name: toolCall.name, input: toolCall.arguments, parentSpanId })
         results.push({
           id: toolCall.id,
           name: toolCall.name,
@@ -191,64 +281,79 @@ Rules:
       messages: [...messages, { role: 'user', content: 'You have reached the tool-call limit for this task. Summarize what you found and what remains, with no further tool calls.' }],
       tools: [],
       instructions,
+      parentSpanId,
+      taskId: task.id,
     })
     return { text: final.text, steps, usedTools, budgetExhausted: true, usage: final.usage, provider: final.provider.id, model: final.model }
   }
 
-  const executeTask = async ({ runId, task, planTask, goal, route, handoff, resultsByPlanTask }) => {
+  const executeTask = async ({ runId, task, planTask, goal, route, handoff = '', parentSpanId = null }) => {
     if (!await waitUntilRunnable(runId)) return { task, result: 'Task cancelled before start.', cancelled: true }
     const role = roleOrDefault(planTask.role)
 
     store.updateTask(task.id, { status: 'running' })
     store.appendEvent({ runId, type: 'task.started', agentId: task.agentId, payload: { taskId: task.id, title: task.title, role: planTask.role, planTaskId: planTask.id } })
 
-    const dependencyHandoff = planTask.dependsOn
-      .map((index) => resultsByPlanTask.get(index))
-      .filter(Boolean)
-      .join('\n\n')
-    const combinedHandoff = [dependencyHandoff, handoff].filter(Boolean).join('\n\n')
-
-    // Without a provider key the loop cannot run, so the task reports plainly
-    // that it is a demo rather than inventing a result.
-    const provider = resolveRoute(runId, route, role.agentId)
-    let outcome
-    if (!providerRegistry.secret(provider)) {
-      outcome = { text: '', demo: true, steps: 0, usedTools: [] }
-    } else {
-      outcome = await runAgentTask({ runId, task, role, roleInstructions: role.instructions, goal, route, handoff: combinedHandoff, acceptanceCheck: planTask.acceptanceCheck })
-    }
-
-    if (outcome.cancelled) {
-      store.updateTask(task.id, { status: 'cancelled', result: 'Task cancelled by user.', stepCount: outcome.steps })
-      store.appendEvent({ runId, type: 'task.cancelled', agentId: task.agentId, payload: { taskId: task.id, title: task.title } })
-      return { task, result: 'Task cancelled by user.', cancelled: true }
-    }
-
-    const cleanResult = typeof outcome.text === 'string' && outcome.text.trim()
-      ? outcome.text.trim()
-      : outcome.demo
-        ? `Demo mode: no provider key is configured, so ${role.name} could not run. Add a key to .env.local to let this task investigate the workspace and report findings.`
-        : 'Worker returned no summary.'
-
-    store.updateTask(task.id, { status: 'completed', result: cleanResult, stepCount: outcome.steps })
-    store.appendEvent({
+    const span = store.startSpan({
       runId,
-      type: 'task.completed',
-      agentId: task.agentId,
-      payload: {
-        taskId: task.id,
-        title: task.title,
-        summary: cleanResult,
-        demo: Boolean(outcome.demo),
-        steps: outcome.steps,
-        tools: outcome.usedTools,
-        provider: outcome.provider ?? provider.id,
-        model: outcome.model ?? providerRegistry.model(provider, route),
-        budgetExhausted: Boolean(outcome.budgetExhausted),
-      },
+      parentSpanId,
+      kind: 'task',
+      name: `invoke_agent ${role.agentId}`,
+      attributes: { 'gen_ai.operation.name': 'invoke_agent', 'gen_ai.agent.id': role.agentId, 'gen_ai.agent.name': role.name, 'fulkrum.plan_task': planTask.title, 'fulkrum.read_only': role.readOnly },
     })
 
-    return { task, result: cleanResult, demo: Boolean(outcome.demo), handoff: cleanResult }
+    try {
+      // Without a provider key the loop cannot run, so the task reports plainly
+      // that it is a demo rather than inventing a result.
+      const provider = resolveRoute(runId, route, role.agentId)
+      let outcome
+      if (!providerRegistry.secret(provider)) {
+        outcome = { text: '', demo: true, steps: 0, usedTools: [] }
+      } else {
+        outcome = await runAgentTask({ runId, task, role, roleInstructions: role.instructions, goal, route, handoff, acceptanceCheck: planTask.acceptanceCheck, parentSpanId: span.id })
+      }
+
+      if (outcome.cancelled) {
+        store.updateTask(task.id, { status: 'cancelled', result: 'Task cancelled by user.', stepCount: outcome.steps })
+        store.appendEvent({ runId, type: 'task.cancelled', agentId: task.agentId, payload: { taskId: task.id, title: task.title } })
+        store.endSpan(span.id, { status: 'cancelled' })
+        return { task, result: 'Task cancelled by user.', cancelled: true }
+      }
+
+      const cleanResult = typeof outcome.text === 'string' && outcome.text.trim()
+        ? outcome.text.trim()
+        : outcome.demo
+          ? `Demo mode: no provider key is configured, so ${role.name} could not run. Add a key to .env.local to let this task investigate the workspace and report findings.`
+          : 'Worker returned no summary.'
+
+      store.updateTask(task.id, { status: 'completed', result: cleanResult, stepCount: outcome.steps })
+      store.appendEvent({
+        runId,
+        type: 'task.completed',
+        agentId: task.agentId,
+        payload: {
+          taskId: task.id,
+          title: task.title,
+          summary: cleanResult,
+          demo: Boolean(outcome.demo),
+          steps: outcome.steps,
+          tools: outcome.usedTools,
+          provider: outcome.provider ?? provider.id,
+          model: outcome.model ?? providerRegistry.model(provider, route),
+          budgetExhausted: Boolean(outcome.budgetExhausted),
+        },
+      })
+      store.endSpan(span.id, { status: 'ok', attributes: { 'fulkrum.steps': outcome.steps, 'fulkrum.tools': (outcome.usedTools ?? []).join(',') } })
+
+      return { task, result: cleanResult, demo: Boolean(outcome.demo), handoff: cleanResult }
+    } catch (error) {
+      // A budget stop is a policy outcome, not a crash: record it as blocked so
+      // the run can be resumed after the ceiling is raised.
+      const blocked = error instanceof BudgetExceededError
+      store.updateTask(task.id, { status: blocked ? 'blocked' : 'failed', result: error instanceof Error ? error.message : 'Task failed.' })
+      store.endSpan(span.id, { status: blocked ? 'blocked' : 'error' })
+      throw error
+    }
   }
 
   /**
@@ -279,6 +384,13 @@ Rules:
         clearInterval(heartbeat)
       }
     }, Math.max(Math.floor(leaseMs / 3), 1_000))
+
+    const runSpan = store.startSpan({
+      runId,
+      kind: 'run',
+      name: 'invoke_workflow fulkrum_run',
+      attributes: { 'gen_ai.operation.name': 'invoke_workflow', 'gen_ai.workflow.name': 'fulkrum.run', 'gen_ai.conversation.id': runId, 'fulkrum.owner': ownerId },
+    })
 
     try {
       const plan = ensurePlan(runId, run)
@@ -324,7 +436,13 @@ Rules:
             return { task, result: task.result, skipped: true }
           }
 
-          const result = await executeTask({ runId, task, planTask, goal, route, resultsByPlanTask })
+          // What this task depends on becomes its handoff context.
+          const handoff = planTask.dependsOn
+            .map((index) => resultsByPlanTask.get(index))
+            .filter(Boolean)
+            .join('\n\n')
+
+          const result = await executeTask({ runId, task, planTask, goal, route, handoff, parentSpanId: runSpan.id })
           if (result?.result) {
             resultsByPlanTask.set(planTask.orderIndex, result.result)
             resultsByTaskId.set(task.id, result.result)
@@ -384,6 +502,12 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
     } finally {
       clearInterval(heartbeat)
       try {
+        const finalStatus = store.getRun(runId)?.status
+        store.endSpan(runSpan.id, { status: finalStatus === 'review' ? 'ok' : finalStatus ?? 'unknown', attributes: { 'fulkrum.final_status': finalStatus ?? 'unknown' } })
+      } catch {
+        // The store was closed underneath us, which happens during shutdown.
+      }
+      try {
         store.releaseRunLease(runId, ownerId)
       } catch {
         // The store was closed underneath us, which happens during shutdown.
@@ -397,6 +521,11 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
       .catch((error) => {
         const message = error instanceof Error ? error.message : 'Worker run failed.'
         try {
+          if (error instanceof BudgetExceededError) {
+            store.updateRun(runId, { status: 'budget_exceeded', budgetExceededAt: Date.now() })
+            store.appendEvent({ runId, type: 'run.budget.exceeded', agentId: 'head', payload: { scope: error.scope, error: message, spend: store.spendForRun(runId) } })
+            return
+          }
           store.updateRun(runId, { status: 'failed' })
           store.appendEvent({ runId, type: 'run.failed', agentId: 'head', payload: { error: message } })
         } catch {

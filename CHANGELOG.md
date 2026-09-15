@@ -6,6 +6,19 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **Cost accounting.** Every model call (chat, planning, and each worker step) is
+  recorded with input, output, cache-read, cache-write, and reasoning tokens,
+  latency, and computed cost, priced from a versioned table. `GET
+  /api/runs/:id/trace` returns the ledger plus the trace.
+- **Budgets that stop work.** Per-run (`FULKRUM_RUN_BUDGET_USD`), per-day
+  (`FULKRUM_DAILY_BUDGET_USD`), or per-run overrides. Reaching a ceiling ends the
+  run in a `budget_exceeded` state with the refused task marked `blocked`; the UI
+  offers to raise the ceiling and resume, keeping completed work.
+- **An unknown model is priced as unknown, not free.** Unpriced calls are counted
+  separately, marked in the UI, and announce that spend is a lower bound, so a
+  budget cannot silently do nothing.
+- **Span traces** for runs, tasks, model calls, and tool calls, using the
+  OpenTelemetry GenAI attribute names. Prompt and completion content is not stored.
 - **Plans are stored artifacts.** The Head AI drafts a plan (objective, tasks with
   roles, acceptance checks, and dependencies); it is persisted with a content
   hash, and `Approve & start run` approves that exact content. A plan that changed
@@ -17,8 +30,6 @@ All notable changes to Fulkrum are documented here. This project follows
 - **Dependency-aware scheduling.** Tasks run in layers: read-only research may
   overlap, writers are serialized, and each task receives the results of the tasks
   it depends on.
-- Token usage is captured per model call (input, output, cache read/write,
-  reasoning) as the basis for cost accounting.
 - Crash recovery: runs hold a lease and heartbeat, and a startup reconciler marks
   in-flight runs as interrupted instead of leaving them stranded forever.
 - Approval integrity: every tool call carries a fingerprint over its normalized,
@@ -45,6 +56,9 @@ All notable changes to Fulkrum are documented here. This project follows
   tool calls, tool results, and usage are handled the same way everywhere.
 - The run overview in the UI shows the stored plan, its source, and per-task
   status instead of hardcoded copy.
+- The event stream resumes from the last event the UI saw. It previously reset its
+  cursor on every reconnect and replayed the whole run, and the feed de-duplicated
+  by title, which could drop genuinely distinct events.
 
 ### Fixed
 - A malformed JSON body to `/api/runs/:id/control`, `/api/runs/:id/tools`, or the

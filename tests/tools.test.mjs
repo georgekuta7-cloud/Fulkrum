@@ -117,7 +117,7 @@ test('responses are normalized into text, tool calls, and usage', () => {
   })
   assert.equal(openai.text, 'thinking')
   assert.deepEqual(openai.toolCalls, [{ id: 'x1', name: 'workspace.read', arguments: { path: 'a.txt' }, invalidJson: false }])
-  assert.deepEqual(openai.usage, { inputTokens: 10, outputTokens: 5, cacheReadTokens: 4, cacheWriteTokens: 0, reasoningTokens: 2 })
+  assert.deepEqual(openai.usage, { inputTokens: 10, billableInputTokens: 6, outputTokens: 5, cacheReadTokens: 4, cacheWriteTokens: 0, reasoningTokens: 2 })
 
   const brokenJson = parseResponse('openai-compatible', { choices: [{ message: { tool_calls: [{ id: 'x2', function: { name: 'workspace.read', arguments: 'not json' } }] } }] })
   assert.equal(brokenJson.toolCalls[0].invalidJson, true)

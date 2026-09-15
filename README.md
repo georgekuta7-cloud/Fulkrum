@@ -91,6 +91,37 @@ bridge is killed mid-run, the next start marks the run `interrupted` instead of
 leaving it looking alive forever, and the control room offers **Resume** (which
 continues from the last completed step) or **Abandon**.
 
+## Cost, budgets, and traces
+
+Every model call — chat, planning, and each worker step — is written to a ledger
+with its token counts, latency, and computed cost. The run header shows the
+running total, and `GET /api/runs/:id/trace` returns the full trace.
+
+Two things are deliberate:
+
+- **An unknown model is "unpriced", not free.** If a model has no known price the
+  call is recorded with `priced: false` and `costUsd: null`, the run header says
+  *some unpriced*, and a run with a budget emits `run.budget.unmeasurable` to say
+  its spend is only a lower bound. Silent zeros would let a budget quietly do
+  nothing, which is worse than having no budget.
+- **Prices are approximate.** The built-in table (`server/pricing.mjs`) holds
+  published list prices, not a live feed, and providers change them. Override any
+  entry with `FULKRUM_PRICE_FILE`, a JSON map of model → `{input, output,
+  cacheRead, cacheWrite}` in USD per million tokens. Costs also do not include
+  cache-write pricing subtleties beyond the factors in that table.
+
+Set a ceiling with `FULKRUM_RUN_BUDGET_USD` (per run), `FULKRUM_DAILY_BUDGET_USD`
+(across all runs today), or `set-budget` on a single run. When a ceiling is
+reached the run stops in a `budget_exceeded` state, tasks it already finished are
+kept, the refused task is marked `blocked`, and the control room offers **Raise &
+resume** or **Stop**. Because cost is only known after a call, a run can overshoot
+a ceiling by at most one call.
+
+Traces are spans using the OpenTelemetry GenAI attribute names
+(`gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.usage.*`,
+`gen_ai.tool.name`), so a local trace can be exported later without rewriting what
+was recorded. Prompt and completion content is **not** stored.
+
 ## Data and the audit log
 
 Runs, messages, provider definitions, tool calls, and audit events are stored in

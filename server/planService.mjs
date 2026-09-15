@@ -8,7 +8,7 @@ import { demoPlan, extractPlanJson, planContentHash, planPrompt, validatePlan } 
  * says so in the audit log rather than leaving the run stuck or inventing tasks
  * the model never proposed.
  */
-export function createPlanService({ store, providerRegistry, callModel }) {
+export function createPlanService({ store, providerRegistry, callModel, pricing }) {
   const directionFor = (runId) => store.listMessages(runId).filter((message) => message.role === 'user').at(-1)?.content ?? ''
 
   const persist = ({ run, built, source }) => {
@@ -36,7 +36,12 @@ export function createPlanService({ store, providerRegistry, callModel }) {
     const messages = [{ role: 'user', content: planPrompt({ direction, workspaceRoot: 'the workspace root', maxTasks: 8 }) }]
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      const startedAt = Date.now()
       const response = await callModel(provider, model, messages, { tools: [], instructions })
+      // Planning costs money too, so it lands in the same ledger as worker calls.
+      const cost = pricing ? pricing.costOf({ model, usage: response.usage }) : { costUsd: null, priced: false, version: null }
+      store.recordModelCall({ runId: run.id, role: 'head', provider: provider.id, model, usage: response.usage, cost, latencyMs: Date.now() - startedAt })
+
       const candidate = extractPlanJson(response.text)
       const validation = validatePlan(candidate)
       if (validation.ok) return { built: validation.plan, problems: [] }

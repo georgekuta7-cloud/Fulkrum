@@ -6,6 +6,7 @@ import { createRunOrchestrator } from './orchestrator.mjs'
 import { FulkrumToolBroker } from './toolBroker.mjs'
 import { createModelCaller } from './modelCall.mjs'
 import { createPlanService } from './planService.mjs'
+import { createPricing } from './pricing.mjs'
 import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
 import { reconcileInterruptedRuns } from './recovery.mjs'
 
@@ -18,14 +19,16 @@ const systemPrompt = `You are Fulkrum's Head AI. You are the supervisor of a sma
 const store = new FulkrumStore()
 const providerRegistry = createProviderRegistry(store)
 const toolBroker = new FulkrumToolBroker()
+const pricing = createPricing()
 const modelCaller = createModelCaller({ providerRegistry, allowPrivate: privateProviderUrlsAllowed() })
 
 // Chat has no tools: the Head plans and answers. Workers get tools through the
-// orchestrator, restricted to their own role's allowlist.
-const callProvider = (provider, model, messages, instructions) => modelCaller.callText(provider, model, messages, instructions ?? systemPrompt)
+// orchestrator, restricted to their own role's allowlist. Both return usage so
+// every call can be priced.
+const callProvider = (provider, model, messages, instructions) => modelCaller.callModel(provider, model, messages, { tools: [], instructions: instructions ?? systemPrompt })
 const callModel = (provider, model, messages, options = {}) => modelCaller.callModel(provider, model, messages, { ...options, instructions: options.instructions ?? systemPrompt })
 
-const planService = createPlanService({ store, providerRegistry, callModel: (provider, model, messages, options) => modelCaller.callModel(provider, model, messages, options) })
+const planService = createPlanService({ store, providerRegistry, pricing, callModel: (provider, model, messages, options) => modelCaller.callModel(provider, model, messages, options) })
 
 const orchestrator = createRunOrchestrator({
   store,
@@ -33,9 +36,10 @@ const orchestrator = createRunOrchestrator({
   toolBroker,
   ownerId,
   callModel,
+  pricing,
 })
 
-const app = createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, planService, allowedOrigins, ownerId })
+const app = createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, planService, pricing, allowedOrigins, ownerId })
 
 const interrupted = reconcileInterruptedRuns({ store, log: (message) => console.log(`[fulkrum] ${message}`) })
 if (interrupted.interrupted.length) {
@@ -47,7 +51,10 @@ if (pruned > 0) console.log(`[fulkrum] pruned ${pruned} stored tool output(s) pa
 
 app.server.listen(port, '127.0.0.1', () => {
   console.log(`Fulkrum API bridge listening on http://127.0.0.1:${port}`)
-  console.log(`[fulkrum] schema version ${store.stats().schemaVersion}, owner ${ownerId}`)
+  console.log(`[fulkrum] schema version ${store.stats().schemaVersion}, owner ${ownerId}, prices ${pricing.version} (${pricing.known} models)`)
+  const runBudget = Number(process.env.FULKRUM_RUN_BUDGET_USD ?? 0)
+  const dayBudget = Number(process.env.FULKRUM_DAILY_BUDGET_USD ?? 0)
+  if (runBudget || dayBudget) console.log(`[fulkrum] budgets: per run $${runBudget || 'unset'}, per day $${dayBudget || 'unset'}`)
 })
 
 let shuttingDown = false

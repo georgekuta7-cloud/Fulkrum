@@ -139,6 +139,18 @@ type WorkspaceTask = {
   stepCount?: number
 }
 
+type WorkspaceSpend = {
+  costUsd: number
+  calls: number
+  unpricedCalls: number
+}
+
+type WorkspaceBudget = {
+  runUsd: number | null
+  defaultRunUsd: number | null
+  dailyUsd: number | null
+}
+
 type WorkspaceEvent = {
   eventId: string
   runId: string
@@ -395,15 +407,22 @@ function App() {
   const [tasks, setTasks] = useState<WorkspaceTask[]>([])
   const [isDraftingPlan, setIsDraftingPlan] = useState(false)
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null)
+  const [spend, setSpend] = useState<WorkspaceSpend | null>(null)
+  const [budget, setBudget] = useState<WorkspaceBudget | null>(null)
+  const [isBudgetExceeded, setIsBudgetExceeded] = useState(false)
   const eventCursor = useRef(0)
 
   const selected = agents.find((agent) => agent.id === selectedAgent) ?? agents[0]
-  const runLabel = isInterrupted ? 'Interrupted' : isPaused ? 'Paused' : mode === 'review' ? 'Review ready' : approved ? 'Live run' : 'Awaiting approval'
+  const runLabel = isInterrupted ? 'Interrupted' : isBudgetExceeded ? 'Budget reached' : isPaused ? 'Paused' : mode === 'review' ? 'Review ready' : approved ? 'Live run' : 'Awaiting approval'
   const headProviderLabel = routing.head.split(' · ')[0]
   const headProviderReady = providerStatus.some((provider) => provider.label === headProviderLabel && provider.configured)
   const runStartedLabel = runStartedAt ? new Date(runStartedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'not started'
   const planApproved = plan?.plan.status === 'approved'
   const planSourceLabel = plan ? describePlanSource(plan.plan.source) : ''
+  // An unpriced call means the total is a lower bound, so say that rather than
+  // showing a number that looks complete.
+  const spendLabel = spend && spend.calls > 0 ? (spend.unpricedCalls > 0 ? `$${spend.costUsd.toFixed(4)}+ · ${spend.calls} calls · some unpriced` : `$${spend.costUsd.toFixed(4)} · ${spend.calls} calls`) : ''
+  const effectiveRunBudget = budget?.runUsd ?? budget?.defaultRunUsd ?? null
 
   const routeOptions = (agentId: AgentId) => {
     const configuredOptions = providerStatus.map((provider) => `${provider.label} · ${provider.model}`)
@@ -471,11 +490,14 @@ function App() {
       setIsPaused(activeRun.status === 'paused')
       setIsInterrupted(activeRun.status === 'interrupted')
       setInterruptionReason(typeof activeRun.interruptionReason === 'string' ? activeRun.interruptionReason : '')
+      setIsBudgetExceeded(activeRun.status === 'budget_exceeded')
       setMode(activeRun.status === 'review' ? 'review' : runIsApproved ? 'execute' : activeRun.mode)
       const snapshotResponse = await fetch(`/api/runs/${encodeURIComponent(activeRun.id)}`)
       if (!snapshotResponse.ok || cancelled) return
-      const snapshot = await snapshotResponse.json() as { messages?: Array<{ role: string; content: string; createdAt: number }>; events?: WorkspaceEvent[]; tasks?: WorkspaceTask[] }
+      const snapshot = await snapshotResponse.json() as { messages?: Array<{ role: string; content: string; createdAt: number }>; events?: WorkspaceEvent[]; tasks?: WorkspaceTask[]; spend?: WorkspaceSpend; budget?: WorkspaceBudget }
       if (snapshot.tasks?.length) setTasks(snapshot.tasks)
+      if (snapshot.spend) setSpend(snapshot.spend)
+      if (snapshot.budget) setBudget(snapshot.budget)
       if (snapshot.messages?.length) {
         setMessages(snapshot.messages.filter((item) => item.role === 'user' || item.role === 'assistant').map((item) => ({
           role: item.role === 'user' ? 'you' : 'head',
@@ -490,8 +512,8 @@ function App() {
           return mapped ? [mapped] : []
         })
         setActivity((current) => {
-          const existing = new Set(current.map((item) => `${item.title}|${item.detail}|${item.tag}`))
-          return [...persistedActivity.filter((item) => !existing.has(`${item.title}|${item.detail}|${item.tag}`)), ...current]
+          const existing = new Set(current.map((item) => item.id))
+          return [...persistedActivity.filter((item) => !existing.has(item.id)), ...current]
         })
         const latestApproval = [...snapshot.events].reverse().map(pendingApprovalFromEvent).find((item): item is PendingApproval => item !== null)
         if (latestApproval) setPendingApproval(latestApproval)
@@ -518,29 +540,33 @@ function App() {
 
   useEffect(() => {
     if (!runId) return
-    eventCursor.current = 0
+    // The cursor is deliberately not reset here: a reconnect must resume from the
+    // last event the UI saw, not replay the whole run.
 
-    const refreshTasks = async () => {
+    const refreshRunState = async () => {
       const response = await fetch(`/api/runs/${encodeURIComponent(runId)}`).catch(() => null)
       if (!response?.ok) return
-      const snapshot = (await response.json().catch(() => null)) as { tasks?: WorkspaceTask[]; run?: WorkspaceRun } | null
-      if (snapshot?.tasks) setTasks(snapshot.tasks)
+      const snapshot = (await response.json().catch(() => null)) as { tasks?: WorkspaceTask[]; run?: WorkspaceRun; spend?: WorkspaceSpend; budget?: WorkspaceBudget } | null
+      if (!snapshot) return
+      if (snapshot.tasks) setTasks(snapshot.tasks)
+      if (snapshot.spend) setSpend(snapshot.spend)
+      if (snapshot.budget) setBudget(snapshot.budget)
+      if (snapshot.run) setIsBudgetExceeded(snapshot.run.status === 'budget_exceeded')
     }
 
     const ingestEvent = (event: WorkspaceEvent) => {
       eventCursor.current = Math.max(eventCursor.current, event.sequence)
       if (event.type === 'run.review.ready') setMode('review')
+      if (event.type === 'run.budget.exceeded') setIsBudgetExceeded(true)
+      if (event.type === 'run.budget.changed') setIsBudgetExceeded(false)
       const approval = pendingApprovalFromEvent(event)
       if (approval) setPendingApproval(approval)
       if (['tool.completed', 'tool.failed', 'tool.denied'].includes(event.type) && event.payload.toolCallId === pendingApproval?.toolCallId) setPendingApproval(null)
-      if (event.type.startsWith('task.') || event.type === 'run.plan.loaded') void refreshTasks()
+      if (event.type.startsWith('task.') || event.type.startsWith('run.budget') || event.type === 'run.plan.loaded') void refreshRunState()
       const mapped = activityFromEvent(event)
       if (!mapped) return
-      setActivity((current) => {
-        const existing = new Set(current.map((item) => `${item.title}|${item.detail}|${item.tag}`))
-        const key = `${mapped.title}|${mapped.detail}|${mapped.tag}`
-        return existing.has(key) ? current : [mapped, ...current]
-      })
+      // Key on the event id: two genuinely different events can share a title.
+      setActivity((current) => (current.some((item) => item.id === mapped.id) ? current : [mapped, ...current]))
     }
 
     const eventSource = new EventSource(`/api/runs/${encodeURIComponent(runId)}/stream?after=${eventCursor.current}`)
@@ -651,7 +677,7 @@ function App() {
     }
   }, [runId, approved, isInterrupted])
 
-  const controlRun = async (action: 'approve-plan' | 'pause' | 'resume' | 'cancel' | 'set-permission', details: Record<string, unknown> = {}) => {
+  const controlRun = async (action: 'approve-plan' | 'pause' | 'resume' | 'cancel' | 'set-permission' | 'set-budget', details: Record<string, unknown> = {}) => {
     if (!runId) return
     const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/control`, {
       method: 'POST',
@@ -874,6 +900,25 @@ function App() {
     }
   }
 
+  /**
+   * A budget stop is a policy outcome, not a failure: raise the ceiling and carry
+   * on from the last completed step.
+   */
+  const raiseBudgetAndResume = async () => {
+    if (!runId) return
+    const current = effectiveRunBudget ?? 0
+    const next = Number((Math.max(current * 2, (spend?.costUsd ?? 0) + 0.5)).toFixed(2))
+    try {
+      await controlRun('set-budget', { budgetUsd: next })
+    } catch (error) {
+      addActivity({ kind: 'system', title: 'Could not raise the budget', detail: error instanceof Error ? error.message : 'Run control request failed.', tag: 'API ERROR' })
+      return
+    }
+    setIsBudgetExceeded(false)
+    addActivity({ kind: 'system', title: `Budget raised to $${next.toFixed(2)}`, detail: 'The run continues from the last completed step.', tag: 'POLICY' })
+    await resumeRun()
+  }
+
   const changeMode = (nextMode: Mode) => {
     if (nextMode === 'execute' && !approved) {
       return
@@ -899,7 +944,7 @@ function App() {
 
           <div className="mode-row"><div className="mode-switch" role="tablist" aria-label="Run mode">{modes.map((item) => <button key={item.id} className={`mode-tab ${mode === item.id ? 'selected' : ''} ${item.id === 'execute' && !approved ? 'locked' : ''}`} type="button" role="tab" aria-selected={mode === item.id} onClick={() => changeMode(item.id)}><span className="mode-number">{item.number}</span><span>{item.label}</span>{item.id === 'execute' && !approved ? <ShieldCheck size={14} /> : null}</button>)}</div><div className="run-controls"><span className="run-id"><GitBranch size={14} /> {runId ? runId.slice(0, 14) : 'no run yet'}</span>{approved ? <button className="control-button" type="button" onClick={togglePause}>{isPaused ? <Play size={15} /> : <Pause size={15} />}{isPaused ? 'Resume' : 'Pause'}</button> : null}<button className="control-button stop" type="button" onClick={stopRun}><Square size={13} fill="currentColor" /> Stop</button></div></div>
 
-          <section className={`run-overview ${mode}`}><div className="run-copy"><div className="run-meta"><span className="run-kicker"><Zap size={13} fill="currentColor" /> {mode === 'plan' ? 'PLAN IN REVIEW' : mode === 'execute' ? 'EXECUTION ACTIVE' : 'REVIEW CHECKPOINT'}</span><span className="run-time"><Clock3 size={13} /> started {runStartedLabel}</span></div><h2>{plan ? plan.plan.objective : 'No plan drafted yet'}</h2><p>{plan ? `Plan v${plan.plan.version} · ${planSourceLabel} · ${plan.tasks.length} task(s) · approved content ${plan.plan.contentHash.slice(0, 10)}` : 'Ask the Head AI for a direction, then draft a plan to see exactly what the workers will do before you approve it.'}</p></div><div className="run-action"><span className="approval-label"><span className={`approval-dot ${approved ? 'approved' : ''}`}></span>{approved ? 'Plan approved' : 'Waiting for your approval'}</span>{!approved && runId ? <button className="secondary-button" type="button" disabled={isDraftingPlan} onClick={() => void redraftPlan()}>{isDraftingPlan ? 'Drafting...' : 'Redraft plan'}</button> : null}{!approved ? <button className="primary-button" type="button" onClick={approvePlan} disabled={isDraftingPlan}><CheckCircle2 size={17} />Approve &amp; start run</button> : <button className="secondary-button" type="button" onClick={() => setMode('review')}><Eye size={16} />Open review</button>}</div><div className="plan-tasks">{plan ? plan.tasks.map((planTask) => { const runTask = tasks.find((task) => task.title === planTask.title && task.agentId === planTask.role); const status = runTask?.status ?? (planApproved ? 'queued' : 'planned'); return <div className={`plan-task ${status}`} key={planTask.id}><span className="plan-task-role">{planTask.role === 'research' ? 'Scout' : 'Forge'}</span><span className="plan-task-title">{planTask.title}</span>{runTask?.stepCount ? <span className="plan-task-steps">{runTask.stepCount} steps</span> : null}<span className="plan-task-status">{status}</span></div> }) : <div className="plan-task planned"><span className="plan-task-title">No plan drafted yet</span></div>}</div></section>
+          <section className={`run-overview ${mode}`}><div className="run-copy"><div className="run-meta"><span className="run-kicker"><Zap size={13} fill="currentColor" /> {mode === 'plan' ? 'PLAN IN REVIEW' : mode === 'execute' ? 'EXECUTION ACTIVE' : 'REVIEW CHECKPOINT'}</span><span className="run-time"><Clock3 size={13} /> started {runStartedLabel}</span>{spendLabel ? <span className="run-spend">{spendLabel}</span> : null}</div><h2>{plan ? plan.plan.objective : 'No plan drafted yet'}</h2><p>{plan ? `Plan v${plan.plan.version} · ${planSourceLabel} · ${plan.tasks.length} task(s) · approved content ${plan.plan.contentHash.slice(0, 10)}` : 'Ask the Head AI for a direction, then draft a plan to see exactly what the workers will do before you approve it.'}</p></div><div className="run-action"><span className="approval-label"><span className={`approval-dot ${approved ? 'approved' : ''}`}></span>{approved ? 'Plan approved' : 'Waiting for your approval'}</span>{!approved && runId ? <button className="secondary-button" type="button" disabled={isDraftingPlan} onClick={() => void redraftPlan()}>{isDraftingPlan ? 'Drafting...' : 'Redraft plan'}</button> : null}{!approved ? <button className="primary-button" type="button" onClick={approvePlan} disabled={isDraftingPlan}><CheckCircle2 size={17} />Approve &amp; start run</button> : <button className="secondary-button" type="button" onClick={() => setMode('review')}><Eye size={16} />Open review</button>}</div><div className="plan-tasks">{plan ? plan.tasks.map((planTask) => { const runTask = tasks.find((task) => task.title === planTask.title && task.agentId === planTask.role); const status = runTask?.status ?? (planApproved ? 'queued' : 'planned'); return <div className={`plan-task ${status}`} key={planTask.id}><span className="plan-task-role">{planTask.role === 'research' ? 'Scout' : 'Forge'}</span><span className="plan-task-title">{planTask.title}</span>{runTask?.stepCount ? <span className="plan-task-steps">{runTask.stepCount} steps</span> : null}<span className="plan-task-status">{status}</span></div> }) : <div className="plan-task planned"><span className="plan-task-title">No plan drafted yet</span></div>}</div></section>
 
           <section className="agents-section"><div className="section-heading"><div><p className="eyebrow">Active crew</p><h2>Three minds, one outcome</h2></div><button className="text-action" type="button" onClick={() => setSettingsOpen(true)}><Settings2 size={16} /> Edit routing</button></div><div className="agents-grid">{agents.map((agent) => { const isSelected = selectedAgent === agent.id; const status = isPaused ? 'Paused' : approved ? (agent.id === 'head' ? 'Overseeing' : 'Working') : agent.status; return <button key={agent.id} className={`agent-card ${agent.tone} ${isSelected ? 'selected' : ''}`} type="button" onClick={() => setSelectedAgent(agent.id)}><div className="agent-card-top"><span className="agent-avatar">{agent.avatar}</span><span className={`agent-status ${status === 'Ready' ? 'ready' : status === 'Paused' ? 'paused' : ''}`}><span></span>{status}</span><MoreHorizontal size={16} /></div><div className="agent-card-body"><strong>{agent.name}</strong><span>{agent.role}</span><p>{agent.description}</p></div><div className="agent-card-footer"><span className="model-label"><Bot size={14} />{routing[agent.id]}</span><ArrowUpRight size={15} /></div></button> })}</div></section>
 
@@ -920,6 +965,7 @@ function App() {
       {routingOpen ? <div className="routing-layer"><button className="drawer-backdrop" type="button" aria-label="Close routing panel" onClick={() => setRoutingOpen(false)}></button><aside className="routing-drawer"><header className="drawer-header"><div><p className="eyebrow">Model routing</p><h2>Choose the brains</h2></div><button className="icon-button" type="button" title="Close routing" onClick={() => setRoutingOpen(false)}><X size={18} /></button></header><p className="drawer-copy">Choose a model for each role. Add the matching key to <code>.env.local</code>; the browser only sees connection status.</p><div className="provider-connections"><p className="drawer-section-label">Provider connections</p>{providerStatus.map((provider) => <div className="provider-row" key={provider.id}><span><strong>{provider.label}</strong><small>{provider.envKey}</small></span><span className={`provider-state ${provider.configured ? 'connected' : ''}`}><span></span>{provider.configured ? 'Connected' : 'Add key'}</span></div>)}</div><div className="route-fields"><p className="drawer-section-label">Role routing</p>{agents.map((agent) => <label className="route-field" key={agent.id}><span className={`route-avatar ${agent.tone}`}>{agent.avatar}</span><span className="route-label"><strong>{agent.name}</strong><small>{agent.role}</small></span><select value={routing[agent.id]} onChange={(event) => setRouting((current) => ({ ...current, [agent.id]: event.target.value }))}>{modelOptions[agent.id].map((option) => <option key={option}>{option}</option>)}</select></label>)}</div><div className="drawer-callout"><ShieldCheck size={17} /><span><strong>API keys are not stored in the browser.</strong><small>Fulkrum sends chat requests through the local server adapter.</small></span></div><footer className="drawer-footer"><button className="secondary-button" type="button" onClick={() => setRoutingOpen(false)}>Cancel</button><button className="primary-button" type="button" onClick={() => setRoutingOpen(false)}><Check size={16} />Save routing</button></footer></aside></div> : null}
       {pendingApproval ? <div className="tool-approval-banner"><ShieldCheck size={17} /><span><strong>Approval needed for {pendingApproval.name}</strong><small>{pendingApproval.reason}{pendingApproval.summary ? ` · ${pendingApproval.summary}` : ''}</small></span><button className="primary-button" type="button" onClick={() => void approveToolCall()}><Check size={15} />Approve once</button></div> : null}
       {isInterrupted ? <div className="tool-approval-banner"><ShieldCheck size={17} /><span><strong>This run was interrupted</strong><small>{interruptionReason || 'The API bridge stopped while this run was in flight.'} Completed steps are kept; the interrupted step runs again.</small></span><button className="primary-button" type="button" onClick={() => void resumeRun()}><Play size={15} />Resume</button><button className="secondary-button" type="button" onClick={() => void stopRun()}>Abandon</button></div> : null}
+      {isBudgetExceeded ? <div className="tool-approval-banner"><ShieldCheck size={17} /><span><strong>This run reached its budget</strong><small>{spendLabel || 'Spend recorded'} against {effectiveRunBudget ? `$${effectiveRunBudget.toFixed(2)}` : 'a configured ceiling'}. Work already done is kept, and the step that was refused runs again once the ceiling is raised.</small></span><button className="primary-button" type="button" onClick={() => void raiseBudgetAndResume()}><Play size={15} />Raise &amp; resume</button><button className="secondary-button" type="button" onClick={() => void stopRun()}>Stop</button></div> : null}
     </div>
   )
 }

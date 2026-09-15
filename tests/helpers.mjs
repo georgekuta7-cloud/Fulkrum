@@ -5,6 +5,7 @@ import { createApp } from '../server/app.mjs'
 import { createProviderRegistry } from '../server/providerRegistry.mjs'
 import { createRunOrchestrator } from '../server/orchestrator.mjs'
 import { createPlanService } from '../server/planService.mjs'
+import { createPricing } from '../server/pricing.mjs'
 import { FulkrumStore } from '../server/store.mjs'
 import { FulkrumToolBroker } from '../server/toolBroker.mjs'
 
@@ -47,22 +48,25 @@ export async function withStore(callback) {
  * `model` scripts the model's replies, which is how the tool-calling loop is
  * tested without a network call.
  */
-export async function withServer(callback, { workspaceRoot, callProvider, model } = {}) {
+export async function withServer(callback, { workspaceRoot, callProvider, model, pricing } = {}) {
   const directory = workspaceRoot ?? (await mkdtemp(path.join(tmpdir(), 'fulkrum-api-')))
   const store = new FulkrumStore(path.join(directory, 'fulkrum.sqlite'))
   const toolBroker = new FulkrumToolBroker({ workspaceRoot: directory, httpAllowlist: [] })
   const providerRegistry = createProviderRegistry(store)
   const modelCall = model ?? (async () => ({ text: 'stub model output', toolCalls: [], usage: null }))
+  const activePricing = pricing ?? createPricing()
   const orchestrator = createRunOrchestrator({
     store,
     providerRegistry,
     toolBroker,
     ownerId: 'test-owner',
+    pricing: activePricing,
     callModel: (provider, modelName, messages, options) => modelCall({ provider, model: modelName, messages, options }),
   })
   const planService = createPlanService({
     store,
     providerRegistry,
+    pricing: activePricing,
     callModel: (provider, modelName, messages, options) => modelCall({ provider, model: modelName, messages, options }),
   })
   const app = createApp({
@@ -71,8 +75,9 @@ export async function withServer(callback, { workspaceRoot, callProvider, model 
     providerRegistry,
     orchestrator,
     planService,
+    pricing: activePricing,
     allowedOrigins: new Set(['http://127.0.0.1:5173']),
-    callProvider: callProvider ?? (async () => 'stub reply'),
+    callProvider: callProvider ?? (async () => ({ text: 'stub reply', usage: null })),
   })
 
   await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve))

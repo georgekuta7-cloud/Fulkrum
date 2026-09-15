@@ -159,32 +159,49 @@ export function parseResponse(protocol, payload) {
   return { text: typeof message.content === 'string' ? message.content.trim() : '', toolCalls, usage: normalizeUsage(protocol, payload?.usage) }
 }
 
+/**
+ * Normalize token usage across providers.
+ *
+ * `inputTokens` is what the provider reported; `billableInputTokens` excludes
+ * cached tokens, because OpenAI and Google include cached tokens in the prompt
+ * total while Anthropic reports them separately. Billing the same tokens twice
+ * would quietly inflate every cost figure.
+ */
 export function normalizeUsage(protocol, usage) {
   if (!usage) return null
+  const nonNegative = (value) => Math.max(Number(value) || 0, 0)
   if (protocol === 'anthropic') {
+    const inputTokens = nonNegative(usage.input_tokens)
     return {
-      inputTokens: usage.input_tokens ?? 0,
-      outputTokens: usage.output_tokens ?? 0,
-      cacheReadTokens: usage.cache_read_input_tokens ?? 0,
-      cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
+      inputTokens,
+      billableInputTokens: inputTokens,
+      outputTokens: nonNegative(usage.output_tokens),
+      cacheReadTokens: nonNegative(usage.cache_read_input_tokens),
+      cacheWriteTokens: nonNegative(usage.cache_creation_input_tokens),
       reasoningTokens: 0,
     }
   }
   if (protocol === 'google') {
+    const inputTokens = nonNegative(usage.promptTokenCount)
+    const cacheReadTokens = nonNegative(usage.cachedContentTokenCount)
     return {
-      inputTokens: usage.promptTokenCount ?? 0,
-      outputTokens: usage.candidatesTokenCount ?? 0,
-      cacheReadTokens: usage.cachedContentTokenCount ?? 0,
+      inputTokens,
+      billableInputTokens: Math.max(inputTokens - cacheReadTokens, 0),
+      outputTokens: nonNegative(usage.candidatesTokenCount),
+      cacheReadTokens,
       cacheWriteTokens: 0,
-      reasoningTokens: usage.thoughtsTokenCount ?? 0,
+      reasoningTokens: nonNegative(usage.thoughtsTokenCount),
     }
   }
+  const inputTokens = nonNegative(usage.prompt_tokens)
+  const cacheReadTokens = nonNegative(usage.prompt_tokens_details?.cached_tokens)
   return {
-    inputTokens: usage.prompt_tokens ?? 0,
-    outputTokens: usage.completion_tokens ?? 0,
-    cacheReadTokens: usage.prompt_tokens_details?.cached_tokens ?? 0,
+    inputTokens,
+    billableInputTokens: Math.max(inputTokens - cacheReadTokens, 0),
+    outputTokens: nonNegative(usage.completion_tokens),
+    cacheReadTokens,
     cacheWriteTokens: 0,
-    reasoningTokens: usage.completion_tokens_details?.reasoning_tokens ?? 0,
+    reasoningTokens: nonNegative(usage.completion_tokens_details?.reasoning_tokens),
   }
 }
 

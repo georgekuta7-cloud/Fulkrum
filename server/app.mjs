@@ -91,7 +91,7 @@ const controlTransitions = {
   cancel: ['cancelled', 'run.cancelled'],
 }
 
-const resumableStatuses = new Set(['paused', 'executing'])
+const resumableStatuses = new Set(['paused', 'executing', 'budget_exceeded'])
 
 /**
  * Build the API bridge.
@@ -100,7 +100,7 @@ const resumableStatuses = new Set(['paused', 'executing'])
  * instead of rejecting the server's callback promise, which Node would treat as
  * an unhandled rejection and use to terminate the process, orphaning every run.
  */
-export function createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, planService, allowedOrigins = new Set(), ownerId = 'local' }) {
+export function createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, planService, pricing, allowedOrigins = new Set(), ownerId = 'local' }) {
   const isAllowedOrigin = (origin) => !origin || allowedOrigins.has(origin)
   let draining = null
 
@@ -146,9 +146,13 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
     }
 
     try {
-      const reply = await callProvider(provider, model, history)
+      const response = await callProvider(provider, model, history)
+      const reply = response?.text
       if (typeof reply !== 'string' || !reply.trim()) throw new Error('The provider returned an empty response.')
       const cleanReply = reply.trim()
+      // Chat costs money too, so it goes in the same ledger as worker calls.
+      const cost = pricing ? pricing.costOf({ model, usage: response.usage }) : { costUsd: null, priced: false, version: null }
+      store.recordModelCall({ runId: run.id, role: 'head', provider: provider.id, model, usage: response.usage, cost, latencyMs: null })
       store.appendMessage({ projectId: project.id, runId: run.id, role: 'assistant', agentId: 'head', content: cleanReply, metadata: { demo: false, provider: provider.id, model } })
       store.appendEvent({ runId: run.id, type: 'message.assistant', agentId: 'head', payload: { content: cleanReply, demo: false, provider: provider.id, model } })
       sendJson(response, 200, { reply: cleanReply, demo: false, provider: provider.id, model, projectId: project.id, runId: run.id })
@@ -344,6 +348,17 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         return
       }
 
+      const runTraceMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/trace$/)
+      if (request.method === 'GET' && runTraceMatch) {
+        const runId = decodeURIComponent(runTraceMatch[1])
+        if (!store.getRun(runId)) {
+          sendJson(response, 404, { error: 'Run not found.' })
+          return
+        }
+        sendJson(response, 200, { ...store.getRunTrace(runId), pricingVersion: pricing?.version ?? null })
+        return
+      }
+
       const runStreamMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/stream$/)
       if (request.method === 'GET' && runStreamMatch) {
         const runId = decodeURIComponent(runStreamMatch[1])
@@ -413,6 +428,22 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           }
           const nextRun = store.updateRun(runId, { permissionMode: body.permissionMode })
           const event = store.appendEvent({ runId, type: 'run.permission.changed', payload: { permissionMode: body.permissionMode, source: 'user' } })
+          sendJson(response, 200, { run: nextRun, event })
+          return
+        }
+
+        if (body.action === 'set-budget') {
+          if (!run) {
+            sendJson(response, 404, { error: 'Run not found.' })
+            return
+          }
+          const requested = body.budgetUsd === null ? null : Number(body.budgetUsd)
+          if (requested !== null && (!Number.isFinite(requested) || requested <= 0)) {
+            sendJson(response, 400, { error: 'A budget must be a positive number, or null for the environment default.' })
+            return
+          }
+          const nextRun = store.updateRun(runId, { budgetUsd: requested })
+          const event = store.appendEvent({ runId, type: 'run.budget.changed', payload: { budgetUsd: requested, source: 'user', spend: store.spendForRun(runId) } })
           sendJson(response, 200, { run: nextRun, event })
           return
         }
@@ -577,8 +608,18 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)$/)
       if (request.method === 'GET' && runMatch) {
-        const snapshot = store.getRunSnapshot(decodeURIComponent(runMatch[1]))
-        sendJson(response, snapshot ? 200 : 404, snapshot ? { ...snapshot, audit: store.verifyEventChain(snapshot.run.id) } : { error: 'Run not found.' })
+        const runId = decodeURIComponent(runMatch[1])
+        const snapshot = store.getRunSnapshot(runId)
+        if (!snapshot) {
+          sendJson(response, 404, { error: 'Run not found.' })
+          return
+        }
+        sendJson(response, 200, {
+          ...snapshot,
+          audit: store.verifyEventChain(runId),
+          spend: store.spendForRun(runId),
+          budget: { runUsd: snapshot.run.budgetUsd, defaultRunUsd: Number(process.env.FULKRUM_RUN_BUDGET_USD ?? 0) || null, dailyUsd: Number(process.env.FULKRUM_DAILY_BUDGET_USD ?? 0) || null },
+        })
         return
       }
 

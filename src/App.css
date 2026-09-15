@@ -2309,3 +2309,14 @@ select {
   border-color: #cf8b7f;
   background: #fdf1ef;
 }
+
+.run-spend {
+  padding: 2px 8px;
+  border: 1px solid #d3d9d0;
+  border-radius: 999px;
+  background: #f8f7f2;
+  font-family: 'IBM Plex Mono', Consolas, monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: #4a7f68;
+}

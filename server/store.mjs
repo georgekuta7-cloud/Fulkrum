@@ -35,6 +35,8 @@ function runFromRow(row) {
     permissionMode: row.permission_mode,
     planVersion: Number(row.plan_version),
     planId: row.plan_id ?? null,
+    budgetUsd: row.budget_usd === null || row.budget_usd === undefined ? null : Number(row.budget_usd),
+    budgetExceededAt: row.budget_exceeded_at === null || row.budget_exceeded_at === undefined ? null : Number(row.budget_exceeded_at),
     ownerId: row.owner_id ?? null,
     heartbeatAt: row.heartbeat_at === null || row.heartbeat_at === undefined ? null : Number(row.heartbeat_at),
     leaseExpiresAt: row.lease_expires_at === null || row.lease_expires_at === undefined ? null : Number(row.lease_expires_at),
@@ -212,14 +214,16 @@ export class FulkrumStore {
       permissionMode: patch.permissionMode ?? current.permissionMode,
       planVersion: patch.planVersion ?? current.planVersion,
       planId: patch.planId === undefined ? current.planId : patch.planId,
+      budgetUsd: patch.budgetUsd === undefined ? current.budgetUsd : patch.budgetUsd,
+      budgetExceededAt: patch.budgetExceededAt === undefined ? current.budgetExceededAt : patch.budgetExceededAt,
       ownerId: patch.ownerId === undefined ? current.ownerId : patch.ownerId,
       heartbeatAt: patch.heartbeatAt === undefined ? current.heartbeatAt : patch.heartbeatAt,
       leaseExpiresAt: patch.leaseExpiresAt === undefined ? current.leaseExpiresAt : patch.leaseExpiresAt,
       interruptedAt: patch.interruptedAt === undefined ? current.interruptedAt : patch.interruptedAt,
       interruptionReason: patch.interruptionReason === undefined ? current.interruptionReason : patch.interruptionReason,
     }
-    this.database.prepare('UPDATE runs SET status = ?, mode = ?, permission_mode = ?, plan_version = ?, plan_id = ?, owner_id = ?, heartbeat_at = ?, lease_expires_at = ?, interrupted_at = ?, interruption_reason = ?, updated_at = ? WHERE id = ?')
-      .run(next.status, next.mode, next.permissionMode, next.planVersion, next.planId, next.ownerId, next.heartbeatAt, next.leaseExpiresAt, next.interruptedAt, next.interruptionReason, Date.now(), runId)
+    this.database.prepare('UPDATE runs SET status = ?, mode = ?, permission_mode = ?, plan_version = ?, plan_id = ?, budget_usd = ?, budget_exceeded_at = ?, owner_id = ?, heartbeat_at = ?, lease_expires_at = ?, interrupted_at = ?, interruption_reason = ?, updated_at = ? WHERE id = ?')
+      .run(next.status, next.mode, next.permissionMode, next.planVersion, next.planId, next.budgetUsd, next.budgetExceededAt, next.ownerId, next.heartbeatAt, next.leaseExpiresAt, next.interruptedAt, next.interruptionReason, Date.now(), runId)
     return this.getRun(runId)
   }
 
@@ -423,6 +427,107 @@ export class FulkrumStore {
     const run = this.getRun(runId)
     if (!run) return null
     return { run, messages: this.listMessages(runId), tasks: this.listTasks(runId), toolCalls: this.listToolCalls(runId), events: this.listEvents(runId) }
+  }
+
+  recordModelCall({ runId = null, taskId = null, spanId = null, role = null, provider, model, status = 'ok', usage = null, cost = null, latencyMs = null, id = `call-${randomUUID()}` }) {
+    this.database.prepare(`INSERT INTO model_calls(id, run_id, task_id, span_id, role, provider, model, status, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, billable_input_tokens, cost_usd, priced, price_version, latency_ms, created_at)
+      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      id,
+      runId,
+      taskId,
+      spanId,
+      role,
+      provider,
+      model,
+      status,
+      usage?.inputTokens ?? 0,
+      usage?.outputTokens ?? 0,
+      usage?.cacheReadTokens ?? 0,
+      usage?.cacheWriteTokens ?? 0,
+      usage?.reasoningTokens ?? 0,
+      usage?.billableInputTokens ?? 0,
+      cost?.costUsd ?? null,
+      cost?.priced ? 1 : 0,
+      cost?.version ?? null,
+      latencyMs,
+      Date.now(),
+    )
+    return id
+  }
+
+  listModelCalls(runId) {
+    return this.database.prepare('SELECT * FROM model_calls WHERE run_id = ? ORDER BY created_at ASC').all(runId).map((row) => ({
+      id: row.id,
+      runId: row.run_id,
+      taskId: row.task_id,
+      spanId: row.span_id,
+      role: row.role,
+      provider: row.provider,
+      model: row.model,
+      status: row.status,
+      inputTokens: Number(row.input_tokens),
+      outputTokens: Number(row.output_tokens),
+      cacheReadTokens: Number(row.cache_read_tokens),
+      cacheWriteTokens: Number(row.cache_write_tokens),
+      reasoningTokens: Number(row.reasoning_tokens),
+      costUsd: row.cost_usd === null ? null : Number(row.cost_usd),
+      priced: Number(row.priced) === 1,
+      priceVersion: row.price_version,
+      latencyMs: row.latency_ms === null ? null : Number(row.latency_ms),
+      createdAt: Number(row.created_at),
+    }))
+  }
+
+  /**
+   * A run's spend. `unpricedCalls` is reported separately so an unknown model
+   * cannot masquerade as a free one.
+   */
+  spendForRun(runId) {
+    const row = this.database.prepare('SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS calls, SUM(CASE WHEN priced = 0 THEN 1 ELSE 0 END) AS unpriced FROM model_calls WHERE run_id = ?').get(runId)
+    return { costUsd: Number(row?.cost ?? 0), calls: Number(row?.calls ?? 0), unpricedCalls: Number(row?.unpriced ?? 0) }
+  }
+
+  spendSince(timestamp) {
+    const row = this.database.prepare('SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS calls, SUM(CASE WHEN priced = 0 THEN 1 ELSE 0 END) AS unpriced FROM model_calls WHERE created_at >= ?').get(timestamp)
+    return { costUsd: Number(row?.cost ?? 0), calls: Number(row?.calls ?? 0), unpricedCalls: Number(row?.unpriced ?? 0) }
+  }
+
+  startSpan({ runId, parentSpanId = null, kind, name, attributes = {}, id = `span-${randomUUID()}` }) {
+    const now = Date.now()
+    this.database.prepare('INSERT INTO spans(id, run_id, parent_span_id, kind, name, status, started_at, attributes_json) VALUES(?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, runId, parentSpanId, kind, name, 'running', now, JSON.stringify(attributes))
+    return { id, startedAt: now }
+  }
+
+  endSpan(spanId, { status = 'ok', attributes = null } = {}) {
+    const now = Date.now()
+    if (attributes) {
+      const row = this.database.prepare('SELECT attributes_json FROM spans WHERE id = ?').get(spanId)
+      const merged = { ...parseJson(row?.attributes_json, {}), ...attributes }
+      this.database.prepare('UPDATE spans SET status = ?, ended_at = ?, attributes_json = ? WHERE id = ?').run(status, now, JSON.stringify(merged), spanId)
+      return
+    }
+    this.database.prepare('UPDATE spans SET status = ?, ended_at = ? WHERE id = ?').run(status, now, spanId)
+  }
+
+  listSpans(runId) {
+    return this.database.prepare('SELECT * FROM spans WHERE run_id = ? ORDER BY started_at ASC').all(runId).map((row) => ({
+      id: row.id,
+      runId: row.run_id,
+      parentSpanId: row.parent_span_id,
+      kind: row.kind,
+      name: row.name,
+      status: row.status,
+      startedAt: Number(row.started_at),
+      endedAt: row.ended_at === null ? null : Number(row.ended_at),
+      durationMs: row.ended_at === null ? null : Number(row.ended_at) - Number(row.started_at),
+      attributes: parseJson(row.attributes_json),
+    }))
+  }
+
+  /** A run's trace: spans, priced calls, and the totals for the header. */
+  getRunTrace(runId) {
+    return { spans: this.listSpans(runId), calls: this.listModelCalls(runId), spend: this.spendForRun(runId) }
   }
 
   nextPlanVersion(projectId) {
