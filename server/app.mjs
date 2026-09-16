@@ -140,7 +140,7 @@ const resumableStatuses = new Set(['paused', 'executing', 'budget_exceeded'])
  * instead of rejecting the server's callback promise, which Node would treat as
  * an unhandled rejection and use to terminate the process, orphaning every run.
  */
-export function createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, planService, pricing, execution = null, allowedOrigins = new Set(), ownerId = 'local', serveUi = false, distDir = 'dist' }) {
+export function createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, planService, pricing, execution = null, allowedOrigins = new Set(), ownerId = 'local', serveUi = false, distDir = 'dist', breaker = null, version = '0.0.0' }) {
   const isAllowedOrigin = (origin) => !origin || allowedOrigins.has(origin)
   let draining = null
   /** Open event streams, so draining can end them and let the server close. */
@@ -304,6 +304,54 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
     }
   }
 
+  /**
+   * Take one tool call through the whole path: resolve it, decide it, record it, and
+   * either run it or park it for approval.
+   *
+   * Shared by the tools endpoint and by anything else that submits a call on a
+   * user's behalf — a revert, for instance — so those cannot drift away from the
+   * policy, the fingerprint, or the audit trail.
+   */
+  const submitToolCall = async ({ runId, run, name, input, agentId = 'head', idempotencyKey = null }) => {
+    const tool = toolBroker.get(name)
+    const resolution = toolBroker.resolve(name, input)
+    const authorization = toolBroker.authorize({ mode: run?.permissionMode, tool, resolution })
+
+    const existing = store.findToolCallByIdempotencyKey(runId, idempotencyKey)
+    if (existing && ['completed', 'running'].includes(existing.status)) {
+      return { status: 200, payload: { replayed: true, toolCall: existing, output: existing.output } }
+    }
+
+    const toolCall = store.createToolCall({
+      runId,
+      agentId,
+      name,
+      kind: tool?.kind ?? 'unknown',
+      input: toolBroker.sanitizeInput(name, input),
+      rawInput: input,
+      resolved: resolution.ok ? resolution.resolved : null,
+      fingerprint: resolution.ok ? fingerprintToolCall(resolution) : null,
+      idempotencyKey,
+    })
+    store.appendEvent({ runId, type: 'tool.requested', agentId, payload: { toolCallId: toolCall.id, name, kind: tool?.kind ?? 'unknown', input: store.summarizeInput(toolCall.input), resolved: toolCall.resolved, rule: authorization.ruleId } })
+
+    if (!authorization.allowed) {
+      const status = authorization.requiresApproval ? 'approval_required' : 'denied'
+      store.updateToolCall(toolCall.id, { status, error: authorization.reason })
+      store.appendEvent({ runId, type: authorization.requiresApproval ? 'approval.requested' : 'tool.denied', agentId, payload: { toolCallId: toolCall.id, name, reason: authorization.reason, rule: authorization.ruleId, fingerprint: toolCall.fingerprint, resolved: toolCall.resolved } })
+      return {
+        status: authorization.requiresApproval ? 409 : 403,
+        payload: { error: authorization.reason, approvalRequired: authorization.requiresApproval, rule: authorization.ruleId, toolCall: store.getToolCall(toolCall.id) },
+      }
+    }
+
+    const result = await runToolCall({ runId, toolCall, input, resolved: resolution, approved: false })
+    return {
+      status: result.ok ? 200 : 502,
+      payload: result.ok ? { output: result.output, toolCall: store.getToolCall(toolCall.id) } : { error: result.error, toolCall: store.getToolCall(toolCall.id) },
+    }
+  }
+
   const server = http.createServer(async (request, response) => {
     try {
       const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`)
@@ -352,6 +400,53 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       if (request.method === 'GET' && requestUrl.pathname === '/api/openapi.json') {
         sendJson(response, 200, openApiDocument({ version: process.env.npm_package_version ?? '0.2.0-dev' }))
+        return
+      }
+
+      if (request.method === 'GET' && requestUrl.pathname === '/api/status') {
+        const boundary = execution ? await execution.status() : { available: false, reason: 'No execution runtime is configured.' }
+        // Read from the same source /api/config reports, so a value set in the
+        // environment shows up here without the caller having to pass it in.
+        const retention = settingReport().find((entry) => entry.name === 'FULKRUM_TOOL_OUTPUT_RETENTION_DAYS')
+        sendJson(response, 200, {
+          version,
+          schemaVersion: store.stats().schemaVersion,
+          storage: store.storageSize(),
+          database: { path: store.filePath, ...store.stats() },
+          backups: store.backupStatus(),
+          anchor: { file: store.anchorFile, count: store.readAnchors().length },
+          // Walking every chain is done on request, not on every status read.
+          lastVerify: store.lastMaintenance('verify'),
+          lastBackup: store.lastMaintenance('backup'),
+          maintenance: store.listMaintenance({ limit: 10 }),
+          execution: { ...boundary, running: execution?.runningNow?.() ?? [] },
+          providers: providerRegistry.list().map((provider) => ({
+            id: provider.id,
+            label: provider.label,
+            configured: provider.configured,
+            keySource: provider.keySource,
+            breaker: breaker?.state?.(provider.id) ?? null,
+          })),
+          retention: { toolOutputDays: retention?.value ?? null, source: retention?.source ?? null },
+
+        })
+        return
+      }
+
+      if (request.method === 'POST' && requestUrl.pathname === '/api/maintenance/verify') {
+        const result = store.verifyEverything()
+        const summary = result.ok
+          ? `${result.runs} run(s), ${result.eventsChecked} event(s) verified`
+          : `problems in ${result.truncated.length + result.broken.length + result.anchorMismatch.length + result.anchorOrphaned.length} run(s)`
+        const record = store.recordMaintenance({ kind: 'verify', ok: result.ok, summary, payload: { runs: result.runs, eventsChecked: result.eventsChecked, truncated: result.truncated.map((run) => run.runId), broken: result.broken.map((run) => run.runId), anchorMismatch: result.anchorMismatch.map((run) => run.runId), anchorOrphaned: result.anchorOrphaned.map((run) => run.runId) } })
+        sendJson(response, 200, { result, record })
+        return
+      }
+
+      if (request.method === 'POST' && requestUrl.pathname === '/api/maintenance/backup') {
+        const copy = store.backup()
+        const record = store.recordMaintenance({ kind: 'backup', ok: true, summary: `copy written to ${copy.path}`, payload: { path: copy.path, anchorPath: copy.anchorPath, rotated: copy.removed } })
+        sendJson(response, 200, { copy, record })
         return
       }
 
@@ -853,6 +948,47 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         return
       }
 
+      const runArtifactRevertMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/artifacts\/([^/]+)\/revert$/)
+      if (request.method === 'POST' && runArtifactRevertMatch) {
+        const runId = decodeURIComponent(runArtifactRevertMatch[1])
+        const toolCallId = decodeURIComponent(runArtifactRevertMatch[2])
+        const run = store.getRun(runId)
+        if (!run) {
+          sendJson(response, 404, { error: 'Run not found.' })
+          return
+        }
+
+        const artifact = buildArtifacts(store, runId).find((item) => item.toolCallId === toolCallId)
+        if (!artifact) {
+          sendJson(response, 404, { error: 'That write is not part of this run.' })
+          return
+        }
+        const original = store.getToolCall(toolCallId)
+        const previous = original?.output?.previousContent
+        if (original?.output?.created === true) {
+          sendJson(response, 409, { error: 'That write created the file, and there is no delete tool: remove it yourself rather than restoring an empty one.' })
+          return
+        }
+        if (typeof previous !== 'string') {
+          sendJson(response, 409, { error: original?.output?.previousTruncated ? 'The previous contents were too large to keep, so this change cannot be undone from here.' : 'There is no stored copy of this file to restore.' })
+          return
+        }
+
+        // A revert is a write like any other: the same policy, the same fingerprint,
+        // the same approval if the mode asks for one, and the same audit trail. It
+        // restores bytes that were already on disk, so it is not a new capability.
+        store.appendEvent({ runId, type: 'artifact.revert.requested', agentId: 'head', payload: { toolCallId, path: artifact.path, bytes: Buffer.byteLength(previous, 'utf8') } })
+        const outcome = await submitToolCall({
+          runId,
+          run,
+          name: 'workspace.write',
+          input: { path: artifact.path, content: previous },
+          agentId: 'head',
+        })
+        sendJson(response, outcome.status, { ...outcome.payload, reverted: outcome.status === 200, path: artifact.path })
+        return
+      }
+
       const runArtifactsMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/artifacts$/)
       if (request.method === 'GET' && runArtifactsMatch) {
         const runId = decodeURIComponent(runArtifactsMatch[1])
@@ -880,41 +1016,15 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           return
         }
         const body = await readJson(request, MAX_TOOL_BODY_BYTES)
-        const tool = toolBroker.get(body.name)
-        const resolution = toolBroker.resolve(body.name, body.input ?? {})
-        const authorization = toolBroker.authorize({ mode: run.permissionMode, tool, resolution })
-        const agentId = body.agentId ?? 'head'
-        const idempotencyKey = typeof body.idempotencyKey === 'string' ? body.idempotencyKey : null
-
-        const existing = store.findToolCallByIdempotencyKey(runId, idempotencyKey)
-        if (existing && ['completed', 'running'].includes(existing.status)) {
-          sendJson(response, 200, { replayed: true, toolCall: existing, output: existing.output })
-          return
-        }
-
-        const toolCall = store.createToolCall({
+        const outcome = await submitToolCall({
           runId,
-          agentId,
+          run,
           name: body.name,
-          kind: tool?.kind ?? 'unknown',
-          input: toolBroker.sanitizeInput(body.name, body.input ?? {}),
-          rawInput: body.input ?? {},
-          resolved: resolution.ok ? resolution.resolved : null,
-          fingerprint: resolution.ok ? fingerprintToolCall(resolution) : null,
-          idempotencyKey,
+          input: body.input ?? {},
+          agentId: body.agentId ?? 'head',
+          idempotencyKey: typeof body.idempotencyKey === 'string' ? body.idempotencyKey : null,
         })
-        store.appendEvent({ runId, type: 'tool.requested', agentId, payload: { toolCallId: toolCall.id, name: body.name, kind: tool?.kind ?? 'unknown', input: store.summarizeInput(toolCall.input), resolved: toolCall.resolved, rule: authorization.ruleId } })
-
-        if (!authorization.allowed) {
-          const status = authorization.requiresApproval ? 'approval_required' : 'denied'
-          store.updateToolCall(toolCall.id, { status, error: authorization.reason })
-          store.appendEvent({ runId, type: authorization.requiresApproval ? 'approval.requested' : 'tool.denied', agentId, payload: { toolCallId: toolCall.id, name: body.name, reason: authorization.reason, rule: authorization.ruleId, fingerprint: toolCall.fingerprint, resolved: toolCall.resolved } })
-          sendJson(response, authorization.requiresApproval ? 409 : 403, { error: authorization.reason, approvalRequired: authorization.requiresApproval, rule: authorization.ruleId, toolCall: store.getToolCall(toolCall.id) })
-          return
-        }
-
-        const result = await runToolCall({ runId, toolCall, input: body.input ?? {}, resolved: resolution, approved: false })
-        sendJson(response, result.ok ? 200 : 502, result.ok ? { output: result.output, toolCall: store.getToolCall(toolCall.id) } : { error: result.error, toolCall: store.getToolCall(toolCall.id) })
+        sendJson(response, outcome.status, outcome.payload)
         return
       }
 

@@ -1078,6 +1078,54 @@ export class FulkrumStore {
     return { pruned: Number(result.changes), prunedInputs: Number(inputs.changes), prunedTurns: Number(turns.changes), cutoff }
   }
 
+  /**
+   * Record what a maintenance action did.
+   *
+   * These are the two facts nobody can reconstruct afterwards: that the chain was
+   * intact when it was checked, and that a copy exists from before something went
+   * wrong. Neither follows from the state that comes after.
+   */
+  recordMaintenance({ kind, ok, summary, payload = {} }) {
+    this.database.prepare('INSERT INTO maintenance_log(kind, ok, summary, payload_json, created_at) VALUES(?, ?, ?, ?, ?)')
+      .run(kind, ok ? 1 : 0, String(summary).slice(0, 500), JSON.stringify(payload), Date.now())
+    return this.lastMaintenance(kind)
+  }
+
+  lastMaintenance(kind) {
+    const row = this.database.prepare('SELECT * FROM maintenance_log WHERE kind = ? ORDER BY created_at DESC LIMIT 1').get(kind)
+    if (!row) return null
+    return { kind: row.kind, ok: Number(row.ok) === 1, summary: row.summary, payload: parseJson(row.payload_json), createdAt: Number(row.created_at) }
+  }
+
+  listMaintenance({ limit = 20 } = {}) {
+    return this.database.prepare('SELECT * FROM maintenance_log ORDER BY created_at DESC LIMIT ?').all(limit).map((row) => ({
+      kind: row.kind,
+      ok: Number(row.ok) === 1,
+      summary: row.summary,
+      createdAt: Number(row.created_at),
+    }))
+  }
+
+  /** How big the database and its write-ahead log are right now. */
+  storageSize() {
+    const sizeOf = (target) => {
+      try {
+        return statSync(target).size
+      } catch {
+        return null
+      }
+    }
+    const database = sizeOf(this.filePath)
+    const wal = sizeOf(`${this.filePath}-wal`)
+    const shm = sizeOf(`${this.filePath}-shm`)
+    return { databaseBytes: database, walBytes: wal, shmBytes: shm, totalBytes: [database, wal, shm].filter((value) => value !== null).reduce((sum, value) => sum + value, 0) }
+  }
+
+  /** Every run's chain, walked. Expensive on a large database, so it is on demand. */
+  verifyEverything() {
+    return this.verifyAllEventChains()
+  }
+
   /** When the newest backup was taken, so a daily one can be skipped. */
   backupStatus({ directory = path.join(path.dirname(this.filePath), 'backups') } = {}) {
     try {

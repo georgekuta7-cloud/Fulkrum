@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createApp } from './app.mjs'
 import { resolveSettings } from './config.mjs'
 import { FulkrumStore } from './store.mjs'
@@ -20,6 +22,16 @@ const ownerId = `bridge-${randomUUID().slice(0, 8)}`
 const allowedOrigins = new Set(settings.FULKRUM_ALLOWED_ORIGINS)
 const dataDir = settings.FULKRUM_DATA_DIR || 'data'
 const databasePath = settings.FULKRUM_DB_PATH || path.join(dataDir, 'fulkrum.sqlite')
+
+// Reported by /api/status and the OpenAPI document, so a running instance can say
+// which version it is rather than being guessed at.
+const version = (() => {
+  try {
+    return JSON.parse(readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8')).version ?? '0.0.0'
+  } catch {
+    return '0.0.0'
+  }
+})()
 
 const systemPrompt = `You are Fulkrum's Head AI. You are the supervisor of a small team with a research worker and a build worker. The user speaks to you in a shared project chat. Keep the conversation practical and concise. Explain the plan, identify the next decision, and never claim a worker completed something unless the system has reported it. Before execution, help the user shape and approve a plan. During execution, coordinate the workers and surface disagreements.`
 
@@ -60,6 +72,8 @@ const app = createApp({
   ownerId,
   serveUi: Boolean(settings.FULKRUM_SERVE_UI),
   distDir: settings.FULKRUM_DIST_DIR || 'dist',
+  breaker: modelCaller.breaker,
+  version,
 })
 
 // A setting that could not be used as given is a startup fact, not something to

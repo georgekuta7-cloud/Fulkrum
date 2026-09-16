@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
+import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
@@ -347,6 +348,133 @@ test('a resumed task continues its conversation instead of starting over', async
     if (previousKey === undefined) delete process.env.XAI_API_KEY
     else process.env.XAI_API_KEY = previousKey
   }
+})
+
+test('a write can be undone from the snapshot taken before it', async () => {
+  await withTempDirectory(async (directory) => {
+    await writeFile(path.join(directory, 'notes.txt'), 'the original contents\n', 'utf8')
+    await withServer(async ({ request, store }) => {
+      const { runId } = await makeRun(request, { permissionMode: 'autopilot' })
+
+      const written = await request('POST', `/api/runs/${runId}/tools`, { name: 'workspace.write', agentId: 'builder', input: { path: 'notes.txt', content: 'replaced by the agent\n' } })
+      assert.equal(written.status, 200, JSON.stringify(written.payload))
+      assert.equal(await readFile(path.join(directory, 'notes.txt'), 'utf8'), 'replaced by the agent\n')
+
+      const artifacts = await request('GET', `/api/runs/${runId}/artifacts`)
+      const artifact = artifacts.payload.artifacts.find((item) => item.path === 'notes.txt')
+      assert.equal(artifact.created, false)
+
+      const reverted = await request('POST', `/api/runs/${runId}/artifacts/${artifact.toolCallId}/revert`)
+      assert.equal(reverted.status, 200, JSON.stringify(reverted.payload))
+      assert.equal(reverted.payload.reverted, true)
+      assert.equal(await readFile(path.join(directory, 'notes.txt'), 'utf8'), 'the original contents\n', 'the bytes that were on disk are back')
+
+      // The revert is a write like any other, so it is in the log as one.
+      const events = store.listEvents(runId).map((event) => event.type)
+      assert.equal(events.includes('artifact.revert.requested'), true)
+      assert.equal(events.filter((type) => type === 'tool.completed').length, 2, 'the revert is recorded as its own tool call')
+      assert.equal(store.verifyEventChain(runId).ok, true)
+
+      // Undoing it again would restore "replaced by the agent", which is the write
+      // the second call made — the history stays honest rather than clever.
+      const second = await request('POST', `/api/runs/${runId}/artifacts/${reverted.payload.toolCall.id}/revert`)
+      assert.equal(second.status, 200)
+      assert.equal(await readFile(path.join(directory, 'notes.txt'), 'utf8'), 'replaced by the agent\n')
+    }, { workspaceRoot: directory })
+  })
+})
+
+test('a revert refuses what it cannot do honestly', async () => {
+  await withTempDirectory(async (directory) => {
+    await withServer(async ({ request }) => {
+      const { runId } = await makeRun(request, { permissionMode: 'autopilot' })
+      const created = await request('POST', `/api/runs/${runId}/tools`, { name: 'workspace.write', agentId: 'builder', input: { path: 'brand-new.txt', content: 'no previous copy\n' } })
+      assert.equal(created.status, 200)
+
+      const artifact = (await request('GET', `/api/runs/${runId}/artifacts`)).payload.artifacts.find((item) => item.path === 'brand-new.txt')
+      // A creation has no previous state, and there is no delete tool to undo it with.
+      const attempt = await request('POST', `/api/runs/${runId}/artifacts/${artifact.toolCallId}/revert`)
+      assert.equal(attempt.status, 409)
+      assert.match(String(attempt.payload.error), /created the file/)
+      assert.equal(await readFile(path.join(directory, 'brand-new.txt'), 'utf8'), 'no previous copy\n', 'the file is untouched')
+
+      const unknown = await request('POST', `/api/runs/${runId}/artifacts/tool-nope/revert`)
+      assert.equal(unknown.status, 404)
+    }, { workspaceRoot: directory })
+  })
+})
+
+test('a revert in a guarded mode parks for approval like any other write', async () => {
+  await withTempDirectory(async (directory) => {
+    await writeFile(path.join(directory, 'guarded.txt'), 'before\n', 'utf8')
+    await withServer(async ({ request }) => {
+      const { runId } = await makeRun(request)
+
+      // The write waits too, and is approved once.
+      const write = await request('POST', `/api/runs/${runId}/tools`, { name: 'workspace.write', agentId: 'builder', input: { path: 'guarded.txt', content: 'after\n' } })
+      assert.equal(write.status, 409, 'the write itself waits in selective mode')
+      const approvedWrite = await request('POST', `/api/runs/${runId}/tools/${write.payload.toolCall.id}/approve`, { fingerprint: write.payload.toolCall.fingerprint })
+      assert.equal(approvedWrite.status, 200, JSON.stringify(approvedWrite.payload))
+
+      const artifact = (await request('GET', `/api/runs/${runId}/artifacts`)).payload.artifacts.find((item) => item.path === 'guarded.txt')
+      assert.equal(artifact.created, false)
+
+      // Reverting is a write, so it is asked about rather than assumed.
+      const pending = await request('POST', `/api/runs/${runId}/artifacts/${artifact.toolCallId}/revert`)
+      assert.equal(pending.status, 409, JSON.stringify(pending.payload))
+      assert.equal(pending.payload.approvalRequired, true)
+      assert.equal(pending.payload.rule, 'ask.default')
+      assert.equal(await readFile(path.join(directory, 'guarded.txt'), 'utf8'), 'after\n', 'nothing changed while it waits')
+
+      const applied = await request('POST', `/api/runs/${runId}/tools/${pending.payload.toolCall.id}/approve`, { fingerprint: pending.payload.toolCall.fingerprint })
+      assert.equal(applied.status, 200, JSON.stringify(applied.payload))
+      assert.equal(await readFile(path.join(directory, 'guarded.txt'), 'utf8'), 'before\n', 'approving it is what restores the file')
+    }, { workspaceRoot: directory })
+  })
+})
+
+test('the status reports what is installed, and remembers what was checked', async () => {
+  await withTempDirectory(async (directory) => {
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'status fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id })
+      store.appendEvent({ runId: run.payload.run.id, type: 'test.event', payload: { hello: 'world' } })
+
+      const status = await request('GET', '/api/status')
+      assert.equal(status.status, 200)
+      assert.equal(typeof status.payload.version, 'string')
+      assert.equal(status.payload.schemaVersion >= 10, true)
+      assert.equal(status.payload.storage.databaseBytes > 0, true)
+      assert.match(status.payload.anchor.file, /audit-heads/)
+      assert.equal(status.payload.execution.available, false, 'no engine is configured in this test')
+      assert.equal(status.payload.lastVerify, null, 'nothing has been checked yet')
+      assert.equal(status.payload.providers.length >= 7, true)
+      assert.equal(status.payload.retention.toolOutputDays, 14)
+
+      const verify = await request('POST', '/api/maintenance/verify')
+      assert.equal(verify.status, 200)
+      assert.equal(verify.payload.result.ok, true)
+      assert.equal(verify.payload.record.ok, true)
+      assert.match(verify.payload.record.summary, /1 run/)
+
+      const backup = await request('POST', '/api/maintenance/backup')
+      assert.equal(backup.status, 200)
+      assert.equal(existsSync(backup.payload.copy.path), true, 'the copy exists on disk')
+
+      const after = await request('GET', '/api/status')
+      assert.equal(after.payload.lastVerify.ok, true, 'the check is remembered')
+      assert.equal(after.payload.lastBackup.ok, true, 'and so is the copy')
+      assert.equal(after.payload.maintenance.length >= 2, true)
+
+      // A tampered event is reported as a problem, and the record says so.
+      store.database.prepare('UPDATE run_events SET payload_json = ? WHERE run_id = ?').run('{"tampered":true}', run.payload.run.id)
+      const broken = await request('POST', '/api/maintenance/verify')
+      assert.equal(broken.payload.result.ok, false)
+      assert.equal(broken.payload.record.ok, false)
+      assert.match(broken.payload.record.summary, /problem/)
+      assert.equal(store.lastMaintenance('verify').ok, false)
+    }, { workspaceRoot: directory })
+  })
 })
 
 test('the audit endpoint reports chain integrity, including unverifiable history', async () => {
