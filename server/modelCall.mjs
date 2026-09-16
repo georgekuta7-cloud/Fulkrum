@@ -94,6 +94,16 @@ export function toGoogleContents(messages) {
   return output
 }
 
+/**
+ * Build the wire request for a protocol.
+ *
+ * The body genuinely differs per protocol, so it is left untyped rather than
+ * unioned: a union would force callers to narrow three shapes to read one field.
+ *
+ * @param {string} protocol
+ * @param {{ baseUrl: string, model: string, messages: Array<Record<string, any>>, tools?: Array<Record<string, any>>, instructions?: string }} request
+ * @returns {{ url: string, body: any }}
+ */
 export function buildRequest(protocol, { baseUrl, model, messages, tools = [], instructions }) {
   const endpoint = String(baseUrl).replace(/\/$/, '')
 
@@ -224,6 +234,10 @@ export function retryDelayMs(attempt, retryAfter) {
 }
 
 export class ProviderError extends Error {
+  /**
+   * @param {string} message
+   * @param {{ status?: number, retryable?: boolean, retryAfter?: string | null }} [options]
+   */
   constructor(message, { status, retryable, retryAfter = null } = {}) {
     super(message)
     this.status = status
@@ -246,7 +260,7 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
       clearTimeout(timeout)
     }
 
-    const payload = await response.json().catch(() => ({}))
+    const payload = /** @type {any} */ (await response.json().catch(() => ({})))
     if (!response.ok) {
       const message = payload?.error?.message ?? payload?.error ?? `Provider returned ${response.status}`
       throw new ProviderError(String(message).slice(0, 500), { status: response.status, retryable: retryableStatuses.has(response.status), retryAfter: response.headers.get('retry-after') })
@@ -267,6 +281,11 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
   /**
    * Call a provider and normalize the answer, including tool calls.
    * Returns { text, toolCalls, usage }.
+   *
+   * @param {any} provider
+   * @param {string} model
+   * @param {Array<Record<string, any>>} messages
+   * @param {{ tools?: Array<Record<string, any>>, instructions?: string }} [options]
    */
   const callModel = async (provider, model, messages, { tools = [], instructions } = {}) => {
     const base = await validateOutboundUrl(provider.baseUrl, { allowPrivate })

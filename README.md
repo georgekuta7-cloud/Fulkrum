@@ -18,14 +18,20 @@ Open `http://127.0.0.1:5173/`. `npm run dev` starts both the Vite UI and the loc
 ## Checks
 
 ```powershell
-npm test          # 33 tests: policy, persistence, and the HTTP API
+npm test               # 81 tests: policy, persistence, execution boundary, and the HTTP API
 npm run lint
+npm run typecheck      # the client, and the server and tests via checkJs
 npm run build
 npm run audit:verify   # prove the run event log has not been edited
 ```
 
 `npm test` boots the real API bridge on an ephemeral port against a temporary
 database and workspace, so the tests never touch your data.
+
+The server is plain JavaScript, so `tsconfig.server.json` type-checks it and the
+tests with `checkJs`. It is deliberately not `strict` yet: the value is catching
+misspelled identifiers, wrong argument counts, and signature mismatches, which is
+how a syntax error once reached the test suite before this existed.
 
 ## Add provider APIs
 

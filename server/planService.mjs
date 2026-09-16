@@ -57,6 +57,10 @@ export function createPlanService({ store, providerRegistry, callModel, pricing 
 
   return {
     /** The newest plan for a run, drafting one if none exists. */
+    /**
+     * @param {any} run
+     * @param {{ regenerate?: boolean, routing?: Record<string, string> }} [options]
+     */
     async ensureDraft(run, { regenerate = false, routing = {} } = {}) {
       const existing = store.getLatestPlanForRun(run.id)
       if (existing && !regenerate) return { plan: existing, created: false }

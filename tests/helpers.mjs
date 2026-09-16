@@ -48,6 +48,10 @@ export async function withStore(callback) {
  * `model` scripts the model's replies, which is how the tool-calling loop is
  * tested without a network call.
  */
+/**
+ * @param {(context: any) => Promise<any>} callback
+ * @param {{ workspaceRoot?: string, callProvider?: any, model?: any, pricing?: any }} [options]
+ */
 export async function withServer(callback, { workspaceRoot, callProvider, model, pricing } = {}) {
   const directory = workspaceRoot ?? (await mkdtemp(path.join(tmpdir(), 'fulkrum-api-')))
   const store = new FulkrumStore(path.join(directory, 'fulkrum.sqlite'))
@@ -80,8 +84,11 @@ export async function withServer(callback, { workspaceRoot, callProvider, model,
     callProvider: callProvider ?? (async () => ({ text: 'stub reply', usage: null })),
   })
 
-  await new Promise((resolve) => app.server.listen(0, '127.0.0.1', resolve))
-  const { port } = app.server.address()
+  await new Promise((resolve) => {
+    app.server.listen(0, '127.0.0.1', () => resolve(undefined))
+  })
+  const address = app.server.address()
+  const port = address && typeof address === 'object' ? address.port : 0
   const baseUrl = `http://127.0.0.1:${port}`
 
   const request = async (method, route, body, headers = {}) => {

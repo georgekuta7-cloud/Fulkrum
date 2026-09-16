@@ -17,6 +17,9 @@ function readUserVersion(database) {
  * later change, so an existing database never gains a new column. Versioned
  * files make each change explicit and replayable, and `user_version` is stored
  * in the database file itself, so it cannot drift from the schema it describes.
+ *
+ * @param {import('node:sqlite').DatabaseSync} database
+ * @param {{ directory?: string, log?: (message: string) => void }} [options]
  */
 export function applyMigrations(database, { directory = defaultDirectory, log = () => {} } = {}) {
   const files = readdirSync(directory)

@@ -14,6 +14,15 @@ class HttpError extends Error {
   }
 }
 
+/**
+ * @typedef {import('node:http').ServerResponse & { allowedOrigin?: string | null }} BridgeResponse
+ */
+
+/**
+ * @param {BridgeResponse} response
+ * @param {number} status
+ * @param {any} payload
+ */
 export function sendJson(response, status, payload) {
   const headers = {
     'Content-Type': 'application/json; charset=utf-8',
@@ -194,7 +203,8 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         sendJson(response, 403, { error: 'Origin is not allowed.' })
         return
       }
-      response.allowedOrigin = origin || null
+      // Carried on the response so sendJson can echo only an allowed origin.
+      /** @type {BridgeResponse} */ (response).allowedOrigin = origin || null
 
       if (request.method === 'OPTIONS') {
         const headers = { 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS' }

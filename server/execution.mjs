@@ -82,6 +82,20 @@ function clip(text, maximum = maxOutputBytes) {
   return value.length > maximum ? `${value.slice(0, maximum)}\n[output clipped]` : value
 }
 
+/**
+ * @param {{
+ *   engine?: string,
+ *   cliPath?: string,
+ *   image?: string,
+ *   workspaceRoot?: string,
+ *   memory?: string,
+ *   cpus?: string,
+ *   pidsLimit?: number,
+ *   defaultTimeoutMs?: number,
+ *   failureTtlMs?: number,
+ *   execFileImpl?: (file: string, args: string[], options?: Record<string, unknown>) => Promise<{ stdout?: string, stderr?: string }>
+ * }} [options] Injectable so tests can exercise detection and execution without an engine.
+ */
 export function createExecutionRuntime({
   engine = process.env.FULKRUM_CONTAINER_ENGINE ?? '',
   // An absolute path to the engine CLI. On Windows the CLI is often installed

@@ -240,6 +240,7 @@ Rules:
       handoff ? `Handoff from earlier work:\n${handoff}` : '',
     ].filter(Boolean).join('\n\n')
 
+    /** @type {Array<Record<string, any>>} */
     const messages = [{ role: 'user', content: context }]
     const usedTools = []
     let steps = 0
@@ -323,6 +324,7 @@ Rules:
       // Without a provider key the loop cannot run, so the task reports plainly
       // that it is a demo rather than inventing a result.
       const provider = resolveRoute(runId, route, role.agentId)
+      /** @type {any} */
       let outcome
       if (!providerRegistry.secret(provider)) {
         outcome = { text: '', demo: true, steps: 0, usedTools: [] }
@@ -389,7 +391,7 @@ Rules:
     return plan
   }
 
-  const executeRun = async (runId, { routing = {} } = {}) => {
+  const executeRun = async (/** @type {string} */ runId, /** @type {{ routing?: Record<string, string> }} */ { routing = {} } = {}) => {
     const run = store.getRun(runId)
     if (!run || terminalStatuses.has(run.status)) return
 

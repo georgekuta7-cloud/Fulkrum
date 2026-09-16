@@ -115,6 +115,8 @@ function describeWrite(value) {
  * Turn a raw tool request into the exact call that will run: resolved paths,
  * final argv, destination host. This is what the user approves, what the audit
  * log records, and what the fingerprint commits to. Never the model's summary.
+ *
+ * @param {{ name: string, input?: Record<string, any>, workspaceRoot: string }} request
  */
 export function resolveToolCall({ name, input = {}, workspaceRoot }) {
   const raw = input && typeof input === 'object' ? input : {}

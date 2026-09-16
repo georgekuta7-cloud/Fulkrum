@@ -56,6 +56,9 @@ function findPrice(table, model) {
   return candidates.length ? table[candidates[0]] : null
 }
 
+/**
+ * @param {{ filePath?: string, table?: Record<string, { input: number, output: number, cacheRead: number, cacheWrite: number }> }} [options]
+ */
 export function createPricing({ filePath = process.env.FULKRUM_PRICE_FILE, table = builtinPrices } = {}) {
   const overrides = readOverrides(filePath)
   const merged = { ...table, ...overrides }

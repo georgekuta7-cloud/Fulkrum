@@ -87,6 +87,9 @@ export function createProviderRegistry(store) {
     /**
      * Ask the provider whether it accepts our credentials. Only status and
      * latency are returned; never the key.
+     *
+     * @param {any} provider
+     * @param {{ allowPrivate?: boolean, validateUrl?: (url: string, options?: Record<string, unknown>) => Promise<URL> | URL, timeoutMs?: number }} [options]
      */
     async testConnection(provider, { allowPrivate = false, validateUrl, timeoutMs = 10_000 } = {}) {
       const secret = secretFor(provider)

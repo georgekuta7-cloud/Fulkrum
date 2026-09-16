@@ -5,6 +5,8 @@
  * leave rows stuck in `executing` forever: the UI showed a live run that would
  * never progress, and its pending approval could never resolve. A lease makes
  * "abandoned" a detectable fact rather than a guess.
+ *
+ * @param {{ store: any, log?: (message: string) => void }} options
  */
 export function reconcileInterruptedRuns({ store, log = () => {} }) {
   const stranded = store.listStrandedRuns()

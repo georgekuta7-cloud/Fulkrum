@@ -13,6 +13,7 @@
     "api": "node --env-file-if-exists=.env.local server/index.mjs",
     "test": "node --test \"tests/**/*.test.mjs\"",
     "test:watch": "node --test --watch \"tests/**/*.test.mjs\"",
+    "typecheck": "tsc -b && tsc -p tsconfig.server.json",
     "audit:verify": "node --env-file-if-exists=.env.local server/verifyAudit.mjs",
     "build": "tsc -b && vite build",
     "lint": "oxlint",

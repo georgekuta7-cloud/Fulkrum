@@ -78,7 +78,7 @@ async function startRun(request) {
   return runId
 }
 
-async function waitFor(store, runId, predicate, timeoutMs = 10_000) {
+async function waitFor(store, predicate, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const found = predicate(store)
@@ -96,7 +96,7 @@ test('denying a call resumes the worker with an error it can act on', async () =
   try {
     await withServer(async ({ request, store, directory }) => {
       const runId = await startRun(request)
-      const pending = await waitFor(store, runId, () => store.listToolCalls(runId).find((call) => call.status === 'approval_required'))
+      const pending = await waitFor(store, () => store.listToolCalls(runId).find((call) => call.status === 'approval_required'))
       assert.ok(pending, 'the write should be waiting for approval')
 
       const denied = await request('POST', `/api/runs/${runId}/tools/${pending.id}/deny`, { reason: 'Not this file.' })
@@ -105,7 +105,7 @@ test('denying a call resumes the worker with an error it can act on', async () =
       assert.equal(denied.payload.resumed, true, 'the parked worker is released')
       assert.equal(denied.payload.toolCall.status, 'denied')
 
-      const finished = await waitFor(store, runId, () => (store.getRun(runId).status === 'review' ? true : null))
+      const finished = await waitFor(store, () => (store.getRun(runId).status === 'review' ? true : null))
       assert.ok(finished, `run should still finish, saw ${store.getRun(runId).status}`)
       await assert.rejects(() => import('node:fs/promises').then((fs) => fs.readFile(path.join(directory, 'denied.txt'), 'utf8')), /ENOENT/)
 
@@ -134,14 +134,14 @@ test('granting a tool for the run stops the re-prompting, and the ledger shows i
       await writeFile(path.join(directory, 'a.txt'), 'old line\nshared line\n', 'utf8')
       const runId = await startRun(request)
 
-      const pending = await waitFor(store, runId, () => store.listToolCalls(runId).find((call) => call.status === 'approval_required'))
+      const pending = await waitFor(store, () => store.listToolCalls(runId).find((call) => call.status === 'approval_required'))
       assert.ok(pending)
 
       const approved = await request('POST', `/api/runs/${runId}/tools/${pending.id}/approve`, { scope: 'run', fingerprint: pending.fingerprint })
       assert.equal(approved.status, 200)
       assert.equal(approved.payload.resumed, true)
 
-      const finished = await waitFor(store, runId, () => (store.getRun(runId).status === 'review' ? true : null))
+      const finished = await waitFor(store, () => (store.getRun(runId).status === 'review' ? true : null))
       assert.ok(finished, `run should finish, saw ${store.getRun(runId).status}`)
 
       // The second write went through without a second prompt.
@@ -192,7 +192,7 @@ test('a run grant cannot override a deny rule', async () => {
   try {
     await withServer(async ({ request, store, directory }) => {
       const runId = await startRun(request)
-      await waitFor(store, runId, () => (store.getRun(runId).status === 'review' ? true : null))
+      await waitFor(store, () => (store.getRun(runId).status === 'review' ? true : null))
 
       // Grant write for the run, then attempt the credential path through the tools API.
       store.grantApproval({ runId, toolName: 'workspace.write', kind: 'write' })
@@ -216,7 +216,7 @@ test('a persistent "always" approval is refused rather than silently downgraded'
   try {
     await withServer(async ({ request, store, orchestrator }) => {
       const runId = await startRun(request)
-      const pending = await waitFor(store, runId, () => store.listToolCalls(runId).find((call) => call.status === 'approval_required'))
+      const pending = await waitFor(store, () => store.listToolCalls(runId).find((call) => call.status === 'approval_required'))
       const response = await request('POST', `/api/runs/${runId}/tools/${pending.id}/approve`, { scope: 'always' })
       assert.equal(response.status, 400)
       assert.match(String(response.payload.error), /management view/)
