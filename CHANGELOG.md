@@ -5,9 +5,57 @@ All notable changes to Fulkrum are documented here. This project follows
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- **Replies stream, and the text arrives as it is written.** The request goes out with
+  `stream: true` through the same pinned, byte-capped client as every other outbound
+  call; three protocols stream three different ways and all three normalize into the
+  same shape a buffered call returns. Text in flight is not an audit record — the
+  finished reply is — so fragments go out as their own frame type, and a reader that
+  connects mid-reply gets what has already arrived. A stream cut off part way is an
+  error rather than a short, complete-looking answer.
+- **Cancelling a run stops its work.** Containers are tracked per run, and a cancel
+  removes them: previously the run stopped while the command kept going to its
+  timeout. Every container a run started is stopped, not only the newest.
+- **A write can be undone from the snapshot taken before it.** The revert is a write
+  like any other — same policy, same fingerprint, same approval when the mode asks for
+  one — so it is in the log as its own call. A creation and an oversized file refuse
+  rather than pretending.
+- **The app reports on itself**: `GET /api/status` (version, schema, database and WAL
+  size, backup age, anchors, engine, provider health, retention) and verify/backup on
+  demand, with the result recorded — "the chain was intact when I checked" and "a copy
+  exists from before this" are the two facts nothing else can reconstruct.
+- **History and replay**: runs with what each cost, a fork that re-runs a plan as a
+  fresh draft awaiting its own approval, a search across messages and events, a
+  workspace tree that applies the tool rules, and per-file history across runs.
+- **A plan can be edited**, through the same validation the model's output gets, as a
+  new version with a new hash — and a superseded version can no longer be approved by
+  its old hash, which would have pointed the run back at the plan the user replaced.
+- **Standing grants, scoped.** "Always" means within a directory or a host, never a
+  blanket: a workspace-root path is refused, a command has no scope at all, matching is
+  on directory boundaries, and a deny rule still wins. Grants list with use counts and
+  revoke, and creation and revocation are recorded.
+- **Cost, per task and over time**, with a pre-flight estimate that states its basis
+  and says when it has no history to base one on.
+- **Why a call stopped**: the deciding rule is stored on the call, credential-shaped
+  arguments are recorded as warnings, a pending write carries the diff it would make,
+  and a run can be exported as a bundle (report, events, artifacts, and every file it
+  wrote plus the bytes it replaced) — a zip written without a dependency and checked in
+  its test with PowerShell or unzip rather than with the code that wrote it.
+- **The interface was rebuilt around the run.** A header with state, cost and its
+  per-task breakdown, ceiling and run actions; a tabbed middle for plan, activity,
+  artifacts and workspace; the Head AI in its own column; a drawer for health,
+  containers, providers, grants and spend. Approvals show the rule, the resolved
+  arguments, credential warnings and the write's diff, with `a`/`r`/`d` on the
+  keyboard. The plan is editable, the workspace tab shows what the tools see, run
+  history carries cost and a fork, and a first-run card names the two things that stop
+  the app doing anything.
+- **A typed API client and component tests.** One place talks to the bridge and turns a
+  problem detail into something a component can explain; 12 component tests run in CI.
 
 ## [0.2.0] - 2026-09-16
+
+### Added
+- **Tool results are anchored outside the database.** The head of each run's chain
 
 ### Added
 - **Tool results are anchored outside the database.** The head of each run's chain

@@ -53,7 +53,8 @@ still verifies — as JSON, or as Markdown with `?format=md`.
 ## Checks
 
 ```powershell
-npm test               # 126 tests: policy, persistence, durability, execution boundary, providers, outbound HTTP, redaction, and the HTTP API
+npm test               # 157 tests: policy, persistence, durability, execution boundary, providers, outbound HTTP, redaction, and the HTTP API
+npm run test:ui        # component tests: the approval dock, the run header, the plan editor, search
 npm run lint
 npm run typecheck      # the client, and the server and tests via checkJs
 npm run build
