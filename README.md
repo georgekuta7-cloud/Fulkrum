@@ -8,19 +8,52 @@ Fulkrum is a **single-user, local-first** tool. The API bridge binds to `127.0.0
 
 ## Run it
 
+While you are working on it, with the UI hot-reloading:
+
 ```powershell
 npm install
 npm run dev
 ```
 
-Open `http://127.0.0.1:5173/`. `npm run dev` starts both the Vite UI and the local API bridge.
+Open `http://127.0.0.1:5173/`. `npm run dev` runs the Vite dev server and the API
+bridge together.
+
+As one process, serving the built UI from the bridge:
+
+```powershell
+npm run build
+npm start
+```
+
+Open `http://127.0.0.1:8787/`. Nothing else is needed: the bridge serves the
+interface, the API, and the event stream on loopback. `FULKRUM_SERVE_UI=1` turns
+the same thing on for `npm run api`.
 
 Node 22.13 or newer is required: the store uses the built-in `node:sqlite`, which became available without a flag in that release.
+
+The **working directory is the workspace** — the only place agent tools may read or
+write. Start Fulkrum in the project you want it to work on, or set
+`FULKRUM_WORKSPACE_ROOT`.
+
+## What it is, and what is running
+
+`GET /api/config` reports every setting with its effective value, where it came
+from, and any that could not be used as given — so a typo is visible instead of
+surprising. Keys are reported as present or absent, never echoed. A `.env.local`
+next to the directory you start in wins over one next to the code.
+
+`GET /api/openapi.json` is the API contract: every route, what it takes, and what
+it answers. Errors are RFC 9457 problem details (`application/problem+json`) with
+`error` kept as a deprecated alias for older clients.
+
+`GET /api/runs/:id/report` writes up a run — what was asked, the plan, each
+worker's result, the files changed, the cost by model, and whether the audit chain
+still verifies — as JSON, or as Markdown with `?format=md`.
 
 ## Checks
 
 ```powershell
-npm test               # 121 tests: policy, persistence, durability, execution boundary, providers, outbound HTTP, redaction, and the HTTP API
+npm test               # 126 tests: policy, persistence, durability, execution boundary, providers, outbound HTTP, redaction, and the HTTP API
 npm run lint
 npm run typecheck      # the client, and the server and tests via checkJs
 npm run build

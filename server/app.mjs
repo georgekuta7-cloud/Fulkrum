@@ -1,6 +1,11 @@
 import http from 'node:http'
+import { readFile, stat } from 'node:fs/promises'
+import path from 'node:path'
+import { openApiDocument } from './apiDocs.mjs'
+import { buildArtifacts } from './artifacts.mjs'
 import { canonicalJson } from './canonicalJson.mjs'
-import { diffHunks } from './diff.mjs'
+import { settingReport } from './config.mjs'
+import { buildRunReport, reportToMarkdown } from './runReport.mjs'
 import { findInjectionAttempts } from './injection.mjs'
 import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
 import { fingerprintToolCall, permissionMatrix } from './permissions.mjs'
@@ -20,14 +25,29 @@ class HttpError extends Error {
  * @typedef {import('node:http').ServerResponse & { allowedOrigin?: string | null }} BridgeResponse
  */
 
+const problemTitles = {
+  400: 'Bad request',
+  403: 'Forbidden',
+  404: 'Not found',
+  405: 'Method not allowed',
+  409: 'Conflict',
+  413: 'Payload too large',
+  500: 'Internal error',
+  502: 'Upstream provider error',
+  503: 'Service unavailable',
+}
+
 /**
  * @param {BridgeResponse} response
  * @param {number} status
  * @param {any} payload
  */
 export function sendJson(response, status, payload) {
+  // Errors go out as RFC 9457 problem details, with `error` kept as a deprecated
+  // alias so an existing client does not break. Success bodies are unchanged.
+  const isProblem = status >= 400 && payload && typeof payload === 'object' && typeof payload.error === 'string'
   const headers = {
-    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Type': isProblem ? 'application/problem+json; charset=utf-8' : 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
   }
   if (response.allowedOrigin) {
@@ -35,7 +55,9 @@ export function sendJson(response, status, payload) {
     headers.Vary = 'Origin'
   }
   response.writeHead(status, headers)
-  response.end(JSON.stringify(payload))
+  response.end(JSON.stringify(isProblem
+    ? { type: 'about:blank', title: problemTitles[status] ?? 'Error', status, detail: payload.error, ...payload }
+    : payload))
 }
 
 /**
@@ -117,11 +139,82 @@ const resumableStatuses = new Set(['paused', 'executing', 'budget_exceeded'])
  * instead of rejecting the server's callback promise, which Node would treat as
  * an unhandled rejection and use to terminate the process, orphaning every run.
  */
-export function createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, planService, pricing, execution = null, allowedOrigins = new Set(), ownerId = 'local' }) {
+export function createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, planService, pricing, execution = null, allowedOrigins = new Set(), ownerId = 'local', serveUi = false, distDir = 'dist' }) {
   const isAllowedOrigin = (origin) => !origin || allowedOrigins.has(origin)
   let draining = null
   /** Open event streams, so draining can end them and let the server close. */
   const openStreams = new Set()
+
+  const distRoot = serveUi ? path.resolve(distDir) : null
+  const uiIndex = distRoot ? path.join(distRoot, 'index.html') : null
+  const mimeTypes = {
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'text/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.map': 'application/json; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.ico': 'image/x-icon',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.txt': 'text/plain; charset=utf-8',
+    '.webmanifest': 'application/manifest+json',
+  }
+
+  /**
+   * Serve the built UI from the bridge, so `npm start` needs no dev server.
+   *
+   * The path is resolved and proved to be inside the build directory before it is
+   * read; an unknown path with no extension falls back to the entry document, so a
+   * client-side route survives a reload. Vite hashes asset names, so those are
+   * cached hard while the entry document never is.
+   */
+  const serveStatic = async (request, response, requestUrl) => {
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      sendJson(response, 405, { error: 'Only GET and HEAD are served here.' })
+      return
+    }
+    let relative = requestUrl.pathname
+    try {
+      relative = decodeURIComponent(relative)
+    } catch {
+      // A malformed escape is not a file name; the resolve below refuses it.
+    }
+    const target = path.resolve(distRoot, `.${relative.startsWith('/') ? relative : `/${relative}`}`)
+    if (target !== distRoot && !target.startsWith(distRoot + path.sep)) {
+      sendJson(response, 404, { error: 'Not found.' })
+      return
+    }
+
+    let file = target
+    const stats = await stat(file).catch(() => null)
+    if (!stats || stats.isDirectory()) {
+      if (path.extname(file)) {
+        sendJson(response, 404, { error: 'Not found.' })
+        return
+      }
+      file = uiIndex
+    }
+    const body = await readFile(file).catch(() => null)
+    if (!body) {
+      sendJson(response, 500, { error: `The built UI is missing. Run \`npm run build\`, or point FULKRUM_DIST_DIR at it.` })
+      return
+    }
+    response.writeHead(200, {
+      'Content-Type': mimeTypes[path.extname(file).toLowerCase()] ?? 'application/octet-stream',
+      'Content-Length': String(body.byteLength),
+      'Cache-Control': file === uiIndex ? 'no-store' : 'public, max-age=31536000, immutable',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+      'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+    })
+    response.end(request.method === 'HEAD' ? undefined : body)
+  }
 
   const handleChat = async (request, response) => {
     const body = await readJson(request)
@@ -227,6 +320,29 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         }
         response.writeHead(204, headers)
         response.end()
+        return
+      }
+
+      if (distRoot && requestUrl.pathname !== '/api' && !requestUrl.pathname.startsWith('/api/')) {
+        await serveStatic(request, response, requestUrl)
+        return
+      }
+
+      if (request.method === 'GET' && requestUrl.pathname === '/api/config') {
+        const report = settingReport()
+        sendJson(response, 200, {
+          settings: report,
+          problems: report.filter((entry) => entry.problem).map((entry) => ({ name: entry.name, message: entry.problem, using: entry.value })),
+          // Key values are never returned, only whether one is present and where
+          // it came from. A stored key wins over an environment variable.
+          providers: providerRegistry.list().map((provider) => ({ id: provider.id, label: provider.label, envKey: provider.envKey, configured: provider.configured, hasKey: provider.hasKey, keySource: provider.keySource })),
+          note: 'Bridge settings are read at startup; limits that can change without a restart are reported as they are right now.',
+        })
+        return
+      }
+
+      if (request.method === 'GET' && requestUrl.pathname === '/api/openapi.json') {
+        sendJson(response, 200, openApiDocument({ version: process.env.npm_package_version ?? '0.2.0-dev' }))
         return
       }
 
@@ -383,6 +499,24 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         } catch (error) {
           sendJson(response, error instanceof HttpError ? error.status : 400, { error: error instanceof Error ? error.message : 'Invalid run.' })
         }
+        return
+      }
+
+      const runReportMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/report$/)
+      if (request.method === 'GET' && runReportMatch) {
+        const runId = decodeURIComponent(runReportMatch[1])
+        const report = buildRunReport({ store, runId })
+        if (!report) {
+          sendJson(response, 404, { error: 'Run not found.' })
+          return
+        }
+        if (/^(md|markdown)$/i.test(String(requestUrl.searchParams.get('format') ?? ''))) {
+          const body = reportToMarkdown(report)
+          response.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Disposition': `inline; filename="fulkrum-${runId}.md"` })
+          response.end(body)
+          return
+        }
+        sendJson(response, 200, report)
         return
       }
 
@@ -700,33 +834,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           sendJson(response, 404, { error: 'Run not found.' })
           return
         }
-        // Every completed write is an artifact. The diff comes from the snapshot
-        // taken immediately before the write, so it is the real change.
-        const artifacts = store.listToolCalls(runId)
-          .filter((call) => call.kind === 'write' && call.status === 'completed')
-          .map((call) => {
-            const output = call.output ?? {}
-            // The diff compares against what was actually written, so it reads the
-            // original arguments rather than the redacted display copy.
-            const raw = store.getToolCallInput(call.id)
-            const after = String((raw ?? call.input)?.content ?? '')
-            const before = typeof output.previousContent === 'string' ? output.previousContent : ''
-            const snapshotAvailable = output.created === true || typeof output.previousContent === 'string'
-            const diff = snapshotAvailable ? diffHunks(before, after) : null
-            return {
-              toolCallId: call.id,
-              agentId: call.agentId,
-              path: output.path ?? call.resolved?.relative ?? String(call.input?.path ?? 'unknown'),
-              bytes: output.bytes ?? Buffer.byteLength(after, 'utf8'),
-              created: Boolean(output.created),
-              previousBytes: output.previousBytes ?? null,
-              previousTruncated: Boolean(output.previousTruncated),
-              diffAvailable: Boolean(diff),
-              diff,
-              at: call.completedAt ?? call.createdAt,
-            }
-          })
-        sendJson(response, 200, { artifacts, grants: store.listApprovalGrants(runId) })
+        sendJson(response, 200, { artifacts: buildArtifacts(store, runId), grants: store.listApprovalGrants(runId) })
         return
       }
 
@@ -824,6 +932,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
   return {
     server,
+    servingUi: Boolean(distRoot),
     // Stop accepting work without killing the process: a run mid-step deserves
     // the chance to finish writing its state.
     beginDraining(reason) {

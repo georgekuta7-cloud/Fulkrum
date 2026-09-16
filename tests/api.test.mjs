@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { readFile, writeFile } from 'node:fs/promises'
+import http from 'node:http'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
 import { withServer, withTempDirectory } from './helpers.mjs'
@@ -136,6 +137,101 @@ test('approving a call cannot substitute different arguments', async () => {
   })
 })
 
+test('errors are RFC 9457 problem details, with the old field kept', async () => {
+  await withServer(async ({ request }) => {
+    const { runId } = await makeRun(request)
+    const response = await request('POST', `/api/runs/${runId}/tools`, { name: 'no-such-tool', input: {} })
+    assert.equal(response.status, 403)
+    assert.match(String(response.headers.get('content-type')), /application\/problem\+json/)
+    assert.equal(response.payload.type, 'about:blank')
+    assert.equal(response.payload.status, 403)
+    assert.equal(response.payload.title, 'Forbidden')
+    assert.equal(typeof response.payload.detail, 'string')
+    assert.equal(response.payload.detail, response.payload.error, 'the deprecated alias still matches')
+    assert.equal(response.payload.rule, 'deny.unknown-tool', 'extensions survive')
+  })
+})
+
+test('the config report shows what is in effect, and never a key', async () => {
+  const previous = { port: process.env.FULKRUM_API_PORT, allowlist: process.env.FULKRUM_HTTP_ALLOWLIST, key: process.env.XAI_API_KEY }
+  process.env.FULKRUM_API_PORT = 'not-a-port'
+  process.env.FULKRUM_HTTP_ALLOWLIST = 'https://example.com/path'
+  process.env.XAI_API_KEY = 'sk-should-never-be-returned'
+  try {
+    await withServer(async ({ request }) => {
+      const response = await request('GET', '/api/config')
+      assert.equal(response.status, 200)
+      const byName = Object.fromEntries(response.payload.settings.map((entry) => [entry.name, entry]))
+
+      assert.equal(byName.FULKRUM_API_PORT.problem !== null, true, 'a port that is not a port is reported')
+      assert.equal(byName.FULKRUM_API_PORT.value, 8787, 'and the default is what gets used')
+      assert.equal(byName.FULKRUM_HTTP_ALLOWLIST.problem !== null, true, 'an allowlist entry with a scheme is refused')
+      assert.equal(byName.FULKRUM_HTTP_ALLOWLIST.source, 'env')
+
+      assert.equal(JSON.stringify(response.payload).includes('sk-should-never-be-returned'), false, 'keys are never echoed')
+      const grok = response.payload.providers.find((provider) => provider.id === 'grok')
+      assert.equal(grok.hasKey, true)
+      assert.equal(grok.keySource, 'env')
+      assert.equal(response.payload.problems.length >= 2, true)
+    })
+  } finally {
+    for (const [key, value] of Object.entries({ FULKRUM_API_PORT: previous.port, FULKRUM_HTTP_ALLOWLIST: previous.allowlist, XAI_API_KEY: previous.key })) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
+test('the bridge serves the built UI, and only from the build directory', async () => {
+  await withTempDirectory(async (directory) => {
+    const dist = path.join(directory, 'dist')
+    await mkdir(path.join(dist, 'assets'), { recursive: true })
+    await writeFile(path.join(dist, 'index.html'), '<!doctype html><div id="root"></div>', 'utf8')
+    await writeFile(path.join(dist, 'assets', 'app.js'), 'console.log(1)\n', 'utf8')
+    await writeFile(path.join(directory, 'secret.txt'), 'top secret\n', 'utf8')
+
+    await withServer(async ({ baseUrl, request }) => {
+      const index = await fetch(`${baseUrl}/`)
+      assert.equal(index.status, 200)
+      assert.match(String(index.headers.get('content-type')), /text\/html/)
+      assert.equal(index.headers.get('cache-control'), 'no-store')
+      assert.match(String(index.headers.get('content-security-policy')), /default-src 'self'/)
+
+      const asset = await fetch(`${baseUrl}/assets/app.js`)
+      assert.equal(asset.status, 200)
+      assert.match(String(asset.headers.get('cache-control')), /immutable/)
+      assert.equal(asset.headers.get('x-content-type-options'), 'nosniff')
+
+      // A client-side route has no extension, so it gets the entry document...
+      const route = await fetch(`${baseUrl}/runs/abc`)
+      assert.equal(route.status, 200)
+      assert.match(await route.text(), /id="root"/)
+      // ...while a missing file is a 404 rather than a page.
+      assert.equal((await fetch(`${baseUrl}/assets/nope.js`)).status, 404)
+
+      // The API still answers, and the origin check still applies to it.
+      assert.equal((await request('GET', '/api/health')).status, 200)
+
+      // Traversal is refused. A raw client is used because fetch would have
+      // normalised these paths away before they ever reached the server.
+      const raw = (requestPath) => new Promise((resolve) => {
+        const target = new URL(baseUrl)
+        const probe = http.request({ host: target.hostname, port: target.port, path: requestPath, method: 'GET' }, (response) => {
+          let body = ''
+          response.on('data', (chunk) => { body += chunk })
+          response.on('end', () => resolve({ status: response.statusCode, body }))
+        })
+        probe.end()
+      })
+      for (const attempt of ['/../secret.txt', '/%2e%2e/secret.txt', '/..%2fsecret.txt', '/assets/../../secret.txt']) {
+        const response = await raw(attempt)
+        assert.equal(response.status, 404, `${attempt} must not be served`)
+        assert.equal(response.body.includes('top secret'), false, `${attempt} must not leak the file`)
+      }
+    }, { serveUi: true, distDir: dist, workspaceRoot: directory })
+  })
+})
+
 test('a tool call against a credential path is denied, not queued for approval', async () => {
   await withTempDirectory(async (directory) => {
     await writeFile(path.join(directory, '.env.local'), 'SECRET=1\n', 'utf8')
@@ -265,6 +361,131 @@ test('the audit endpoint reports chain integrity, including unverifiable history
 
     const snapshot = await request('GET', `/api/runs/${runId}`)
     assert.equal(snapshot.payload.audit.ok, true)
+  })
+})
+
+test('the documented routes are the routes the server serves', async () => {
+  await withServer(async ({ request }) => {
+    const spec = await request('GET', '/api/openapi.json')
+    assert.equal(spec.status, 200)
+    assert.equal(spec.payload.openapi, '3.1.0')
+    assert.equal(spec.payload.paths['/api/runs/{runId}/control'].post.summary.length > 0, true)
+
+    const { projectId, runId } = await makeRun(request)
+    const throwawayProject = (await request('POST', '/api/projects', { name: 'throwaway' })).payload.project.id
+    const throwawayProvider = (await request('POST', '/api/providers', { label: 'Throwaway', baseUrl: 'https://93.184.216.34/v1', model: 'x' })).payload.provider.id
+
+    // The router's own fallthrough says "Not found." — any other answer means the
+    // route exists, whatever it decided about this particular request. Probes are
+    // written as the documented templates so they can be compared with the spec.
+    const probes = [
+      { method: 'GET', template: '/api/health' },
+      { method: 'GET', template: '/api/config' },
+      { method: 'GET', template: '/api/tools' },
+      { method: 'GET', template: '/api/openapi.json' },
+      { method: 'GET', template: '/api/providers' },
+      { method: 'POST', template: '/api/providers' },
+      { method: 'PATCH', template: '/api/providers/{providerId}' },
+      { method: 'DELETE', template: '/api/providers/{providerId}' },
+      { method: 'POST', template: '/api/providers/{providerId}/test', values: { providerId: 'grok' } },
+      { method: 'POST', template: '/api/chat' },
+      { method: 'GET', template: '/api/projects' },
+      { method: 'POST', template: '/api/projects' },
+      { method: 'GET', template: '/api/projects/default' },
+      { method: 'GET', template: '/api/projects/{projectId}' },
+      { method: 'PATCH', template: '/api/projects/{projectId}' },
+      { method: 'DELETE', template: '/api/projects/{projectId}', values: { projectId: throwawayProject } },
+      { method: 'POST', template: '/api/runs' },
+      { method: 'GET', template: '/api/runs/{runId}' },
+      { method: 'GET', template: '/api/runs/{runId}/events' },
+      { method: 'GET', template: '/api/runs/{runId}/audit' },
+      { method: 'GET', template: '/api/runs/{runId}/trace' },
+      { method: 'GET', template: '/api/runs/{runId}/report' },
+      { method: 'GET', template: '/api/runs/{runId}/plan' },
+      { method: 'POST', template: '/api/runs/{runId}/plan' },
+      { method: 'POST', template: '/api/runs/{runId}/control' },
+      { method: 'GET', template: '/api/runs/{runId}/tools' },
+      { method: 'POST', template: '/api/runs/{runId}/tools' },
+      { method: 'POST', template: '/api/runs/{runId}/tools/{toolCallId}/approve' },
+      { method: 'POST', template: '/api/runs/{runId}/tools/{toolCallId}/deny' },
+      { method: 'GET', template: '/api/runs/{runId}/grants' },
+      { method: 'DELETE', template: '/api/runs/{runId}/grants/{toolName}' },
+      { method: 'GET', template: '/api/runs/{runId}/artifacts' },
+    ]
+
+    const defaults = { runId, projectId, providerId: throwawayProvider, toolCallId: 'nope', toolName: 'workspace.write' }
+    const missing = []
+    for (const probe of probes) {
+      const values = { ...defaults, ...probe.values }
+      const path = probe.template.replace(/\{(\w+)\}/g, (_, name) => encodeURIComponent(values[name] ?? 'x'))
+      const body = probe.method === 'GET' || probe.method === 'DELETE' ? undefined : {}
+      const response = await request(probe.method, path, body)
+      if (response.status === 404 && response.payload.detail === 'Not found.') missing.push(`${probe.method} ${probe.template}`)
+    }
+    assert.deepEqual(missing, [], 'documented routes the server does not serve')
+
+    // And the spec describes exactly this surface: every probed route is in it, and
+    // it describes nothing that was not probed. The event stream is the one
+    // addition, because it never ends and has its own test.
+    const documented = new Set(Object.entries(spec.payload.paths).flatMap(([path, methods]) => Object.keys(methods).map((method) => `${method.toUpperCase()} ${path}`)))
+    const probed = new Set(probes.map((probe) => `${probe.method} ${probe.template}`))
+    for (const entry of probed) {
+      assert.equal(documented.has(entry), true, `${entry} should be in the spec`)
+    }
+    assert.equal(documented.has('GET /api/runs/{runId}/stream'), true)
+    assert.deepEqual([...documented].filter((entry) => !probed.has(entry)), ['GET /api/runs/{runId}/stream'], 'the spec documents no route the server does not serve')
+  })
+})
+
+test('a run report summarises the run, and reads as Markdown', async () => {
+  await withTempDirectory(async (directory) => {
+    const previousKey = process.env.XAI_API_KEY
+    process.env.XAI_API_KEY = 'sk-test-key-for-report'
+    const model = async ({ options }) => {
+      const instructions = String(options?.instructions ?? '')
+      if (instructions.includes('You plan work')) {
+        return { text: JSON.stringify({ objective: 'Ship the report.', tasks: [{ role: 'builder', title: 'Write it', instructions: 'Write out.txt.', dependsOn: [] }] }), toolCalls: [], usage: null }
+      }
+      if (instructions.includes('Forge')) return { text: 'Wrote out.txt.', toolCalls: [], usage: null }
+      return { text: 'Head review of the work.', toolCalls: [], usage: null }
+    }
+
+    try {
+      await withServer(async ({ request, store }) => {
+        const project = await request('POST', '/api/projects', { name: 'report fixture' })
+        const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
+        const runId = run.payload.run.id
+        await request('POST', '/api/chat', { runId, message: 'Write out.txt.', history: [] })
+        const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+        await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+
+        // Autopilot, so the write needs no approval and the report has an artifact.
+        await request('POST', `/api/runs/${runId}/tools`, { name: 'workspace.write', agentId: 'builder', input: { path: 'out.txt', content: 'written for the report\n' } })
+        const deadline = Date.now() + 10_000
+        while (Date.now() < deadline && ['planning', 'executing'].includes(store.getRun(runId).status)) await new Promise((resolve) => setTimeout(resolve, 50))
+
+        const asJson = await request('GET', `/api/runs/${runId}/report`)
+        assert.equal(asJson.status, 200)
+        assert.equal(asJson.payload.run.id, runId)
+        assert.equal(asJson.payload.plan.objective, 'Ship the report.')
+        assert.equal(asJson.payload.audit.ok, true)
+        assert.equal(asJson.payload.artifacts.some((artifact) => artifact.path === 'out.txt'), true, 'the write is in the report')
+
+        const asMarkdown = await request('GET', `/api/runs/${runId}/report?format=md`)
+        assert.equal(asMarkdown.status, 200)
+        assert.match(String(asMarkdown.headers.get('content-type')), /text\/markdown/)
+        assert.match(asMarkdown.payload, /# Ship the report\./)
+        assert.match(asMarkdown.payload, /## Files changed/)
+        assert.match(asMarkdown.payload, /\| out\.txt \| created \|/)
+        assert.match(asMarkdown.payload, /## Audit/)
+        assert.match(asMarkdown.payload, /Chain: intact/)
+
+        assert.equal((await request('GET', '/api/runs/run-nope/report')).status, 404)
+      }, { model, workspaceRoot: directory })
+    } finally {
+      if (previousKey === undefined) delete process.env.XAI_API_KEY
+      else process.env.XAI_API_KEY = previousKey
+    }
   })
 })
 

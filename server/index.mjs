@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import path from 'node:path'
 import { createApp } from './app.mjs'
+import { resolveSettings } from './config.mjs'
 import { FulkrumStore } from './store.mjs'
 import { createProviderRegistry } from './providerRegistry.mjs'
 import { createRunOrchestrator } from './orchestrator.mjs'
@@ -11,16 +13,20 @@ import { createExecutionRuntime } from './execution.mjs'
 import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
 import { reconcileInterruptedRuns } from './recovery.mjs'
 
-const port = Number(process.env.FULKRUM_API_PORT ?? 8787)
+// Read once, validated, with any problems reported below.
+const { values: settings, problems: settingProblems } = resolveSettings()
+const port = settings.FULKRUM_API_PORT
 const ownerId = `bridge-${randomUUID().slice(0, 8)}`
-const allowedOrigins = new Set((process.env.FULKRUM_ALLOWED_ORIGINS ?? 'http://127.0.0.1:5173,http://localhost:5173').split(',').map((origin) => origin.trim()).filter(Boolean))
+const allowedOrigins = new Set(settings.FULKRUM_ALLOWED_ORIGINS)
+const dataDir = settings.FULKRUM_DATA_DIR || 'data'
+const databasePath = settings.FULKRUM_DB_PATH || path.join(dataDir, 'fulkrum.sqlite')
 
 const systemPrompt = `You are Fulkrum's Head AI. You are the supervisor of a small team with a research worker and a build worker. The user speaks to you in a shared project chat. Keep the conversation practical and concise. Explain the plan, identify the next decision, and never claim a worker completed something unless the system has reported it. Before execution, help the user shape and approve a plan. During execution, coordinate the workers and surface disagreements.`
 
-const store = new FulkrumStore()
+const store = new FulkrumStore(databasePath)
 const providerRegistry = createProviderRegistry(store)
 const execution = createExecutionRuntime()
-const toolBroker = new FulkrumToolBroker({ execution })
+const toolBroker = new FulkrumToolBroker({ execution, workspaceRoot: settings.FULKRUM_WORKSPACE_ROOT || process.cwd() })
 const pricing = createPricing()
 const modelCaller = createModelCaller({ providerRegistry, allowPrivate: privateProviderUrlsAllowed() })
 
@@ -41,7 +47,29 @@ const orchestrator = createRunOrchestrator({
   pricing,
 })
 
-const app = createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, planService, pricing, execution, allowedOrigins, ownerId })
+const app = createApp({
+  store,
+  toolBroker,
+  providerRegistry,
+  orchestrator,
+  callProvider,
+  planService,
+  pricing,
+  execution,
+  allowedOrigins,
+  ownerId,
+  serveUi: Boolean(settings.FULKRUM_SERVE_UI),
+  distDir: settings.FULKRUM_DIST_DIR || 'dist',
+})
+
+// A setting that could not be used as given is a startup fact, not something to
+// discover later through a puzzling failure.
+if (settingProblems.length) {
+  console.log(`[fulkrum] ${settingProblems.length} setting(s) could not be used as given:`)
+  for (const problem of settingProblems) {
+    console.log(`[fulkrum]   ${problem.name}: ${problem.message} (using ${JSON.stringify(problem.using)})`)
+  }
+}
 
 const interrupted = reconcileInterruptedRuns({ store, log: (message) => console.log(`[fulkrum] ${message}`) })
 if (interrupted.interrupted.length) {
@@ -53,7 +81,7 @@ if (pruned > 0) console.log(`[fulkrum] pruned ${pruned} stored tool output(s) pa
 
 // A daily copy, written from the live database with VACUUM INTO. A corrupted file
 // with no backup is the one failure this store cannot recover from on its own.
-const backupIntervalHours = Number(process.env.FULKRUM_BACKUP_INTERVAL_HOURS ?? 24)
+const backupIntervalHours = Number(settings.FULKRUM_BACKUP_INTERVAL_HOURS ?? 24)
 if (Number.isFinite(backupIntervalHours) && backupIntervalHours > 0) {
   try {
     const { newestAgeMs } = store.backupStatus()
@@ -68,6 +96,8 @@ if (Number.isFinite(backupIntervalHours) && backupIntervalHours > 0) {
 
 app.server.listen(port, '127.0.0.1', async () => {
   console.log(`Fulkrum API bridge listening on http://127.0.0.1:${port}`)
+  if (app.servingUi) console.log(`[fulkrum] serving the built UI from ${path.resolve(settings.FULKRUM_DIST_DIR || 'dist')} — open http://127.0.0.1:${port}/`)
+  else console.log(`[fulkrum] the UI is not served here; run \`npm run dev\` for the dev server, or set FULKRUM_SERVE_UI=1 after a build`)
   console.log(`[fulkrum] schema version ${store.stats().schemaVersion}, owner ${ownerId}, prices ${pricing.version} (${pricing.known} models)`)
   // Say this at boot rather than leaving it to be discovered: it is the one
   // control this application deliberately does not have.

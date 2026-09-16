@@ -57,6 +57,28 @@ All notable changes to Fulkrum are documented here. This project follows
 - **The daily budget window is documented** (local midnight) and can be pinned with
   `FULKRUM_BUDGET_TIMEZONE=UTC`.
 
+### Added (product)
+- **A production mode.** `npm run build && npm start` runs one process that serves
+  the interface, the API, and the event stream on loopback; previously `npm run dev`
+  was the only way to run it, and `npm run preview` served the built UI without any
+  API. Static files are containment-checked before they are read, the entry document
+  is never cached while hashed assets are immutable, a client-side route falls back
+  to the entry document, and a CSP plus `nosniff` and `no-referrer` are set. A
+  `bin/fulkrum.mjs` launcher makes the same thing available as a linked command,
+  with the working directory as the workspace.
+- **One description of every setting, validated.** 58 environment variables were
+  read across eleven modules with ad-hoc parsing; they are now declared in one place
+  with a kind, a default, and a description, and `GET /api/config` reports each one
+  with its effective value, its source, and any problem — a port that is not a port,
+  an allowlist entry with a scheme in it, a timeout that is not a number. Startup
+  says the same thing rather than leaving it to be discovered.
+- **An API contract, and a test that keeps it honest.** `GET /api/openapi.json`
+  describes every route, and `GET /api/runs/:id/report` writes up a run as JSON or
+  Markdown: what was asked, the plan, each worker's result, the files changed, cost
+  by model, and the audit verdict. Errors are RFC 9457 problem details now, with
+  `error` kept as a deprecated alias, and a coverage test calls every documented
+  route so the spec cannot drift away from the server.
+
 ### Security
 - **Outbound connections are pinned to the address that was validated, and bodies
   are read with a byte cap.** Validation resolved a hostname and the request then

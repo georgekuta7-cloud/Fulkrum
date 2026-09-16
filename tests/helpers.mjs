@@ -56,9 +56,9 @@ export async function withStore(callback) {
  */
 /**
  * @param {(context: any) => Promise<any>} callback
- * @param {{ workspaceRoot?: string, callProvider?: any, model?: any, pricing?: any, realModelCall?: boolean }} [options]
+ * @param {{ workspaceRoot?: string, callProvider?: any, model?: any, pricing?: any, realModelCall?: boolean, serveUi?: boolean, distDir?: string }} [options]
  */
-export async function withServer(callback, { workspaceRoot, callProvider, model, pricing, realModelCall = false } = {}) {
+export async function withServer(callback, { workspaceRoot, callProvider, model, pricing, realModelCall = false, serveUi = false, distDir = 'dist' } = {}) {
   const directory = workspaceRoot ?? (await mkdtemp(path.join(tmpdir(), 'fulkrum-api-')))
   const store = new FulkrumStore(path.join(directory, 'fulkrum.sqlite'))
   const toolBroker = new FulkrumToolBroker({ workspaceRoot: directory, httpAllowlist: [] })
@@ -90,6 +90,8 @@ export async function withServer(callback, { workspaceRoot, callProvider, model,
     planService,
     pricing: activePricing,
     allowedOrigins: new Set(['http://127.0.0.1:5173']),
+    serveUi,
+    distDir,
     callProvider: callProvider ?? (realCaller
       ? (provider, modelName, messages, instructions) => realCaller.callModel(provider, modelName, messages, { tools: [], instructions: instructions ?? 'test instructions' })
       : async () => ({ text: 'stub reply', usage: null })),
