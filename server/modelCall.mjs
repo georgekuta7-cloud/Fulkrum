@@ -100,11 +100,15 @@ export function toGoogleContents(messages) {
  * The body genuinely differs per protocol, so it is left untyped rather than
  * unioned: a union would force callers to narrow three shapes to read one field.
  *
+ * `temperature` is resolved by the provider registry, not here, because whether a
+ * model accepts one is a property of the model: reasoning models reject any value
+ * other than their own default with a 400.
+ *
  * @param {string} protocol
- * @param {{ baseUrl: string, model: string, messages: Array<Record<string, any>>, tools?: Array<Record<string, any>>, instructions?: string }} request
+ * @param {{ baseUrl: string, model: string, messages: Array<Record<string, any>>, tools?: Array<Record<string, any>>, instructions?: string, temperature?: number }} request
  * @returns {{ url: string, body: any }}
  */
-export function buildRequest(protocol, { baseUrl, model, messages, tools = [], instructions }) {
+export function buildRequest(protocol, { baseUrl, model, messages, tools = [], instructions, temperature }) {
   const endpoint = String(baseUrl).replace(/\/$/, '')
 
   if (protocol === 'anthropic') {
@@ -115,6 +119,7 @@ export function buildRequest(protocol, { baseUrl, model, messages, tools = [], i
         max_tokens: maxTokens,
         system: instructions,
         messages: toAnthropicMessages(messages),
+        ...(temperature === undefined ? {} : { temperature }),
         ...(tools.length ? { tools: tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.parameters })) } : {}),
       },
     }
@@ -127,7 +132,7 @@ export function buildRequest(protocol, { baseUrl, model, messages, tools = [], i
         systemInstruction: { parts: [{ text: instructions }] },
         contents: toGoogleContents(messages),
         ...(tools.length ? { tools: [{ functionDeclarations: tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters })) }] } : {}),
-        generationConfig: { temperature: 0.3 },
+        ...(temperature === undefined ? {} : { generationConfig: { temperature } }),
       },
     }
   }
@@ -136,11 +141,36 @@ export function buildRequest(protocol, { baseUrl, model, messages, tools = [], i
     url: `${endpoint}/chat/completions`,
     body: {
       model,
-      temperature: 0.3,
+      ...(temperature === undefined ? {} : { temperature }),
       messages: toOpenAiMessages(messages, instructions),
       ...(tools.length ? { tools: tools.map((tool) => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } })), tool_choice: 'auto' } : {}),
     },
   }
+}
+
+/**
+ * Headers that carry credentials.
+ *
+ * `auto` follows the protocol's own convention. Any other style is the caller's,
+ * because gateways genuinely disagree: Azure wants `api-key`, some proxies want a
+ * header of their own, and a server on your own machine often wants nothing.
+ * Configured extra headers are applied first so they cannot displace the credential.
+ *
+ * @param {string} protocol
+ * @param {{ key?: string | null, style?: string, headerName?: string | null, headers?: Record<string, string> }} credentials
+ */
+export function providerAuthHeaders(protocol, credentials = {}) {
+  const headers = { ...(credentials.headers ?? {}) }
+  const key = credentials.key ?? null
+  const style = credentials.style ?? 'auto'
+  const resolved = style === 'auto' ? (protocol === 'anthropic' ? 'x-api-key' : protocol === 'google' ? 'x-goog-api-key' : 'bearer') : style
+
+  if (key && resolved === 'bearer') headers.Authorization = `Bearer ${key}`
+  else if (key && resolved === 'x-api-key') headers['x-api-key'] = key
+  else if (key && resolved === 'api-key') headers['api-key'] = key
+  else if (key && resolved === 'header' && credentials.headerName) headers[credentials.headerName] = key
+  if (protocol === 'anthropic') headers['anthropic-version'] = headers['anthropic-version'] ?? '2023-06-01'
+  return headers
 }
 
 export function parseResponse(protocol, payload) {
@@ -288,19 +318,28 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
    * @param {{ tools?: Array<Record<string, any>>, instructions?: string }} [options]
    */
   const callModel = async (provider, model, messages, { tools = [], instructions } = {}) => {
-    const base = await validateOutboundUrl(provider.baseUrl, { allowPrivate })
-    const { url, body } = buildRequest(provider.protocol, { baseUrl: base.toString(), model, messages, tools, instructions })
-    const headers = { 'Content-Type': 'application/json' }
-    if (provider.protocol === 'anthropic') {
-      headers['x-api-key'] = providerRegistry.secret(provider)
-      headers['anthropic-version'] = '2023-06-01'
-    } else if (provider.protocol === 'google') {
-      headers['x-goog-api-key'] = providerRegistry.secret(provider)
-    } else {
-      headers.Authorization = `Bearer ${providerRegistry.secret(provider)}`
-    }
+    const credentials = providerRegistry.credentials(provider)
+    // A provider marked as local is allowed to resolve to a private address; the
+    // global flag stays as the fallback for everyone else.
+    const base = await validateOutboundUrl(provider.baseUrl, { allowPrivate: credentials.allowPrivate || allowPrivate })
+    const sampling = providerRegistry.sampling(provider, model)
+    const { url, body } = buildRequest(provider.protocol, { baseUrl: base.toString(), model, messages, tools, instructions, temperature: sampling.temperature })
+    const headers = { 'Content-Type': 'application/json', ...providerAuthHeaders(provider.protocol, credentials) }
 
-    const payload = await requestWithRetry(0, url, { method: 'POST', headers, body: JSON.stringify(body) })
+    let payload
+    try {
+      payload = await requestWithRetry(0, url, { method: 'POST', headers, body: JSON.stringify(body) })
+    } catch (error) {
+      // A model that fixes its own sampling settings answers 400 to any temperature
+      // we send. Retry once without it and remember the answer, so a model this
+      // application has never seen costs at most one rejected call.
+      const rejectedTemperature = body.temperature !== undefined && error instanceof ProviderError && error.status === 400 && /temperature/i.test(error.message)
+      if (!rejectedTemperature) throw error
+      const retryBody = { ...body }
+      delete retryBody.temperature
+      payload = await requestWithRetry(0, url, { method: 'POST', headers, body: JSON.stringify(retryBody) })
+      providerRegistry.rememberTemperature?.(provider, 'omit')
+    }
     return parseResponse(provider.protocol, payload)
   }
 

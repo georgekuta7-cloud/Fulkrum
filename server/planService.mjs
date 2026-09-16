@@ -74,7 +74,7 @@ export function createPlanService({ store, providerRegistry, callModel, pricing 
         provider = null
       }
 
-      if (!provider || !providerRegistry.secret(provider)) {
+      if (!provider || !providerRegistry.isConfigured(provider)) {
         return { plan: persist({ run, built: demoPlan(direction), source: 'demo' }), created: true, demo: true }
       }
 

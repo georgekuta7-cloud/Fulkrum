@@ -1,10 +1,10 @@
 {
   "name": "fulkrum",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.2.0-dev",
   "type": "module",
   "engines": {
-    "node": ">=22.9"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "dev": "concurrently -k \"npm:dev:client\" \"npm:dev:server\"",

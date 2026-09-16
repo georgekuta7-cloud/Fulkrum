@@ -88,7 +88,7 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
     let lastError
     for (const [index, candidate] of attempts.entries()) {
       const provider = resolveRoute(runId, candidate, role)
-      if (!providerRegistry.secret(provider)) {
+      if (!providerRegistry.isConfigured(provider)) {
         lastError = new Error(`No key configured for ${provider.label}.`)
         continue
       }
@@ -174,6 +174,7 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
       name,
       kind: tool?.kind ?? 'unknown',
       input: safeInput,
+      rawInput: input,
       resolved: resolution.ok ? resolution.resolved : null,
       fingerprint: resolution.ok ? fingerprintToolCall(resolution) : null,
     })
@@ -326,7 +327,7 @@ Rules:
       const provider = resolveRoute(runId, route, role.agentId)
       /** @type {any} */
       let outcome
-      if (!providerRegistry.secret(provider)) {
+      if (!providerRegistry.isConfigured(provider)) {
         outcome = { text: '', demo: true, steps: 0, usedTools: [] }
       } else {
         outcome = await runAgentTask({ runId, task, role, roleInstructions: role.instructions, goal, route, handoff, acceptanceCheck: planTask.acceptanceCheck, parentSpanId: span.id })
@@ -490,8 +491,26 @@ Rules:
         .map((planTask, index) => ({ planTask, result: resultsByPlanTask.get(index) ?? '(no summary)' }))
 
       store.appendEvent({ runId, type: 'head.review.started', agentId: 'head', payload: { workerCount: plan.tasks.length, planId: plan.plan.id } })
-      const reviewRoute = routing.head ?? 'Grok · grok-4'
-      const reviewProvider = resolveRoute(runId, reviewRoute, 'head')
+      // Pick the reviewer the way workers pick theirs: what this run asked for,
+      // then the project setting, then the configured fallbacks, then whichever
+      // provider actually holds a key. A hardcoded route meant a user without that
+      // one provider silently received a demo review instead of a real one.
+      const projectRouting = store.getProject(run.projectId)?.project.settings?.routing ?? {}
+      const reviewCandidates = [routing.head ?? projectRouting.head ?? '', ...providerRegistry.fallbackRoutes()]
+      let reviewRoute = ''
+      let reviewProvider = null
+      for (const candidate of reviewCandidates) {
+        if (!candidate) continue
+        const provider = resolveRoute(runId, candidate, 'head')
+        if (!providerRegistry.isConfigured(provider)) continue
+        reviewRoute = candidate
+        reviewProvider = provider
+        break
+      }
+      if (!reviewProvider) {
+        reviewProvider = providerRegistry.configuredProviders()[0] ?? resolveRoute(runId, routing.head ?? projectRouting.head, 'head')
+        reviewRoute = reviewProvider.label
+      }
       const reviewModel = providerRegistry.model(reviewProvider, reviewRoute)
       const reviewPrompt = `Review the worker summaries for this plan and produce a concise decision packet. State agreement, disagreement, the next action, and any approval still needed.
 
@@ -501,11 +520,11 @@ ${plan.plan.objective}
 ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}:\n${result}`).join('\n\n')}`
 
       let review
-      if (providerRegistry.secret(reviewProvider)) {
+      if (providerRegistry.isConfigured(reviewProvider)) {
         const response = await callModelWithFallback({ runId, role: 'head', route: reviewRoute, messages: [{ role: 'user', content: reviewPrompt }], tools: [], instructions: 'You are Head AI reviewing worker outputs. Return a concise decision packet, not hidden reasoning.' })
         review = response.text
       } else {
-        review = 'Head demo review: the workers ran in demo mode, so there is nothing substantive to review yet. Add a provider key to .env.local and re-run this plan to get real findings.'
+        review = 'Head demo review: no provider key is configured, so there is nothing substantive to review yet. Add a key to .env.local and re-run this plan to get real findings.'
       }
       const cleanReview = typeof review === 'string' && review.trim() ? review.trim() : 'Head AI did not return a review summary.'
 
@@ -516,7 +535,7 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
         runId,
         type: 'run.review.ready',
         agentId: 'head',
-        payload: { summary: cleanReview, provider: reviewProvider.id, model: reviewModel, demo: !providerRegistry.secret(reviewProvider), planId: plan.plan.id },
+        payload: { summary: cleanReview, provider: reviewProvider.id, model: reviewModel, demo: !providerRegistry.isConfigured(reviewProvider), planId: plan.plan.id },
       })
     } finally {
       clearInterval(heartbeat)

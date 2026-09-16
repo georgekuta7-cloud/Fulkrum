@@ -45,7 +45,7 @@ act:
    unparseable calls — still refuse. Both the grant and its revocation are events
    in the audit log. Persistent "always allow" is refused rather than
    approximated, because a standing exception needs a place to review it.
-4. **Arbitrary command execution happens only inside a container.** `shell.exec`
+5. **Arbitrary command execution happens only inside a container.** `shell.exec`
    runs a fresh container per command: no network, read-only root filesystem with
    only the workspace mounted writable, non-root user, all capabilities dropped,
    `no-new-privileges`, resource limits, and a wall-clock timeout that stops and
@@ -55,10 +55,10 @@ act:
    rounds demonstrated was escapable. With no container engine reachable,
    execution is disabled rather than falling back to the host, and WSL2 is not
    used as a boundary because its interop layer can execute Windows binaries.
-5. **Egress is default-deny** and is the last line of defense. The `http.request`
+6. **Egress is default-deny** and is the last line of defense. The `http.request`
    tool refuses private, loopback, link-local, and multicast targets, validates
    every redirect hop, and requires an explicit host allowlist.
-6. **Secrets are not readable by tools.** Known credential paths are refused at
+7. **Secrets are not readable by tools.** Known credential paths are refused at
    the tool boundary, and tool output is scanned for credential shapes before it
    reaches the model or the audit log.
 
@@ -115,6 +115,12 @@ It does **not** cover:
   workspace; the log records the command, not what it did to files inside.
 - Model reasoning or the contents of prompts, which are not stored. Tool call
   arguments and results are stored, redacted.
+- The original, unredacted arguments of a tool call. They are kept apart from the
+  redacted copy — execution needs them, because redaction must never change what a
+  write produces — so a call that carried a credential holds it in the database
+  even though the log and the UI show `[redacted]`.
+- Provider credentials stored from the settings drawer, which live in the same
+  database, unencrypted, and are never returned by the API.
 - Side effects of the model provider itself (their logs, their retention).
 - Changes made by the user, or by other software, while a run is in progress.
 

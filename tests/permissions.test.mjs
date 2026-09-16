@@ -65,6 +65,16 @@ test('windows path traps are refused', async () => {
     assert.throws(() => resolveWorkspacePath(directory, 'notes.txt:hidden'), /Alternate data stream/)
     assert.throws(() => resolveWorkspacePath(directory, 'CON'), /Reserved device names/)
     assert.throws(() => resolveWorkspacePath(directory, '\\\\server\\share\\file'), /UNC and device paths/)
+
+    // The same traps behind a drive letter. An absolute path used to return early,
+    // so C:\ws\CON.txt reached the device and C:\ws\a.txt:stream reached an
+    // alternate data stream — neither is visible in an ordinary listing.
+    assert.throws(() => resolveWorkspacePath(directory, path.join(directory, 'CON.txt')), /Reserved device names/)
+    assert.throws(() => resolveWorkspacePath(directory, path.join(directory, 'src', 'LPT1.md')), /Reserved device names/)
+    assert.throws(() => resolveWorkspacePath(directory, path.join(directory, 'notes.txt:stream')), /Alternate data stream/)
+
+    // An ordinary absolute path is still allowed.
+    assert.doesNotThrow(() => resolveWorkspacePath(directory, path.join(directory, 'README.md')))
   })
 })
 

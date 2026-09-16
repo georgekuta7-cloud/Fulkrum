@@ -37,6 +37,37 @@ test('an oversized body is refused', async () => {
   })
 })
 
+test('the body cap counts bytes, not characters', async () => {
+  await withServer(async ({ request }) => {
+    // 40k CJK characters is ~120 kB of UTF-8 but only 40k UTF-16 units, so a cap
+    // measured in characters let a body more than three times the limit through.
+    const response = await request('POST', '/api/chat', JSON.stringify({ message: '好'.repeat(40_000) }))
+    assert.equal(response.status, 413)
+    assert.match(String(response.payload.error), /100000 bytes/)
+  })
+})
+
+test('a live chat reply reaches the client, and is priced', async () => {
+  const previousKey = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-chat-reply'
+  try {
+    await withServer(async ({ request, store }) => {
+      const { projectId, runId } = await makeRun(request)
+      const response = await request('POST', '/api/chat', { projectId, runId, message: 'Summarise the direction.', history: [] })
+      // The success path used to hand the provider result to sendJson, which called
+      // writeHead on it: every live chat answered 502 while the call was still
+      // billed. Demo mode hid it, because that path returns earlier.
+      assert.equal(response.status, 200, `live chat must answer 200, got ${response.status} ${JSON.stringify(response.payload)}`)
+      assert.equal(response.payload.reply, 'stub reply')
+      assert.equal(response.payload.demo, false)
+      assert.equal(store.listModelCalls(runId).length, 1, 'the live call lands in the cost ledger')
+    })
+  } finally {
+    if (previousKey === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousKey
+  }
+})
+
 test('a browser origin that is not allowlisted is refused', async () => {
   await withServer(async ({ request }) => {
     const allowed = await request('GET', '/api/health', undefined, { Origin: 'http://127.0.0.1:5173' })

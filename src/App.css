@@ -1528,7 +1528,8 @@ select {
 .route-label strong { color: #31443c; font-size: 11px; }
 .route-label small { color: #89948c; font-size: 9px; }
 
-.route-field select {
+.route-field select,
+.route-field input {
   width: 100%;
   padding: 8px 25px 8px 9px;
   color: #536b61;
@@ -1540,7 +1541,12 @@ select {
   font-size: 9px;
 }
 
-.route-field select:focus {
+.route-field input {
+  padding-right: 9px;
+}
+
+.route-field select:focus,
+.route-field input:focus {
   border-color: #83aa9b;
   box-shadow: 0 0 0 3px rgba(88, 145, 123, 0.12);
 }
@@ -1629,7 +1635,8 @@ select {
   .activity-tag { display: inline-block; margin-top: 6px; }
   .routing-drawer { padding: 22px 17px; }
   .route-field { grid-template-columns: 30px 1fr; }
-  .route-field select { grid-column: 1 / -1; }
+  .route-field select,
+  .route-field input { grid-column: 1 / -1; }
 }
 
 .online-indicator.demo {
@@ -2620,3 +2627,76 @@ select {
   background: #fdf6ec;
   color: #8a6134;
 }
+
+/* Provider settings: each row can open an editor for its own credentials, auth
+   style, sampling policy, and local-network access. */
+.settings-provider-entry {
+  display: grid;
+  gap: 8px;
+}
+
+.provider-editor {
+  padding: 11px 12px;
+  border: 1px solid #d9ddd5;
+  border-radius: 6px;
+  background: #fbfaf5;
+}
+
+.provider-editor-wide {
+  grid-column: 1 / -1;
+}
+
+.provider-editor select,
+.provider-editor textarea {
+  width: 100%;
+  min-height: 34px;
+  padding: 8px 9px;
+  color: #3d5148;
+  background: #f8f7f2;
+  border: 1px solid #d9ddd5;
+  border-radius: 5px;
+  outline: none;
+  font-family: 'IBM Plex Mono', Consolas, monospace;
+  font-size: 9px;
+}
+
+.provider-editor textarea {
+  resize: vertical;
+}
+
+.provider-editor select:focus,
+.provider-editor textarea:focus {
+  border-color: #83aa9b;
+  box-shadow: 0 0 0 3px rgba(88, 145, 123, 0.12);
+}
+
+.provider-editor-check {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 7px;
+}
+
+.provider-editor-check input {
+  width: auto;
+  min-height: 0;
+}
+
+.provider-editor-check > span {
+  color: #3d5148;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.provider-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.drawer-note {
+  margin: 8px 0 0;
+  color: #7c877f;
+  font-size: 10px;
+  line-height: 1.5;
+}
+

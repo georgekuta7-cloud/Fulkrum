@@ -1,4 +1,5 @@
 import http from 'node:http'
+import { canonicalJson } from './canonicalJson.mjs'
 import { diffHunks } from './diff.mjs'
 import { privateProviderUrlsAllowed, validateOutboundUrl } from './networkPolicy.mjs'
 import { fingerprintToolCall, permissionMatrix } from './permissions.mjs'
@@ -45,6 +46,7 @@ export function sendJson(response, status, payload) {
 export function readJson(request, maximumLength = MAX_JSON_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     let body = ''
+    let received = 0
     let settled = false
     const fail = (status, message) => {
       if (settled) return
@@ -54,8 +56,12 @@ export function readJson(request, maximumLength = MAX_JSON_BODY_BYTES) {
 
     request.on('data', (chunk) => {
       if (settled) return
+      // Count bytes, not UTF-16 code units: `body.length` undercounts any
+      // multi-byte character, so a 100k-character CJK body is three times the
+      // stated limit.
+      received += chunk.length
       body += chunk
-      if (body.length > maximumLength) {
+      if (received > maximumLength) {
         fail(413, `Request body must be ${maximumLength} bytes or fewer.`)
         request.resume()
       }
@@ -147,7 +153,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
     store.appendMessage({ projectId: project.id, runId: run.id, role: 'user', content: message })
     store.appendEvent({ runId: run.id, type: 'message.user', agentId: 'head', payload: { content: message } })
 
-    if (!providerRegistry.secret(provider)) {
+    if (!providerRegistry.isConfigured(provider)) {
       const reply = demoReply(message)
       store.appendMessage({ projectId: project.id, runId: run.id, role: 'assistant', agentId: 'head', content: reply, metadata: { demo: true, provider: provider.id, model } })
       store.appendEvent({ runId: run.id, type: 'message.assistant', agentId: 'head', payload: { content: reply, demo: true, provider: provider.id, model } })
@@ -156,13 +162,13 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
     }
 
     try {
-      const response = await callProvider(provider, model, history)
-      const reply = response?.text
+      const completion = await callProvider(provider, model, history)
+      const reply = completion?.text
       if (typeof reply !== 'string' || !reply.trim()) throw new Error('The provider returned an empty response.')
       const cleanReply = reply.trim()
       // Chat costs money too, so it goes in the same ledger as worker calls.
-      const cost = pricing ? pricing.costOf({ model, usage: response.usage }) : { costUsd: null, priced: false, version: null }
-      store.recordModelCall({ runId: run.id, role: 'head', provider: provider.id, model, usage: response.usage, cost, latencyMs: null })
+      const cost = pricing ? pricing.costOf({ model, usage: completion.usage }) : { costUsd: null, priced: false, version: null }
+      store.recordModelCall({ runId: run.id, role: 'head', provider: provider.id, model, usage: completion.usage, cost, latencyMs: null })
       store.appendMessage({ projectId: project.id, runId: run.id, role: 'assistant', agentId: 'head', content: cleanReply, metadata: { demo: false, provider: provider.id, model } })
       store.appendEvent({ runId: run.id, type: 'message.assistant', agentId: 'head', payload: { content: cleanReply, demo: false, provider: provider.id, model } })
       sendJson(response, 200, { reply: cleanReply, demo: false, provider: provider.id, model, projectId: project.id, runId: run.id })
@@ -272,6 +278,17 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       }
 
       const providerMatch = requestUrl.pathname.match(/^\/api\/providers\/([^/]+)$/)
+      if ((request.method === 'PATCH' || request.method === 'PUT') && providerMatch) {
+        try {
+          const provider = providerRegistry.updateSettings(decodeURIComponent(providerMatch[1]), await readJson(request))
+          sendJson(response, 200, { provider })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Invalid provider settings.'
+          sendJson(response, /Unknown provider route/.test(message) ? 404 : 400, { error: message })
+        }
+        return
+      }
+
       if (request.method === 'DELETE' && providerMatch) {
         try {
           const id = providerRegistry.removeCustom(decodeURIComponent(providerMatch[1]))
@@ -566,19 +583,31 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           sendJson(response, 400, { error: 'Only "once" and "run" scopes are supported. A persistent exception needs a management view first.' })
           return
         }
-        const resolution = toolCall.resolved ? { ok: true, resolved: toolCall.resolved, sensitive: false } : toolBroker.resolve(toolCall.name, toolCall.input)
+        // Execute the arguments as they were sent, not the redacted copy kept for
+        // display: redaction would otherwise rewrite a file whose content happens
+        // to match a secret pattern.
+        const rawInput = store.getToolCallInput(toolCallId) ?? toolCall.input
+        const resolution = toolBroker.resolve(toolCall.name, rawInput)
         if (!resolution.ok) {
           store.updateToolCall(toolCall.id, { status: 'denied', error: resolution.error })
           sendJson(response, 409, { error: `This tool call can no longer be executed: ${resolution.error}` })
           return
         }
         // Detect a row edited after the fact: the recorded fingerprint must still
-        // describe the recorded arguments.
+        // describe the arguments this request is about to run.
         const expectedFingerprint = fingerprintToolCall(resolution)
         if (toolCall.fingerprint && toolCall.fingerprint !== expectedFingerprint) {
           store.updateToolCall(toolCall.id, { status: 'denied', error: 'The recorded arguments no longer match the approved fingerprint.' })
           store.appendEvent({ runId, type: 'tool.denied', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, name: toolCall.name, reason: 'Fingerprint mismatch.' } })
           sendJson(response, 409, { error: 'The recorded arguments no longer match the approved fingerprint.' })
+          return
+        }
+        // The same check for the copy the user was shown: if it was edited, what
+        // they approved is not what would run.
+        if (toolCall.resolved && canonicalJson(toolCall.resolved) !== canonicalJson(resolution.resolved)) {
+          store.updateToolCall(toolCall.id, { status: 'denied', error: 'The recorded arguments no longer describe this call.' })
+          store.appendEvent({ runId, type: 'tool.denied', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, name: toolCall.name, reason: 'Resolved arguments do not match the record.' } })
+          sendJson(response, 409, { error: 'The recorded arguments no longer describe this call.' })
           return
         }
 
@@ -595,7 +624,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
         // No worker is parked on this call (it was raised through the tools API),
         // so execute it directly and record that no run resumed.
-        const result = await runToolCall({ runId, toolCall: store.getToolCall(toolCallId), input: toolCall.input, resolved: resolution, approved: true })
+        const result = await runToolCall({ runId, toolCall: store.getToolCall(toolCallId), input: rawInput, resolved: resolution, approved: true })
         sendJson(response, result.ok ? 200 : 502, result.ok ? { output: result.output, toolCall: store.getToolCall(toolCallId), resumed: false } : { error: result.error, toolCall: store.getToolCall(toolCallId) })
         return
       }
@@ -659,7 +688,10 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           .filter((call) => call.kind === 'write' && call.status === 'completed')
           .map((call) => {
             const output = call.output ?? {}
-            const after = String(call.input?.content ?? '')
+            // The diff compares against what was actually written, so it reads the
+            // original arguments rather than the redacted display copy.
+            const raw = store.getToolCallInput(call.id)
+            const after = String((raw ?? call.input)?.content ?? '')
             const before = typeof output.previousContent === 'string' ? output.previousContent : ''
             const snapshotAvailable = output.created === true || typeof output.previousContent === 'string'
             const diff = snapshotAvailable ? diffHunks(before, after) : null
@@ -714,6 +746,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           name: body.name,
           kind: tool?.kind ?? 'unknown',
           input: toolBroker.redact(body.input ?? {}),
+          rawInput: body.input ?? {},
           resolved: resolution.ok ? resolution.resolved : null,
           fingerprint: resolution.ok ? fingerprintToolCall(resolution) : null,
           idempotencyKey,

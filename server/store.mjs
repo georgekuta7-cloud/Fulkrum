@@ -1,9 +1,22 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import path from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 import { canonicalJson } from './canonicalJson.mjs'
 import { applyMigrations } from './migrations.mjs'
+
+// node:sqlite exists from Node 22.5 but was gated behind --experimental-sqlite
+// until 22.13. A static import would fail while Node links this module's imports,
+// before any of our code runs, so `engines` and a version check could never
+// explain it — the process would just die with "No such built-in module".
+const requireBuiltin = createRequire(import.meta.url)
+/** @type {typeof import('node:sqlite').DatabaseSync} */
+let DatabaseSync
+try {
+  ({ DatabaseSync } = requireBuiltin('node:sqlite'))
+} catch {
+  throw new Error(`Fulkrum needs Node 22.13 or newer: node:sqlite is unavailable in ${process.version}. Upgrade Node and start Fulkrum again.`)
+}
 
 const genesisHash = 'genesis'
 
@@ -115,6 +128,19 @@ function taskFromRow(row) {
     planTaskId: row.plan_task_id ?? null,
     stepCount: Number(row.step_count ?? 0),
     createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  }
+}
+
+function providerSettingsFromRow(row) {
+  return {
+    providerId: row.provider_id,
+    apiKey: row.api_key ?? null,
+    authStyle: row.auth_style ?? 'auto',
+    authHeader: row.auth_header ?? null,
+    headers: parseJson(row.headers_json, {}),
+    allowPrivate: Number(row.allow_private) === 1,
+    temperature: row.temperature ?? 'auto',
     updatedAt: Number(row.updated_at),
   }
 }
@@ -448,11 +474,23 @@ export class FulkrumStore {
     return this.database.prepare('SELECT * FROM run_tasks WHERE run_id = ? ORDER BY created_at ASC').all(runId).map(taskFromRow)
   }
 
-  createToolCall({ runId, agentId = null, name, kind, input = {}, resolved = null, fingerprint = null, idempotencyKey = null, status = 'requested', id = `tool-${randomUUID()}` }) {
+  createToolCall({ runId, agentId = null, name, kind, input = {}, rawInput = null, resolved = null, fingerprint = null, idempotencyKey = null, status = 'requested', id = `tool-${randomUUID()}` }) {
     const now = Date.now()
     this.database.prepare('INSERT INTO tool_calls(id, run_id, agent_id, name, kind, status, input_json, resolved_json, call_fingerprint, idempotency_key, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(id, runId, agentId, name, kind, status, JSON.stringify(input), resolved ? JSON.stringify(resolved) : null, fingerprint, idempotencyKey, now)
+    if (rawInput !== null && rawInput !== undefined) {
+      this.database.prepare('INSERT INTO tool_call_inputs(tool_call_id, raw_json, created_at) VALUES(?, ?, ?)').run(id, JSON.stringify(rawInput), now)
+    }
     return this.getToolCall(id)
+  }
+
+  /**
+   * The arguments as the model sent them. `input` on the row is redacted for
+   * display, so anything that executes a call must read it from here.
+   */
+  getToolCallInput(toolCallId) {
+    const row = this.database.prepare('SELECT raw_json FROM tool_call_inputs WHERE tool_call_id = ?').get(toolCallId)
+    return row ? parseJson(row.raw_json, null) : null
   }
 
   findToolCallByIdempotencyKey(runId, idempotencyKey) {
@@ -709,7 +747,7 @@ export class FulkrumStore {
       protocol: row.protocol,
       baseUrl: row.base_url,
       defaultModel: row.model,
-      envKey: row.env_key,
+      envKey: row.env_key ?? '',
       custom: true,
     }))
   }
@@ -718,12 +756,44 @@ export class FulkrumStore {
     const now = Date.now()
     this.database.prepare(`INSERT INTO provider_configs(id, label, protocol, base_url, model, env_key, created_at, updated_at)
       VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET label = excluded.label, protocol = excluded.protocol, base_url = excluded.base_url, model = excluded.model, env_key = excluded.env_key, updated_at = excluded.updated_at`).run(provider.id, provider.label, provider.protocol, provider.baseUrl, provider.defaultModel, provider.envKey, now, now)
+      ON CONFLICT(id) DO UPDATE SET label = excluded.label, protocol = excluded.protocol, base_url = excluded.base_url, model = excluded.model, env_key = excluded.env_key, updated_at = excluded.updated_at`).run(provider.id, provider.label, provider.protocol, provider.baseUrl, provider.defaultModel, provider.envKey ?? '', now, now)
     return this.listCustomProviders().find((item) => item.id === provider.id)
   }
 
   removeCustomProvider(providerId) {
     const result = this.database.prepare('DELETE FROM provider_configs WHERE id = ?').run(providerId)
+    return Number(result.changes) > 0
+  }
+
+  getProviderSettings(providerId) {
+    const row = this.database.prepare('SELECT * FROM provider_settings WHERE provider_id = ?').get(providerId)
+    return row ? providerSettingsFromRow(row) : null
+  }
+
+  listProviderSettings() {
+    return this.database.prepare('SELECT * FROM provider_settings').all().map(providerSettingsFromRow)
+  }
+
+  /** Upsert a partial change: only the fields present in the patch are touched. */
+  saveProviderSettings(providerId, patch = {}) {
+    const current = this.getProviderSettings(providerId)
+    const next = {
+      apiKey: patch.apiKey === undefined ? current?.apiKey ?? null : patch.apiKey,
+      authStyle: patch.authStyle ?? current?.authStyle ?? 'auto',
+      authHeader: patch.authHeader === undefined ? current?.authHeader ?? null : patch.authHeader,
+      headers: patch.headers === undefined ? current?.headers ?? {} : patch.headers,
+      allowPrivate: patch.allowPrivate === undefined ? current?.allowPrivate ?? false : Boolean(patch.allowPrivate),
+      temperature: patch.temperature ?? current?.temperature ?? 'auto',
+    }
+    this.database.prepare(`INSERT INTO provider_settings(provider_id, api_key, auth_style, auth_header, headers_json, allow_private, temperature, updated_at)
+      VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(provider_id) DO UPDATE SET api_key = excluded.api_key, auth_style = excluded.auth_style, auth_header = excluded.auth_header, headers_json = excluded.headers_json, allow_private = excluded.allow_private, temperature = excluded.temperature, updated_at = excluded.updated_at`)
+      .run(providerId, next.apiKey, next.authStyle, next.authHeader, JSON.stringify(next.headers), next.allowPrivate ? 1 : 0, next.temperature, Date.now())
+    return this.getProviderSettings(providerId)
+  }
+
+  removeProviderSettings(providerId) {
+    const result = this.database.prepare('DELETE FROM provider_settings WHERE provider_id = ?').run(providerId)
     return Number(result.changes) > 0
   }
 
@@ -733,10 +803,13 @@ export class FulkrumStore {
    * one would break verification of every event after it.
    */
   pruneToolOutputs({ retentionDays = Number(process.env.FULKRUM_TOOL_OUTPUT_RETENTION_DAYS ?? 14), now = Date.now() } = {}) {
-    if (!Number.isFinite(retentionDays) || retentionDays <= 0) return { pruned: 0 }
+    if (!Number.isFinite(retentionDays) || retentionDays <= 0) return { pruned: 0, prunedInputs: 0 }
     const cutoff = now - retentionDays * 24 * 60 * 60 * 1000
     const result = this.database.prepare('UPDATE tool_calls SET output_json = NULL, output_pruned_at = ? WHERE completed_at IS NOT NULL AND completed_at < ? AND output_json IS NOT NULL').run(now, cutoff)
-    return { pruned: Number(result.changes), cutoff }
+    // Raw inputs go with their outputs, but only for calls that can no longer be
+    // approved: a pending approval must keep the arguments it will execute.
+    const inputs = this.database.prepare("DELETE FROM tool_call_inputs WHERE created_at < ? AND tool_call_id IN (SELECT id FROM tool_calls WHERE status IN ('completed', 'denied', 'failed'))").run(cutoff)
+    return { pruned: Number(result.changes), prunedInputs: Number(inputs.changes), cutoff }
   }
 
   checkpoint() {

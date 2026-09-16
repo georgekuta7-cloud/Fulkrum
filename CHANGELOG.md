@@ -5,7 +5,50 @@ All notable changes to Fulkrum are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+- **Live chat answered 502 on every turn.** The success path shadowed the HTTP
+  response with the provider result and handed that to the JSON writer, which
+  called `writeHead` on a provider payload. Demo mode returned earlier, so a
+  keyless install never hit it; the call was still billed and recorded. Regression
+  test added.
+- **An approved write no longer writes the redacted text.** `tool_calls.input_json`
+  holds the redacted copy for the audit log and the UI, and the approve path used
+  to execute that same copy — so a file whose content matched a credential pattern
+  was written as `[redacted:…]` while its fingerprint claimed the original bytes.
+  Original arguments are now stored separately (`tool_call_inputs`), execution and
+  the artifact diff read them, and the redacted copy stays for display.
+- **`readJson` counted UTF-16 units, not bytes.** A body of multi-byte characters
+  could exceed the stated cap by roughly 3×.
+- **Reserved device names and alternate data streams were reachable through an
+  absolute path.** The check returned early on a drive letter, so `C:\ws\CON.txt`
+  and `C:\ws\a.txt:stream` passed. The colon and device-name tests now run on the
+  path after the drive prefix.
+- **The head review ran on a hardcoded route.** `Grok · grok-4` was used whether
+  or not that provider had a key, so a user with any other provider silently got a
+  demo review. The reviewer is now the run's route, the project setting, the
+  configured fallbacks, or the first provider that actually holds a key.
+- **A stale README `Current limits` section** contradicted the rest of the file
+  (it still claimed a git-only shell, no cost accounting, and no artifacts view).
+  Rewritten to state the limits that are actually current.
+
 ### Added
+- **Any OpenAI-compatible endpoint, configured in the UI.** A custom provider can
+  now carry its own key (stored locally, never returned by the API), an auth style
+  (`Bearer`, `x-api-key`, Azure's `api-key`, a named header, or none), extra
+  headers, a per-provider local-network opt-in, and a sampling policy. Role routes
+  accept free text, so a model name does not have to be one the list offers.
+- **Per-model sampling policy.** A temperature is sent only where the model takes
+  one: `gpt-5`, the `o` series, and `deepseek-reasoner` omit it by default, and a
+  provider that answers 400 complaining about temperature is retried once without
+  it and the result is remembered. This is what made the default OpenAI model fail
+  on every call.
+- **A provider probe that reports what it found.** `POST /api/providers/:id/test`
+  uses the configured credentials and auth style — including none — and returns
+  status, latency, and the model list, with a plain explanation when an address is
+  refused for being on the local network.
+- **Explicit Node requirement.** `engines` is `>=22.13.0`, and the store explains
+  itself instead of dying with "No such built-in module" when `node:sqlite` is
+  unavailable in the running version.
 - **Audit checkpoints, so a truncated log is detectable.** A hash chain proves
   nothing in the middle was edited, but deleting the last events leaves every
   remaining link valid. Each run's chain head is now anchored when the run stops

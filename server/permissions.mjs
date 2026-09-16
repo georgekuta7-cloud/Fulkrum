@@ -44,9 +44,12 @@ function deepestExistingAncestor(target) {
 function assertNoWindowsTraps(candidate) {
   const raw = String(candidate ?? '')
   if (raw.startsWith('\\\\') || raw.startsWith('//')) throw new Error('UNC and device paths are not available to agent tools.')
-  if (/^[a-zA-Z]:/.test(raw)) return // an absolute path is fine; containment is checked separately
-  if (raw.includes(':')) throw new Error('Alternate data stream paths are not available to agent tools.')
-  const segments = raw.split(/[\\/]/).filter(Boolean)
+  // The drive-letter colon is legitimate; the rest of the path is not exempt.
+  // Returning early here let C:\ws\CON.txt reach the device and C:\ws\a.txt:stream
+  // address an alternate data stream, because both live after the prefix.
+  const withoutDrive = raw.replace(/^[a-zA-Z]:/, '')
+  if (withoutDrive.includes(':')) throw new Error('Alternate data stream paths are not available to agent tools.')
+  const segments = withoutDrive.split(/[\\/]/).filter(Boolean)
   if (segments.some((segment) => windowsReservedPattern.test(segment))) {
     throw new Error('Reserved device names are not available to agent tools.')
   }

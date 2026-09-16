@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createApp } from '../server/app.mjs'
+import { createModelCaller } from '../server/modelCall.mjs'
 import { createProviderRegistry } from '../server/providerRegistry.mjs'
 import { createRunOrchestrator } from '../server/orchestrator.mjs'
 import { createPlanService } from '../server/planService.mjs'
@@ -55,13 +56,16 @@ export async function withStore(callback) {
  */
 /**
  * @param {(context: any) => Promise<any>} callback
- * @param {{ workspaceRoot?: string, callProvider?: any, model?: any, pricing?: any }} [options]
+ * @param {{ workspaceRoot?: string, callProvider?: any, model?: any, pricing?: any, realModelCall?: boolean }} [options]
  */
-export async function withServer(callback, { workspaceRoot, callProvider, model, pricing } = {}) {
+export async function withServer(callback, { workspaceRoot, callProvider, model, pricing, realModelCall = false } = {}) {
   const directory = workspaceRoot ?? (await mkdtemp(path.join(tmpdir(), 'fulkrum-api-')))
   const store = new FulkrumStore(path.join(directory, 'fulkrum.sqlite'))
   const toolBroker = new FulkrumToolBroker({ workspaceRoot: directory, httpAllowlist: [] })
   const providerRegistry = createProviderRegistry(store)
+  // A real caller builds the actual wire request — URL, headers, sampling — which
+  // is what the provider tests need to inspect. Everything else is stubbed.
+  const realCaller = realModelCall ? createModelCaller({ providerRegistry }) : null
   const modelCall = model ?? (async () => ({ text: 'stub model output', toolCalls: [], usage: null }))
   const activePricing = pricing ?? createPricing()
   const orchestrator = createRunOrchestrator({
@@ -86,7 +90,9 @@ export async function withServer(callback, { workspaceRoot, callProvider, model,
     planService,
     pricing: activePricing,
     allowedOrigins: new Set(['http://127.0.0.1:5173']),
-    callProvider: callProvider ?? (async () => ({ text: 'stub reply', usage: null })),
+    callProvider: callProvider ?? (realCaller
+      ? (provider, modelName, messages, instructions) => realCaller.callModel(provider, modelName, messages, { tools: [], instructions: instructions ?? 'test instructions' })
+      : async () => ({ text: 'stub reply', usage: null })),
   })
 
   await new Promise((resolve) => {

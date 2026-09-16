@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
 import { diffHunks, lineDiff } from '../server/diff.mjs'
@@ -226,5 +226,62 @@ test('a persistent "always" approval is refused rather than silently downgraded'
   } finally {
     if (previousKey === undefined) delete process.env.XAI_API_KEY
     else process.env.XAI_API_KEY = previousKey
+  }
+})
+
+test('an approved write lands the original bytes, not the redacted copy', async () => {
+  await withServer(async ({ request, store, directory }) => {
+    const project = await request('POST', '/api/projects', { name: 'write fixture' })
+    const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'selective' })
+
+    // The content is deliberately shaped like a credential. Redaction is for the
+    // log and the UI; it must never change what is written, or the file a user
+    // approved is not the file they get.
+    const secret = 'sk-live-EXAMPLE0123456789abcd'
+    const content = `API_KEY=${secret}\n`
+    const requested = await request('POST', `/api/runs/${run.payload.run.id}/tools`, { name: 'workspace.write', agentId: 'builder', input: { path: 'config.js', content } })
+    assert.equal(requested.status, 409, 'a write waits for approval in selective mode')
+    const toolCall = requested.payload.toolCall
+    assert.equal(toolCall.input.content.includes('[redacted:'), true, 'the copy kept for display is redacted')
+
+    const approved = await request('POST', `/api/runs/${run.payload.run.id}/tools/${toolCall.id}/approve`, { fingerprint: toolCall.fingerprint })
+    assert.equal(approved.status, 200)
+    assert.equal(await readFile(path.join(directory, 'config.js'), 'utf8'), content, 'the file matches what was approved')
+
+    assert.equal(store.getToolCallInput(toolCall.id).content, content, 'the original arguments are kept apart from the display copy')
+    assert.equal(JSON.stringify(store.listEvents(run.payload.run.id)).includes(secret), false, 'the raw secret never enters the audit chain')
+  })
+})
+
+test('the head review runs on a provider that has a key, not a hardcoded route', async () => {
+  const previousXai = process.env.XAI_API_KEY
+  const previousOpenai = process.env.OPENAI_API_KEY
+  delete process.env.XAI_API_KEY
+  process.env.OPENAI_API_KEY = 'sk-test-key-for-review'
+
+  // No tool calls, so the plan finishes and the run reaches its review.
+  const model = async ({ options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) return { text: planJson, toolCalls: [], usage: null }
+    if (instructions.includes('reviewing worker outputs')) return { text: 'Review from the configured provider.', toolCalls: [], usage: null }
+    return { text: 'Worker summary.', toolCalls: [], usage: null }
+  }
+
+  try {
+    await withServer(async ({ request, store }) => {
+      const runId = await startRun(request)
+      const finished = await waitFor(store, () => (store.getRun(runId).status === 'review' ? true : null))
+      assert.ok(finished, `run should reach review, saw ${store.getRun(runId).status}`)
+
+      const review = store.listEvents(runId).find((event) => event.type === 'run.review.ready')
+      assert.equal(review.payload.provider, 'openai', 'the review used the provider that holds a key')
+      assert.equal(review.payload.demo, false)
+      assert.equal(review.payload.summary, 'Review from the configured provider.')
+    }, { model })
+  } finally {
+    if (previousXai === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousXai
+    if (previousOpenai === undefined) delete process.env.OPENAI_API_KEY
+    else process.env.OPENAI_API_KEY = previousOpenai
   }
 })

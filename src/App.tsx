@@ -102,6 +102,13 @@ type ProviderStatus = {
   baseUrl: string
   configured: boolean
   custom: boolean
+  hasKey: boolean
+  keySource: string | null
+  authStyle: string
+  authHeader: string | null
+  headers: Record<string, string>
+  allowPrivate: boolean
+  temperature: string
 }
 
 type WorkspaceRun = {
@@ -365,13 +372,13 @@ const starterRouting: Record<AgentId, string> = {
 }
 
 const providerCatalog: ProviderStatus[] = [
-  { id: 'grok', label: 'Grok', envKey: 'XAI_API_KEY', model: 'grok-4', protocol: 'openai-compatible', baseUrl: 'https://api.x.ai/v1', configured: false, custom: false },
-  { id: 'openai', label: 'OpenAI', envKey: 'OPENAI_API_KEY', model: 'gpt-5', protocol: 'openai-compatible', baseUrl: 'https://api.openai.com/v1', configured: false, custom: false },
-  { id: 'anthropic', label: 'Anthropic', envKey: 'ANTHROPIC_API_KEY', model: 'claude-opus-4-1', protocol: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', configured: false, custom: false },
-  { id: 'google', label: 'Google', envKey: 'GOOGLE_API_KEY', model: 'gemini-2.5-pro', protocol: 'google', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', configured: false, custom: false },
-  { id: 'deepseek', label: 'DeepSeek', envKey: 'DEEPSEEK_API_KEY', model: 'deepseek-chat', protocol: 'openai-compatible', baseUrl: 'https://api.deepseek.com/v1', configured: false, custom: false },
-  { id: 'glm', label: 'GLM', envKey: 'GLM_API_KEY or ZAI_API_KEY', model: 'glm-4.5', protocol: 'openai-compatible', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', configured: false, custom: false },
-  { id: 'kimi', label: 'Kimi', envKey: 'KIMI_API_KEY or MOONSHOT_API_KEY', model: 'kimi-k2', protocol: 'openai-compatible', baseUrl: 'https://api.moonshot.ai/v1', configured: false, custom: false },
+  { id: 'grok', label: 'Grok', envKey: 'XAI_API_KEY', model: 'grok-4', protocol: 'openai-compatible', baseUrl: 'https://api.x.ai/v1', configured: false, custom: false, hasKey: false, keySource: null, authStyle: 'auto', authHeader: null, headers: {}, allowPrivate: false, temperature: 'auto' },
+  { id: 'openai', label: 'OpenAI', envKey: 'OPENAI_API_KEY', model: 'gpt-5', protocol: 'openai-compatible', baseUrl: 'https://api.openai.com/v1', configured: false, custom: false, hasKey: false, keySource: null, authStyle: 'auto', authHeader: null, headers: {}, allowPrivate: false, temperature: 'auto' },
+  { id: 'anthropic', label: 'Anthropic', envKey: 'ANTHROPIC_API_KEY', model: 'claude-opus-4-1', protocol: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', configured: false, custom: false, hasKey: false, keySource: null, authStyle: 'auto', authHeader: null, headers: {}, allowPrivate: false, temperature: 'auto' },
+  { id: 'google', label: 'Google', envKey: 'GOOGLE_API_KEY', model: 'gemini-2.5-pro', protocol: 'google', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', configured: false, custom: false, hasKey: false, keySource: null, authStyle: 'auto', authHeader: null, headers: {}, allowPrivate: false, temperature: 'auto' },
+  { id: 'deepseek', label: 'DeepSeek', envKey: 'DEEPSEEK_API_KEY', model: 'deepseek-chat', protocol: 'openai-compatible', baseUrl: 'https://api.deepseek.com/v1', configured: false, custom: false, hasKey: false, keySource: null, authStyle: 'auto', authHeader: null, headers: {}, allowPrivate: false, temperature: 'auto' },
+  { id: 'glm', label: 'GLM', envKey: 'GLM_API_KEY or ZAI_API_KEY', model: 'glm-4.5', protocol: 'openai-compatible', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', configured: false, custom: false, hasKey: false, keySource: null, authStyle: 'auto', authHeader: null, headers: {}, allowPrivate: false, temperature: 'auto' },
+  { id: 'kimi', label: 'Kimi', envKey: 'KIMI_API_KEY or MOONSHOT_API_KEY', model: 'kimi-k2', protocol: 'openai-compatible', baseUrl: 'https://api.moonshot.ai/v1', configured: false, custom: false, hasKey: false, keySource: null, authStyle: 'auto', authHeader: null, headers: {}, allowPrivate: false, temperature: 'auto' },
 ]
 
 /**
@@ -416,7 +423,7 @@ function App() {
   const [providerStatus, setProviderStatus] = useState(providerCatalog)
   const [projectId, setProjectId] = useState<string | null>(null)
   const [runId, setRunId] = useState<string | null>(null)
-  const [customProvider, setCustomProvider] = useState({ label: '', baseUrl: '', model: '', envKey: '' })
+  const [customProvider, setCustomProvider] = useState({ label: '', baseUrl: '', model: '', envKey: '', apiKey: '' })
   const [customProviderError, setCustomProviderError] = useState('')
   const [isAddingProvider, setIsAddingProvider] = useState(false)
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('selective')
@@ -435,6 +442,9 @@ function App() {
   const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([])
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
   const [providerTests, setProviderTests] = useState<Record<string, ProviderTest>>({})
+  const [editingProviderId, setEditingProviderId] = useState<string | null>(null)
+  const [providerSettingsSaving, setProviderSettingsSaving] = useState(false)
+  const [providerSettingsError, setProviderSettingsError] = useState('')
   const [execution, setExecution] = useState<ExecutionStatus | null>(null)
   const eventCursor = useRef(0)
 
@@ -667,11 +677,33 @@ function App() {
       const nextRouting = { ...routing, head: providerRoute }
       setRouting(nextRouting)
       void persistRouting(nextRouting).catch(() => undefined)
-      setCustomProvider({ label: '', baseUrl: '', model: '', envKey: '' })
+      setCustomProvider({ label: '', baseUrl: '', model: '', envKey: '', apiKey: '' })
     } catch (error) {
       setCustomProviderError(error instanceof Error ? error.message : 'Could not add provider.')
     } finally {
       setIsAddingProvider(false)
+    }
+  }
+
+  /** Save credentials and call settings for any provider, built-in or custom. */
+  const saveProviderSettings = async (provider: ProviderStatus, settings: Record<string, unknown>) => {
+    setProviderSettingsSaving(true)
+    setProviderSettingsError('')
+    try {
+      const response = await fetch(`/api/providers/${encodeURIComponent(provider.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      })
+      const payload = (await response.json().catch(() => ({}))) as { provider?: ProviderStatus; error?: string }
+      if (!response.ok || !payload.provider) throw new Error(payload.error ?? 'Could not save provider settings.')
+      setProviderStatus((current) => current.map((item) => (item.id === provider.id ? (payload.provider as ProviderStatus) : item)))
+      addActivity({ kind: 'system', title: `${provider.label} updated`, detail: 'Credentials and call settings were saved locally.', tag: 'SETTINGS' })
+      setEditingProviderId(null)
+    } catch (error) {
+      setProviderSettingsError(error instanceof Error ? error.message : 'Could not save provider settings.')
+    } finally {
+      setProviderSettingsSaving(false)
     }
   }
 
@@ -1104,7 +1136,7 @@ function App() {
           <AgentRoster agents={agents} routing={routing} selectedAgent={selectedAgent} onSelectAgent={(agentId) => setSelectedAgent(agentId as AgentId)} approved={approved} isPaused={isPaused} onEditRouting={() => setSettingsOpen(true)} />
 
 
-          <section className="provider-setup-panel"><div className="provider-setup-heading"><div><p className="eyebrow">Bring your own model</p><h2>Add a custom API</h2><p>OpenAI-compatible endpoints such as DeepSeek, GLM, Kimi, or a private gateway can join the team without changing the UI. A private address needs <code>FULKRUM_ALLOW_PRIVATE_PROVIDER_URLS=1</code> in <code>.env.local</code>, because loopback and private hosts are blocked by default.</p></div><span className="provider-count"><Bot size={14} />{routeOptions('head').length} routes</span></div><form className="provider-setup-form" onSubmit={addCustomProvider}><label><span>Provider name</span><input value={customProvider.label} onChange={(event) => setCustomProvider((current) => ({ ...current, label: event.target.value }))} placeholder="e.g. Local gateway" /></label><label><span>Base URL</span><input value={customProvider.baseUrl} onChange={(event) => setCustomProvider((current) => ({ ...current, baseUrl: event.target.value }))} placeholder="https://api.example.com/v1" /></label><label><span>Model</span><input value={customProvider.model} onChange={(event) => setCustomProvider((current) => ({ ...current, model: event.target.value }))} placeholder="model-name" /></label><label><span>Environment key</span><input value={customProvider.envKey} onChange={(event) => setCustomProvider((current) => ({ ...current, envKey: event.target.value }))} placeholder="CUSTOM_API_KEY" /></label><button className="primary-button provider-submit" type="submit" disabled={isAddingProvider}>{isAddingProvider ? 'Adding...' : <><Plus size={15} />Add provider</>}</button></form>{customProviderError ? <p className="provider-form-error">{customProviderError}</p> : null}</section>
+          <section className="provider-setup-panel"><div className="provider-setup-heading"><div><p className="eyebrow">Bring your own model</p><h2>Add a custom API</h2><p>OpenAI-compatible endpoints such as DeepSeek, GLM, Kimi, or a gateway on your own machine can join the team without changing the UI. Paste a key below, or leave it empty for an endpoint that needs none; an endpoint on loopback or your LAN needs local-network access turned on in its settings.</p></div><span className="provider-count"><Bot size={14} />{routeOptions('head').length} routes</span></div><form className="provider-setup-form" onSubmit={addCustomProvider}><label><span>Provider name</span><input value={customProvider.label} onChange={(event) => setCustomProvider((current) => ({ ...current, label: event.target.value }))} placeholder="e.g. Local gateway" /></label><label><span>Base URL</span><input value={customProvider.baseUrl} onChange={(event) => setCustomProvider((current) => ({ ...current, baseUrl: event.target.value }))} placeholder="https://api.example.com/v1" /></label><label><span>Model</span><input value={customProvider.model} onChange={(event) => setCustomProvider((current) => ({ ...current, model: event.target.value }))} placeholder="model-name" /></label><label><span>API key</span><input type="password" autoComplete="off" value={customProvider.apiKey} onChange={(event) => setCustomProvider((current) => ({ ...current, apiKey: event.target.value }))} placeholder="leave empty if the endpoint needs none" /></label><label><span>Environment key (optional)</span><input value={customProvider.envKey} onChange={(event) => setCustomProvider((current) => ({ ...current, envKey: event.target.value }))} placeholder="CUSTOM_API_KEY" /></label><button className="primary-button provider-submit" type="submit" disabled={isAddingProvider}>{isAddingProvider ? 'Adding...' : <><Plus size={15} />Add provider</>}</button></form>{customProviderError ? <p className="provider-form-error">{customProviderError}</p> : null}</section>
 
           <section className="workbench-grid"><ActivityFeed activity={activity} artifacts={artifacts} grants={grants} panelTab={panelTab} onSelectTab={setPanelTab} onRevokeGrant={(toolName) => void revokeGrant(toolName)} />
 
@@ -1114,7 +1146,7 @@ function App() {
 
       <div className="permission-dock"><ShieldCheck size={15} /><span><strong>Permission mode</strong><small>{permissionMode === 'guided' ? 'Ask before consequential actions' : permissionMode === 'selective' ? 'Pause on risky actions' : 'Run within approved boundaries'}</small></span><span className={`exec-chip ${execution?.available ? 'ready' : 'disabled'}`} title={execution?.available ? `${execution.label} ${execution.version} · image ${execution.image} · network ${execution.network}` : `${execution?.reason ?? 'Execution runtime unknown.'} ${execution?.hint ?? ''}`}>{execution?.available ? `commands: ${execution.engine} container` : 'commands: disabled, no container engine'}</span><select aria-label="Permission mode" value={permissionMode} onChange={(event) => void changePermissionMode(event.target.value as PermissionMode)}><option value="guided">Guided</option><option value="selective">Selective</option><option value="autopilot">Autopilot</option></select></div>
 
-      {settingsOpen ? <SettingsDrawer {...{ providerStatus, providerTests, testProvider, removeProvider, customProvider, setCustomProvider, addCustomProvider, isAddingProvider, customProviderError, agents, routing, setRouting, modelOptions, permissionMode, changePermissionMode, setSettingsOpen }} /> : null}
+      {settingsOpen ? <SettingsDrawer {...{ providerStatus, providerTests, testProvider, removeProvider, editingProviderId, setEditingProviderId, saveProviderSettings, providerSettingsSaving, providerSettingsError, customProvider, setCustomProvider, addCustomProvider, isAddingProvider, customProviderError, agents, routing, setRouting, modelOptions, permissionMode, changePermissionMode, setSettingsOpen }} /> : null}
 
 
       {pendingApproval ? <div className="tool-approval-banner"><ShieldCheck size={17} /><span><strong>Approval needed for {pendingApproval.name}</strong><small>{pendingApproval.reason}{pendingApproval.summary ? ` · ${pendingApproval.summary}` : ''}</small></span><button className="secondary-button" type="button" onClick={() => void denyToolCall()}><X size={15} />Deny</button><button className="secondary-button" type="button" onClick={() => void approveToolCall('run')}><Check size={15} />Approve for this run</button><button className="primary-button" type="button" onClick={() => void approveToolCall('once')}><Check size={15} />Approve once</button></div> : null}

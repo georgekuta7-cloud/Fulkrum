@@ -15,10 +15,12 @@ npm run dev
 
 Open `http://127.0.0.1:5173/`. `npm run dev` starts both the Vite UI and the local API bridge.
 
+Node 22.13 or newer is required: the store uses the built-in `node:sqlite`, which became available without a flag in that release.
+
 ## Checks
 
 ```powershell
-npm test               # 81 tests: policy, persistence, execution boundary, and the HTTP API
+npm test               # 94 tests: policy, persistence, execution boundary, providers, and the HTTP API
 npm run lint
 npm run typecheck      # the client, and the server and tests via checkJs
 npm run build
@@ -35,19 +37,41 @@ how a syntax error once reached the test suite before this existed.
 
 ## Add provider APIs
 
-Copy `.env.example` to `.env.local` and fill in what you need. Every supported
-variable is documented in that file; the short version:
+Fill in `.env.local` if you prefer environment variables — copy `.env.example`
+first; every supported variable is documented in that file. The short version:
 
-- `XAI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `DEEPSEEK_API_KEY`, `GLM_API_KEY`/`ZAI_API_KEY`, `KIMI_API_KEY`/`MOONSHOT_API_KEY` for the built-in providers.
+- `XAI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `DEEPSEEK_API_KEY`, `GLM_API_KEY`/`ZAI_API_KEY`, `KIMI_API_KEY`/`MOONSHOT_API_KEY` for the built-in providers, plus a `*_BASE_URL` override for each endpoint.
 - `FULKRUM_FALLBACK_ROUTES` for an ordered list of routes to try when the primary provider fails after retries.
 - `FULKRUM_ALLOWED_ORIGINS`, `FULKRUM_HTTP_ALLOWLIST`, `FULKRUM_ALLOW_PRIVATE_PROVIDER_URLS` for the security controls described in `SECURITY.md`.
 - `FULKRUM_DB_PATH`, `FULKRUM_WORKSPACE_ROOT`, `FULKRUM_API_PORT` for local configuration.
 
-Custom OpenAI-compatible providers can be added or removed from **Workspace settings**. The provider definition is stored locally; the API key stays an environment variable on the server. Restart `npm run dev` after changing `.env.local`.
+**Any OpenAI-compatible endpoint can join the team**, not only the built-ins. In
+**Workspace settings**, add one and give it:
 
-A custom provider URL must use a public host: loopback and private addresses are
-refused so the agent cannot reach services on your own machine. If you run a local
-model gateway such as Ollama, set `FULKRUM_ALLOW_PRIVATE_PROVIDER_URLS=1`.
+- **A key, stored locally** in `data/fulkrum.sqlite` — or none at all, for a server
+  that does not take one. An environment variable of the same name wins if you set
+  one. Keys are never returned by the API once stored.
+- **An auth style**, because gateways disagree: `Authorization: Bearer` (the
+  default for this protocol), `x-api-key`, Azure's `api-key`, a header you name, or
+  no authentication.
+- **Extra headers**, for endpoints that want them.
+- **Local-network access**, which is what allows a loopback or RFC1918 address. It
+  is off by default; `FULKRUM_ALLOW_PRIVATE_PROVIDER_URLS=1` enables it for every
+  provider at once.
+- **A sampling policy** — `auto`, `omit`, or a fixed temperature. `auto` already
+  omits a temperature for models that reject one (`gpt-5`, the `o` series,
+  `deepseek-reasoner`), and any model that answers 400 complaining about
+  temperature is retried without it and remembered, so it costs one call ever.
+
+Every provider has a **Test** button that reports status, latency, and the model
+list, using the credentials and auth style you configured — including a plain
+explanation when its address is refused for being on your own machine.
+
+Role routes accept free text: type `Provider · model` directly, so a model name
+does not have to be one the list already offers.
+
+Restart after changing `.env.local`; anything set in the settings drawer applies
+immediately.
 
 ## How a run behaves
 
@@ -227,7 +251,11 @@ tamper-evident rather than tamper-proof.
 
 ## Current limits
 
-- **Execution is host-restricted.** `shell.exec` is limited to read-only `git status`, `git diff`, and `git log` with a validated argument vector, so no worker can currently run an arbitrary command. Windows has no OS sandbox primitive (no Seatbelt, Landlock, or bubblewrap), so general command execution is deliberately absent rather than run unsandboxed. The container runner is the next phase; `FULKRUM_RUNNER_IMAGE` and friends are reserved in `.env.example`.
-- **No cost accounting yet.** The Autopilot description mentions budget boundaries; nothing enforces a budget so far, and token usage is captured but not priced.
-- **The UI still carries placeholder identity.** Names such as "Atlas studio" and "Alex Rivera" are hardcoded in the interface, and the artifacts view is not built.
-- **Plan quality depends on the model.** With no provider key the workers cannot run at all, and the plan falls back to a labelled template. When a model plan cannot be parsed, the fallback is recorded in the audit log rather than hidden.
+- **Approval is per tool call, not per plan.** Approving a plan starts it; a consequential call still parks for its own approval unless the permission mode allows it or you grant that tool for the rest of the run. Grouped approval of similar calls is not built.
+- **Commands run in a container or not at all.** `shell.exec` executes inside `FULKRUM_RUNNER_IMAGE` with no network, a read-only root filesystem, and dropped capabilities. Without an engine, execution is reported as disabled at boot rather than quietly falling back to the host.
+- **The audit chain is tamper-evident, not tamper-proof.** Checkpoints live in the same database file, so anyone who can write that file can remove the anchor together with the events. Exporting and signing the chain head outside the database is not built.
+- **Budgets are checked before each call, not reserved.** Cost is only known after a call returns, so parallel readers can pass the ceiling by more than one call. Reported spend also stays a lower bound while a model has no entry in the price table, and the daily window uses local midnight.
+- **A key entered in the settings drawer is stored unencrypted** in the local database, which is gitignored. An environment variable of the same name takes precedence.
+- **There is no production run mode.** `npm run dev` starts the UI and the bridge together; `npm run preview` serves the built assets without the bridge, so the app is not functional under it.
+- **The local API has no authentication.** It binds to loopback and rejects unapproved browser origins, so this is CSRF protection, not access control: any local process can call it, including approving tool calls.
+- **Plan quality depends on the model.** Without a provider key the workers cannot run at all, and the plan falls back to a labelled template. When a model plan cannot be parsed, the fallback is recorded in the audit log rather than hidden.
