@@ -176,6 +176,8 @@ export class FulkrumStore {
     this.filePath = filePath
     this.database = new DatabaseSync(filePath)
     this.eventListeners = new Map()
+    this.ephemeralListeners = new Map()
+    this.partials = new Map()
     // Set while a transaction is open, so nested calls join it instead of
     // committing early, and listeners fire after the commit rather than before.
     this.transactionDepth = 0
@@ -632,6 +634,63 @@ export class FulkrumStore {
     }
   }
 
+  /**
+   * Frames that are not audit records: text as it is being written.
+   *
+   * A half-finished reply is not a fact about what happened — the finished text is
+   * recorded as a message and an event when the call returns — so these are pushed
+   * to whoever is watching and never written to the database.
+   */
+  publishEphemeral(runId, frame) {
+    for (const listener of this.ephemeralListeners.get(runId) ?? []) {
+      try {
+        listener(frame)
+      } catch {
+        // A dropped stream must not interrupt the call that is producing text.
+      }
+    }
+  }
+
+  subscribeEphemeral(runId, listener) {
+    const listeners = this.ephemeralListeners.get(runId) ?? new Set()
+    listeners.add(listener)
+    this.ephemeralListeners.set(runId, listeners)
+    return () => {
+      listeners.delete(listener)
+      if (!listeners.size) this.ephemeralListeners.delete(runId)
+    }
+  }
+
+  /** Text that has arrived for a call still in flight, so a reload shows it. */
+  setPartial(runId, text) {
+    if (text) this.partials.set(runId, text)
+    else this.partials.delete(runId)
+  }
+
+  getPartial(runId) {
+    return this.partials.get(runId) ?? null
+  }
+
+  /**
+   * A sink for one streamed call: it accumulates for a reader that arrives late and
+   * publishes each piece as it lands. `done()` clears the partial and returns what
+   * was accumulated.
+   */
+  partialSink(runId, { role = 'head' } = {}) {
+    let text = ''
+    return {
+      push: (delta) => {
+        text += delta
+        this.setPartial(runId, text)
+        this.publishEphemeral(runId, { kind: 'text', role, delta })
+      },
+      done: () => {
+        this.setPartial(runId, null)
+        return text
+      },
+    }
+  }
+
   createTask({ runId, agentId, title, instructions, planTaskId = null, id = `task-${randomUUID()}` }) {
     const now = Date.now()
     this.database.prepare('INSERT INTO run_tasks(id, run_id, agent_id, title, instructions, status, plan_task_id, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, runId, agentId, title, instructions, 'queued', planTaskId, now, now)
@@ -1051,6 +1110,8 @@ export class FulkrumStore {
 
   close() {
     this.eventListeners.clear()
+    this.ephemeralListeners.clear()
+    this.partials.clear()
     try {
       this.checkpoint()
     } catch {

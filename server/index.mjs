@@ -33,7 +33,7 @@ const modelCaller = createModelCaller({ providerRegistry, allowPrivate: privateP
 // Chat has no tools: the Head plans and answers. Workers get tools through the
 // orchestrator, restricted to their own role's allowlist. Both return usage so
 // every call can be priced.
-const callProvider = (provider, model, messages, instructions) => modelCaller.callModel(provider, model, messages, { tools: [], instructions: instructions ?? systemPrompt })
+const callProvider = (provider, model, messages, options = {}) => modelCaller.callModel(provider, model, messages, { tools: [], instructions: options.instructions ?? systemPrompt, onDelta: options.onDelta })
 const callModel = (provider, model, messages, options = {}) => modelCaller.callModel(provider, model, messages, { ...options, instructions: options.instructions ?? systemPrompt })
 
 const planService = createPlanService({ store, providerRegistry, pricing, callModel: (provider, model, messages, options) => modelCaller.callModel(provider, model, messages, options) })

@@ -7,6 +7,7 @@ import { canonicalJson } from './canonicalJson.mjs'
 import { settingReport } from './config.mjs'
 import { buildRunReport, reportToMarkdown } from './runReport.mjs'
 import { findInjectionAttempts } from './injection.mjs'
+import { formatSseFrame } from './sse.mjs'
 import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
 import { fingerprintToolCall, permissionMatrix } from './permissions.mjs'
 import { agentRoles } from './roles.mjs'
@@ -258,7 +259,15 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
     }
 
     try {
-      const completion = await callProvider(provider, model, history)
+      // Chat streams too: the same sink the workers use, so a caller who reloads
+      // mid-reply sees what has arrived rather than an empty bubble.
+      const sink = store.partialSink(run.id, { role: 'head' })
+      let completion
+      try {
+        completion = await callProvider(provider, model, history, { onDelta: sink.push })
+      } finally {
+        sink.done()
+      }
       const reply = completion?.text
       if (typeof reply !== 'string' || !reply.trim()) throw new Error('The provider returned an empty response.')
       const cleanReply = reply.trim()
@@ -575,15 +584,24 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         })
         response.write('retry: 1500\n\n')
         const writeEvent = (event) => {
-          response.write(`id: ${event.sequence}\nevent: fulkrum\ndata: ${JSON.stringify(event)}\n\n`)
+          response.write(formatSseFrame({ id: event.sequence, event: 'fulkrum', data: JSON.stringify(event) }))
         }
+        // Text in flight is sent as its own frame type rather than as an event, so a
+        // client can render it without pretending it is part of the record.
+        const writeDelta = (frame) => {
+          response.write(formatSseFrame({ event: 'delta', data: JSON.stringify(frame) }))
+        }
+        const partial = store.getPartial(runId)
+        if (partial) response.write(formatSseFrame({ event: 'partial', data: JSON.stringify({ text: partial }) }))
         for (const event of store.listEvents(runId, after)) writeEvent(event)
         const unsubscribe = store.subscribeEvents(runId, writeEvent)
+        const unsubscribeEphemeral = store.subscribeEphemeral(runId, writeDelta)
         openStreams.add(response)
         const heartbeat = setInterval(() => response.write(': heartbeat\n\n'), 15_000)
         request.on('close', () => {
           clearInterval(heartbeat)
           unsubscribe()
+          unsubscribeEphemeral()
           openStreams.delete(response)
         })
         return

@@ -1,5 +1,6 @@
+import { createSseParser } from './sse.mjs'
 import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
-import { pinnedRequest } from './outboundHttp.mjs'
+import { pinnedRequest, pinnedStream } from './outboundHttp.mjs'
 
 /**
  * One normalized conversation format over three provider protocols.
@@ -12,6 +13,8 @@ import { pinnedRequest } from './outboundHttp.mjs'
  * Each protocol wants a different shape on the wire, so the translation lives
  * here in pure functions that can be tested without a network call.
  */
+
+const nonNegative = (value) => Math.max(Number(value) || 0, 0)
 
 const maxTokens = Number(process.env.FULKRUM_MAX_OUTPUT_TOKENS ?? 4096)
 
@@ -106,10 +109,10 @@ export function toGoogleContents(messages) {
  * other than their own default with a 400.
  *
  * @param {string} protocol
- * @param {{ baseUrl: string, model: string, messages: Array<Record<string, any>>, tools?: Array<Record<string, any>>, instructions?: string, temperature?: number }} request
+ * @param {{ baseUrl: string, model: string, messages: Array<Record<string, any>>, tools?: Array<Record<string, any>>, instructions?: string, temperature?: number, stream?: boolean }} request
  * @returns {{ url: string, body: any }}
  */
-export function buildRequest(protocol, { baseUrl, model, messages, tools = [], instructions, temperature }) {
+export function buildRequest(protocol, { baseUrl, model, messages, tools = [], instructions, temperature, stream = false }) {
   const endpoint = String(baseUrl).replace(/\/$/, '')
 
   if (protocol === 'anthropic') {
@@ -121,6 +124,7 @@ export function buildRequest(protocol, { baseUrl, model, messages, tools = [], i
         system: instructions,
         messages: toAnthropicMessages(messages),
         ...(temperature === undefined ? {} : { temperature }),
+        ...(stream ? { stream: true } : {}),
         ...(tools.length ? { tools: tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.parameters })) } : {}),
       },
     }
@@ -128,7 +132,8 @@ export function buildRequest(protocol, { baseUrl, model, messages, tools = [], i
 
   if (protocol === 'google') {
     return {
-      url: `${endpoint}/models/${encodeURIComponent(model)}:generateContent`,
+      // The streaming endpoint is a different path on the same resource.
+      url: `${endpoint}/models/${encodeURIComponent(model)}:${stream ? 'streamGenerateContent?alt=sse' : 'generateContent'}`,
       body: {
         systemInstruction: { parts: [{ text: instructions }] },
         contents: toGoogleContents(messages),
@@ -144,6 +149,9 @@ export function buildRequest(protocol, { baseUrl, model, messages, tools = [], i
       model,
       ...(temperature === undefined ? {} : { temperature }),
       messages: toOpenAiMessages(messages, instructions),
+      // Token counts arrive in the final chunk only when the provider is asked for
+      // them; a provider that ignores the option simply reports no usage.
+      ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
       ...(tools.length ? { tools: tools.map((tool) => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } })), tool_choice: 'auto' } : {}),
     },
   }
@@ -172,6 +180,111 @@ export function providerAuthHeaders(protocol, credentials = {}) {
   else if (key && resolved === 'header' && credentials.headerName) headers[credentials.headerName] = key
   if (protocol === 'anthropic') headers['anthropic-version'] = headers['anthropic-version'] ?? '2023-06-01'
   return headers
+}
+
+/**
+ * Turn a provider's stream into the same shape `parseResponse` returns.
+ *
+ * Each protocol streams differently: OpenAI sends a `choices[0].delta` per chunk
+ * with tool calls arriving as a name and then fragments of JSON; Anthropic sends
+ * typed events, with tool input as `input_json_delta`; Google sends whole parts per
+ * chunk. They all end up as `{ text, toolCalls, usage }`, so nothing downstream has
+ * to know which one it was talking to.
+ */
+export function createProviderStream(protocol) {
+  const events = createSseParser()
+  let text = ''
+  let usage = null
+  /** @type {Array<{ id?: string, name: string, json: string }>} */
+  const toolBlocks = []
+
+  const ingestOpenAi = (payload) => {
+    if (payload?.usage) usage = normalizeUsage('openai-compatible', payload.usage)
+    const choice = payload?.choices?.[0]
+    const delta = choice?.delta
+    let piece = ''
+    if (delta?.content) {
+      piece = String(delta.content)
+      text += piece
+    }
+    for (const call of delta?.tool_calls ?? []) {
+      const index = Number(call.index ?? 0)
+      const entry = toolBlocks[index] ?? (toolBlocks[index] = { name: '', json: '' })
+      if (call.id) entry.id = call.id
+      if (call.function?.name) entry.name += call.function.name
+      if (call.function?.arguments) entry.json += call.function.arguments
+    }
+    return piece
+  }
+
+  const ingestAnthropic = (payload) => {
+    let piece = ''
+    if (payload?.type === 'message_start') {
+      usage = normalizeUsage('anthropic', payload.message?.usage)
+    } else if (payload?.type === 'content_block_start') {
+      const block = payload.content_block
+      if (block?.type === 'tool_use') toolBlocks[payload.index ?? toolBlocks.length] = { id: block.id, name: block.name ?? '', json: '' }
+    } else if (payload?.type === 'content_block_delta') {
+      const delta = payload.delta
+      if (delta?.type === 'text_delta' && delta.text) {
+        piece = String(delta.text)
+        text += piece
+      } else if (delta?.type === 'input_json_delta') {
+        const entry = toolBlocks[payload.index ?? 0] ?? (toolBlocks[payload.index ?? 0] = { name: '', json: '' })
+        entry.json += delta.partial_json ?? ''
+      }
+    } else if (payload?.type === 'message_delta' && payload.usage) {
+      usage = { ...(usage ?? normalizeUsage('anthropic', {})), outputTokens: nonNegative(payload.usage.output_tokens) }
+    }
+    return piece
+  }
+
+  const ingestGoogle = (payload) => {
+    if (payload?.usageMetadata) usage = normalizeUsage('google', payload.usageMetadata)
+    const parts = payload?.candidates?.[0]?.content?.parts ?? []
+    let piece = ''
+    for (const part of parts) {
+      if (typeof part.text === 'string') {
+        piece += part.text
+      } else if (part.functionCall) {
+        toolBlocks.push({ id: `google-call-${toolBlocks.length}`, name: part.functionCall.name ?? 'unknown', json: JSON.stringify(part.functionCall.args ?? {}) })
+      }
+    }
+    text += piece
+    return piece
+  }
+
+  const ingest = protocol === 'anthropic' ? ingestAnthropic : protocol === 'google' ? ingestGoogle : ingestOpenAi
+
+  return {
+    /** Feed a chunk of the response body; returns any text it completed. */
+    push(chunk) {
+      let delta = ''
+      for (const frame of events.push(chunk)) {
+        if (!frame.data || frame.data === '[DONE]') continue
+        let payload
+        try {
+          payload = JSON.parse(frame.data)
+        } catch {
+          continue
+        }
+        delta += ingest(payload)
+      }
+      return delta
+    },
+    /** The normalized result, identical in shape to a non-streamed reply. */
+    finish() {
+      const toolCalls = toolBlocks.filter(Boolean).map((block, index) => {
+        if (protocol === 'google') {
+          const parsed = safeParseJson(block.json)
+          return { id: block.id ?? `google-call-${index}`, name: block.name, arguments: parsed.value, invalidJson: parsed.invalid }
+        }
+        const parsed = safeParseJson(block.json || '{}')
+        return { id: block.id ?? `call-${index}`, name: block.name || 'unknown', arguments: parsed.value, invalidJson: parsed.invalid }
+      })
+      return { text: text.trim(), toolCalls, usage }
+    },
+  }
 }
 
 export function parseResponse(protocol, payload) {
@@ -210,7 +323,6 @@ export function parseResponse(protocol, payload) {
  */
 export function normalizeUsage(protocol, usage) {
   if (!usage) return null
-  const nonNegative = (value) => Math.max(Number(value) || 0, 0)
   if (protocol === 'anthropic') {
     const inputTokens = nonNegative(usage.input_tokens)
     return {
@@ -413,22 +525,86 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
   }
 
   /**
+   * One streamed request, parsed as it arrives.
+   *
+   * A failure after the first token is reported rather than retried: the caller has
+   * already been shown part of the reply, and a retry would duplicate it on screen.
+   */
+  const streamOnce = async (url, requestOptions, protocol, onDelta, sawDelta) => {
+    const stream = await pinnedStream(url, {
+      method: 'POST',
+      headers: requestOptions.headers,
+      body: requestOptions.body,
+      allowPrivate: requestOptions.allowPrivate,
+      maxBytes: maxResponseBytes,
+      timeoutMs: requestTimeoutMs,
+    })
+
+    if (!stream.ok) {
+      // Read enough of the error body to report the provider's own message.
+      let detail = ''
+      for await (const chunk of stream) {
+        detail += chunk.toString('utf8')
+        if (detail.length > 4_000) break
+      }
+      let payload = /** @type {any} */ ({})
+      try {
+        payload = JSON.parse(detail)
+      } catch {
+        payload = {}
+      }
+      const message = payload?.error?.message ?? payload?.error ?? `Provider returned ${stream.status}`
+      throw new ProviderError(String(message).slice(0, 500), { status: stream.status, retryable: retryableStatuses.has(stream.status), retryAfter: stream.headers['retry-after'] ?? null })
+    }
+
+    const parser = createProviderStream(protocol)
+    for await (const chunk of stream) {
+      const delta = parser.push(chunk.toString('utf8'))
+      if (delta) {
+        sawDelta.value = true
+        onDelta(delta)
+      }
+    }
+    if (stream.truncated) throw new ProviderError(`The provider response exceeded ${maxResponseBytes} bytes and was cut off.`, { retryable: false })
+    return parser.finish()
+  }
+
+  const requestStream = async (url, requestOptions, protocol, onDelta) => {
+    const sawDelta = { value: false }
+    const attempt = async (attemptsLeft, options) => {
+      try {
+        return await streamOnce(url, options, protocol, onDelta, sawDelta)
+      } catch (error) {
+        const worthRetrying = error instanceof ProviderError && error.retryable === true && !sawDelta.value && attemptsLeft > 1
+        if (!worthRetrying) throw error
+        await sleep(retryDelayMs(configuredMaxAttempts() - attemptsLeft, error.retryAfter))
+        return attempt(attemptsLeft - 1, options)
+      }
+    }
+    return attempt(configuredMaxAttempts(), requestOptions)
+  }
+
+  /**
    * Call a provider and normalize the answer, including tool calls.
    * Returns { text, toolCalls, usage }.
+   *
+   * With `onDelta`, the reply is streamed: each piece of text is handed over as it
+   * arrives, and the return value is the same shape as a buffered call.
    *
    * @param {any} provider
    * @param {string} model
    * @param {Array<Record<string, any>>} messages
-   * @param {{ tools?: Array<Record<string, any>>, instructions?: string }} [options]
+   * @param {{ tools?: Array<Record<string, any>>, instructions?: string, onDelta?: (delta: string) => void }} [options]
    */
-  const callModel = async (provider, model, messages, { tools = [], instructions } = {}) => {
+  const callModel = async (provider, model, messages, { tools = [], instructions, onDelta } = {}) => {
     const credentials = providerRegistry.credentials(provider)
     // A provider marked as local is allowed to resolve to a private address; the
     // global flag stays as the fallback for everyone else. The address is checked
     // and pinned by the request itself, per hop and per attempt.
     const allow = credentials.allowPrivate || allowPrivate
     const sampling = providerRegistry.sampling(provider, model)
-    const { url, body } = buildRequest(provider.protocol, { baseUrl: provider.baseUrl, model, messages, tools, instructions, temperature: sampling.temperature })
+    const streaming = typeof onDelta === 'function'
+    const { url, body } = buildRequest(provider.protocol, { baseUrl: provider.baseUrl, model, messages, tools, instructions, temperature: sampling.temperature, stream: streaming })
     const headers = { 'Content-Type': 'application/json', ...providerAuthHeaders(provider.protocol, credentials) }
     const requestOptions = { method: 'POST', headers, body: JSON.stringify(body), allowPrivate: allow }
 
@@ -438,8 +614,9 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
     let payload
     try {
       payload = await limiter.run(async () => {
+        const send = (options) => (streaming ? requestStream(url, options, provider.protocol, onDelta) : requestWithRetry(0, url, options))
         try {
-          return await requestWithRetry(0, url, requestOptions)
+          return await send(requestOptions)
         } catch (error) {
           // A model that fixes its own sampling settings answers 400 to any
           // temperature we send. Retry once without it and remember the answer, so
@@ -448,7 +625,7 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
           if (!rejectedTemperature) throw error
           const retryBody = { ...body }
           delete retryBody.temperature
-          const retried = await requestWithRetry(0, url, { ...requestOptions, body: JSON.stringify(retryBody) })
+          const retried = await send({ ...requestOptions, body: JSON.stringify(retryBody) })
           providerRegistry.rememberTemperature?.(provider, 'omit')
           return retried
         }
@@ -459,7 +636,7 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
       throw error
     }
     breaker.succeeded(provider.id)
-    return parseResponse(provider.protocol, payload)
+    return streaming ? payload : parseResponse(provider.protocol, payload)
   }
 
   /** Text-only convenience wrapper for chat and plan generation. */

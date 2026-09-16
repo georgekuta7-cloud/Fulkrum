@@ -180,8 +180,11 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
       // other caller can slip between them.
       assertWithinBudget(runId)
       const reservationId = reserveBudget(runId)
+      // Text streams to whoever is watching while the call runs, and is cleared when
+      // it returns: the finished reply is what gets recorded, not the fragments.
+      const sink = store.partialSink(runId, { role })
       try {
-        const response = await callModel(provider, model, messages, { tools, instructions })
+        const response = await callModel(provider, model, messages, { tools, instructions, onDelta: sink.push })
         const latencyMs = Date.now() - startedAt
         const cost = pricing ? pricing.costOf({ model, usage: response.usage }) : { costUsd: null, priced: false, version: null }
         store.recordModelCall({ runId, taskId, spanId: span.id, role, provider: provider.id, model, usage: response.usage, cost, latencyMs })
@@ -211,6 +214,7 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
         // Once the call is no longer in flight, the recorded cost replaces the
         // estimate it was holding.
         releaseBudget(reservationId)
+        sink.done()
       }
     }
     throw lastError ?? new Error('No provider route could serve this request.')

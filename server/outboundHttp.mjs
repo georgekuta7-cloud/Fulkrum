@@ -4,6 +4,112 @@ import net from 'node:net'
 import { resolveOutboundTarget } from './networkPolicy.mjs'
 
 /**
+ * The same request, read as it arrives instead of buffered.
+ *
+ * Used for provider replies that stream: the caller iterates the body and sees
+ * each chunk when it lands. Address validation, pinning, SNI, and the byte cap are
+ * identical to `pinnedRequest` — a stream is not a reason to relax any of them —
+ * and the cap is enforced by stopping the read rather than by buffering past it.
+ *
+ * @param {string} rawUrl
+ * @param {{ method?: string, headers?: Record<string, string>, body?: string | null, allowPrivate?: boolean, allowedHosts?: string[] | string, maxBytes?: number, timeoutMs?: number, signal?: AbortSignal }} [options]
+ */
+export async function pinnedStream(rawUrl, options = {}) {
+  const {
+    method = 'GET',
+    headers = {},
+    body = null,
+    allowPrivate = false,
+    allowedHosts = [],
+    maxBytes = defaultMaxBytes(),
+    timeoutMs = defaultTimeoutMs(),
+    signal,
+  } = options
+
+  const { url, addresses } = await resolveOutboundTarget(rawUrl, { allowPrivate, allowedHosts })
+  const transport = url.protocol === 'https:' ? https : http
+  const timeout = AbortSignal.timeout(timeoutMs)
+  const abort = signal ? AbortSignal.any([signal, timeout]) : timeout
+
+  const opened = await new Promise((resolve, reject) => {
+    let settled = false
+    const fail = (error) => {
+      if (settled) return
+      settled = true
+      reject(error)
+    }
+    const request = transport.request(
+      url,
+      {
+        method,
+        headers,
+        lookup: pinnedLookup(addresses),
+        ...(net.isIP(url.hostname) ? {} : { servername: url.hostname }),
+        signal: abort,
+      },
+      (response) => {
+        if (settled) return
+        settled = true
+        resolve({ response, request })
+      },
+    )
+    request.on('error', fail)
+    if (body !== null && body !== undefined) request.write(body)
+    request.end()
+  })
+
+  const { response, request } = opened
+  let received = 0
+  let truncated = false
+
+  return {
+    status: response.statusCode ?? 0,
+    ok: (response.statusCode ?? 0) >= 200 && (response.statusCode ?? 0) < 300,
+    headers: response.headers,
+    url: url.href,
+    get truncated() {
+      return truncated
+    },
+    get bytes() {
+      return received
+    },
+    close() {
+      try {
+        response.destroy()
+      } catch {
+        // Already finished.
+      }
+      try {
+        request.destroy()
+      } catch {
+        // Already finished.
+      }
+    },
+    async *[Symbol.asyncIterator]() {
+      let stopped = false
+      response.on('error', () => {
+        stopped = true
+      })
+      for await (const chunk of response) {
+        if (truncated || stopped) return
+        const remaining = maxBytes - received
+        if (chunk.length >= remaining) {
+          if (remaining > 0) {
+            received += remaining
+            yield chunk.subarray(0, remaining)
+          }
+          truncated = true
+          response.destroy()
+          return
+        }
+        received += chunk.length
+        yield chunk
+      }
+    },
+  }
+}
+
+/**
  * HTTP with the connection pinned to an address that was already checked.
  *
  * `fetch` resolves the hostname itself, so validating a name and then handing the
