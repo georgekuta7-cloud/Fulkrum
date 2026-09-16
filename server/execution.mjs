@@ -1,5 +1,6 @@
 import { execFile as execFileCallback } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { statSync } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
@@ -31,10 +32,30 @@ const defaultImage = process.env.FULKRUM_RUNNER_IMAGE ?? 'fulkrum-runner:local'
 const containerWorkdir = '/workspace'
 const maxOutputBytes = 100_000
 // The uid the runtime uses inside the container. It has to match the owner of the
-// bind-mounted workspace for writes to land, which is why it is configurability
-// rather than a constant: a rootless Podman setup maps ids differently.
-const defaultRuntimeUser = process.env.FULKRUM_RUNNER_USER ?? '1000:1000'
+// bind-mounted workspace for writes to land, which is why it is derived rather
+// than fixed: a rootless setup maps ids differently, and a CI checkout is owned by
+// whoever ran it. FULKRUM_RUNNER_USER overrides this.
+const configuredRuntimeUser = String(process.env.FULKRUM_RUNNER_USER ?? '').trim()
+const fallbackRuntimeUser = '1000:1000'
 const defaultNofile = Number(process.env.FULKRUM_RUNNER_NOFILE ?? 1024)
+
+/**
+ * Who a command runs as, when nothing is configured.
+ *
+ * A bind mount keeps the host's ownership, so a workspace owned by another uid is
+ * writable only by that uid — the same image works for every owner. Windows has no
+ * meaningful uid on a mount, so the conventional non-root id stands there.
+ */
+export function defaultUserForWorkspace(workspaceRoot) {
+  if (process.platform === 'win32') return fallbackRuntimeUser
+  try {
+    const stats = statSync(workspaceRoot)
+    if (stats.uid > 0) return `${stats.uid}:${stats.gid}`
+  } catch {
+    // A missing or unreadable workspace is reported by the command that needs it.
+  }
+  return fallbackRuntimeUser
+}
 
 /** Convert a Windows path to the path an engine running inside WSL sees. */
 export function toEnginePath(target, { inWsl = false } = {}) {
@@ -52,7 +73,7 @@ export function toEnginePath(target, { inWsl = false } = {}) {
  * The exact argv used for one agent command. Everything that makes the container
  * a boundary lives here, so a test can assert it rather than trust it.
  */
-export function containerArgs({ argv, workspaceRoot, workdir = '.', image = defaultImage, network = 'none', inWsl = false, name = 'fulkrum-preview', memory = '2g', cpus = '2', pidsLimit = 256, runtimeUser = defaultRuntimeUser, userNamespace = '', nofile = defaultNofile }) {
+export function containerArgs({ argv, workspaceRoot, workdir = '.', image = defaultImage, network = 'none', inWsl = false, name = 'fulkrum-preview', memory = '2g', cpus = '2', pidsLimit = 256, runtimeUser = fallbackRuntimeUser, userNamespace = '', nofile = defaultNofile }) {
   const containerDir = workdir.startsWith('/') ? workdir : `${containerWorkdir}/${workdir}`.replace(/\/+$/, '')
   return [
     'run',
@@ -126,7 +147,7 @@ export function createExecutionRuntime({
   memory = process.env.FULKRUM_CONTAINER_MEMORY ?? '2g',
   cpus = process.env.FULKRUM_CONTAINER_CPUS ?? '2',
   pidsLimit = Number(process.env.FULKRUM_CONTAINER_PIDS ?? 256),
-  runtimeUser = defaultRuntimeUser,
+  runtimeUser = configuredRuntimeUser,
   userNamespace = process.env.FULKRUM_RUNNER_USERNS ?? '',
   nofile = defaultNofile,
   defaultTimeoutMs = Number(process.env.FULKRUM_EXEC_TIMEOUT_MS ?? 120_000),
@@ -138,6 +159,9 @@ export function createExecutionRuntime({
   const requested = String(engine).trim()
   const explicitCli = String(cliPath).trim()
   let detected = null
+
+  /** The configured uid, or the one that owns the workspace it has to write to. */
+  const effectiveUser = () => String(runtimeUser).trim() || defaultUserForWorkspace(workspaceRoot)
 
   /** Which transports to try, in order. 'docker-wsl' means the engine lives in WSL. */
   const candidates = () => {
@@ -237,7 +261,7 @@ export function createExecutionRuntime({
 
       const candidate = { id: status.engine, viaWsl: status.viaWsl }
       const name = `fulkrum-${randomUUID().slice(0, 8)}`
-      const args = containerArgs({ argv, workspaceRoot, workdir: cwd, image, network: status.network, inWsl: status.viaWsl, name, memory, cpus, pidsLimit, runtimeUser, userNamespace, nofile })
+      const args = containerArgs({ argv, workspaceRoot, workdir: cwd, image, network: status.network, inWsl: status.viaWsl, name, memory, cpus, pidsLimit, runtimeUser: effectiveUser(), userNamespace, nofile })
       const timeout = Math.min(Math.max(Number(timeoutMs) || defaultTimeoutMs, 1_000), 600_000)
 
       try {
@@ -270,7 +294,7 @@ export function createExecutionRuntime({
 
     /** Exposed for tests and documentation: the exact argv a run would use. */
     describeRun(argv, options = {}) {
-      return containerArgs({ argv, workspaceRoot, workdir: options.cwd ?? '.', image, network: 'none', inWsl: requested === 'docker-wsl', name: 'fulkrum-preview', memory, cpus, pidsLimit, runtimeUser, userNamespace, nofile })
+      return containerArgs({ argv, workspaceRoot, workdir: options.cwd ?? '.', image, network: 'none', inWsl: requested === 'docker-wsl', name: 'fulkrum-preview', memory, cpus, pidsLimit, runtimeUser: effectiveUser(), userNamespace, nofile })
     },
   }
 

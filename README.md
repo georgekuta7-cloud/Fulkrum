@@ -159,9 +159,10 @@ boundary. Because the boundary does the work, the command surface is open: the
 build worker can compile, run tests, and inspect a repository offline.
 
 The base image is pinned by digest and the boot log prints the digest and image id
-it found, so the boundary is not silently swapped by a moved tag. The uid is
-configurable (`FULKRUM_RUNNER_USER`, plus `FULKRUM_RUNNER_USERNS=keep-id` for
-rootless Podman), because it has to match whoever owns the mounted workspace.
+it found, so the boundary is not silently swapped by a moved tag. Commands run as
+the uid that owns the workspace — a bind mount keeps the host's ownership, so any
+other uid cannot write to it — with `FULKRUM_RUNNER_USER` to override and
+`FULKRUM_RUNNER_USERNS=keep-id` for rootless Podman.
 
 `node tests/container/assertBoundary.mjs` checks all of this against a live
 engine, and CI runs it after building the image.

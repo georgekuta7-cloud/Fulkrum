@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { containerArgs, createExecutionRuntime, toEnginePath } from '../server/execution.mjs'
+import { containerArgs, createExecutionRuntime, defaultUserForWorkspace, toEnginePath } from '../server/execution.mjs'
+import { statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { FulkrumToolBroker } from '../server/toolBroker.mjs'
 import { withWorkspace } from './helpers.mjs'
 
@@ -100,6 +103,26 @@ test('the image must exist, and its identity is reported', async () => {
   const absent = await missing.status()
   assert.equal(absent.available, false)
   assert.match(absent.reason, /runner image .* is not present/)
+})
+
+test('the container runs as whoever owns the workspace', () => {
+  // A bind mount keeps the host's ownership, so the default has to be the owner:
+  // a hardcoded uid cannot write to a checkout owned by someone else, which is
+  // how CI caught it.
+  const user = defaultUserForWorkspace(process.cwd())
+  if (process.platform === 'win32') {
+    assert.equal(user, '1000:1000', 'Windows mounts have no meaningful uid, so the conventional one stands')
+  } else {
+    const stats = statSync(process.cwd())
+    assert.equal(user, `${stats.uid}:${stats.gid}`)
+  }
+  assert.equal(defaultUserForWorkspace(path.join(tmpdir(), 'does-not-exist-anywhere')).length > 0, true, 'a missing workspace falls back rather than throwing')
+})
+
+test('a configured uid wins over the derived one', () => {
+  const runtime = createExecutionRuntime({ execFileImpl: stubEngine().execFileImpl, workspaceRoot: process.cwd(), runtimeUser: '4242:4242' })
+  const args = runtime.describeRun(['ls'])
+  assert.equal(args[args.indexOf('--user') + 1], '4242:4242')
 })
 
 test('paths are translated for an engine that lives inside WSL', () => {

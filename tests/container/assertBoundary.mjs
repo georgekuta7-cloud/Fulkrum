@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
+import { statSync } from 'node:fs'
 import { promisify } from 'node:util'
 import { createExecutionRuntime } from '../../server/execution.mjs'
 
@@ -29,9 +30,14 @@ if (!status.available) {
 }
 console.log(`Asserting the boundary against ${status.label} ${status.version}, image ${status.image}${status.imageDigest ? ` (${status.imageDigest})` : ''}\n`)
 
-await check('runs as the configured non-root user', async () => {
-  const result = await runtime.run(['id', '-u'])
-  assert.equal(result.stdout.trim(), '1000')
+await check('runs as a non-root user that owns the workspace', async () => {
+  const uid = (await runtime.run(['id', '-u'])).stdout.trim()
+  assert.notEqual(uid, '0', 'the agent must not run as root')
+  if (process.platform !== 'win32') {
+    // A bind mount keeps the host's ownership, so any other uid cannot write —
+    // which is what a hardcoded id got wrong on a CI checkout.
+    assert.equal(Number(uid), statSync(process.cwd()).uid, 'the uid must own the mounted workspace, or writes fail')
+  }
 })
 
 await check('the root filesystem is read-only', async () => {
