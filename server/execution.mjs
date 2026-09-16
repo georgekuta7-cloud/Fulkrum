@@ -84,6 +84,10 @@ function clip(text, maximum = maxOutputBytes) {
 
 export function createExecutionRuntime({
   engine = process.env.FULKRUM_CONTAINER_ENGINE ?? '',
+  // An absolute path to the engine CLI. On Windows the CLI is often installed
+  // into a per-user directory that a non-interactive shell does not have on PATH,
+  // which shows up as `spawn docker ENOENT` even though Docker is installed.
+  cliPath = process.env.FULKRUM_CONTAINER_CLI ?? '',
   image = defaultImage,
   workspaceRoot = process.cwd(),
   memory = process.env.FULKRUM_CONTAINER_MEMORY ?? '2g',
@@ -96,12 +100,15 @@ export function createExecutionRuntime({
   execFileImpl = defaultExecFile,
 } = {}) {
   const requested = String(engine).trim()
+  const explicitCli = String(cliPath).trim()
   let detected = null
 
   /** Which transports to try, in order. 'docker-wsl' means the engine lives in WSL. */
   const candidates = () => {
     if (requested === 'docker-wsl') return [{ id: 'docker', viaWsl: true }]
     if (engines[requested]) return [{ id: requested, viaWsl: false }]
+    // With an explicit CLI path there is nothing to guess.
+    if (explicitCli) return [{ id: 'docker', viaWsl: false }]
     return [
       { id: 'docker', viaWsl: false },
       { id: 'podman', viaWsl: false },
@@ -111,7 +118,7 @@ export function createExecutionRuntime({
 
   const invoke = (candidate, args, options) => (candidate.viaWsl
     ? execFileImpl('wsl.exe', ['--exec', candidate.id, ...args], options)
-    : execFileImpl(candidate.id, args, options))
+    : execFileImpl(explicitCli || candidate.id, args, options))
 
   const runtime = {
     image,
@@ -178,8 +185,8 @@ export function createExecutionRuntime({
         const result = await invoke(candidate, args, { timeout, maxBuffer: maxOutputBytes, windowsHide: true, killSignal: 'SIGKILL' })
         return { stdout: clip(result.stdout), stderr: clip(result.stderr), container: name }
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'The command failed.'
-        const killed = Boolean(error?.killed) || /timed out/i.test(message)
+        const rawMessage = error instanceof Error ? error.message : 'The command failed.'
+        const killed = Boolean(error?.killed) || /timed out/i.test(rawMessage)
         if (killed) {
           // A killed container can outlive the client, so remove it explicitly.
           try {
@@ -188,11 +195,17 @@ export function createExecutionRuntime({
             // Either nothing was left to clean up, or the engine is gone.
           }
         }
+        // Node prefixes execFile failures with the entire command line, which tells
+        // the model nothing. The container's own output is the useful part.
+        const withoutCommand = rawMessage.replace(/^Command failed:[^\n]*\n?/, '').trim()
         const stderr = clip(error?.stderr ?? '')
         const stdout = clip(error?.stdout ?? '')
-        throw new Error(killed
-          ? `The command exceeded ${timeout}ms and its container was stopped.${stderr ? `\n${stderr}` : ''}`
-          : `${message}${stderr ? `\n${stderr}` : ''}${stdout ? `\n${stdout}` : ''}`)
+        const exitCode = typeof error?.code === 'number' ? ` (exit ${error.code})` : ''
+        const detail = [stderr, withoutCommand].filter(Boolean).join('\n')
+        if (killed) {
+          throw new Error(`The command exceeded ${timeout}ms and its container was stopped.${detail ? `\n${detail}` : ''}`)
+        }
+        throw new Error(`${detail || 'The command failed.'}${exitCode}${stdout ? `\n${stdout}` : ''}`)
       }
     },
 

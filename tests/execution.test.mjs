@@ -5,7 +5,7 @@ import { FulkrumToolBroker } from '../server/toolBroker.mjs'
 import { withWorkspace } from './helpers.mjs'
 
 /** A stand-in engine: records the calls it receives and returns what it is told. */
-function stubEngine({ version = '27.3.1\n', fail = null, hang = false } = {}) {
+function stubEngine({ version = '27.3.1\n', fail = null, hang = false, commandError = null } = {}) {
   const calls = []
   const execFileImpl = async (file, args, options) => {
     calls.push({ file, args: [...args], options })
@@ -14,6 +14,7 @@ function stubEngine({ version = '27.3.1\n', fail = null, hang = false } = {}) {
       return { stdout: version, stderr: '' }
     }
     if (hang) throw Object.assign(new Error('Command failed: timed out'), { killed: true, stdout: '', stderr: 'partial output' })
+    if (commandError) throw commandError
     return { stdout: 'command output\n', stderr: '' }
   }
   return { calls, execFileImpl }
@@ -106,6 +107,18 @@ test('commands run through the engine, never on the host', async () => {
   assert.deepEqual(runCall.args.slice(-2), ['git', 'status'])
 })
 
+test('an explicit CLI path is used when the engine is not on PATH', async () => {
+  const { calls, execFileImpl } = stubEngine()
+  const cliPath = 'C:\\Users\\proga\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe'
+  const runtime = createExecutionRuntime({ cliPath, execFileImpl })
+
+  const status = await runtime.status()
+  assert.equal(status.available, true, 'with an explicit path there is nothing to guess')
+  await runtime.run(['git', 'status'])
+
+  assert.equal(calls.every((call) => call.file === cliPath), true, 'every call used the configured CLI')
+})
+
 test('an engine inside WSL is invoked through wsl.exe', async () => {
   const { calls, execFileImpl } = stubEngine()
   const runtime = createExecutionRuntime({ engine: 'docker-wsl', workspaceRoot: 'D:/projects/fulkrum', execFileImpl })
@@ -126,6 +139,22 @@ test('a timed-out command is stopped and its container removed', async () => {
   const cleanup = calls.find((call) => call.args[0] === 'rm')
   assert.ok(cleanup, 'the container is force-removed after a timeout')
   assert.equal(cleanup.args.includes('--force'), true)
+})
+
+test('a failed command reports the container output, not the engine command line', async () => {
+  const commandError = Object.assign(new Error('Command failed: docker run --rm --name x --network none fulkrum-runner:local cmd.exe /c whoami\n'), {
+    code: 127,
+    stdout: '',
+    stderr: 'exec: "cmd.exe": executable file not found in $PATH',
+  })
+  const { execFileImpl } = stubEngine({ commandError })
+  const runtime = createExecutionRuntime({ engine: 'docker', execFileImpl })
+  await runtime.status()
+
+  const error = await runtime.run(['cmd.exe', '/c', 'whoami']).catch((thrown) => thrown)
+  assert.match(error.message, /executable file not found/, 'the container output is what the caller sees')
+  assert.equal(/docker run --rm/.test(error.message), false, 'the invocation details are not echoed back')
+  assert.match(error.message, /exit 127/)
 })
 
 test('the broker refuses to execute without a boundary and never falls back to the host', async () => {

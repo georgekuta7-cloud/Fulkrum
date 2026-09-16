@@ -13,9 +13,9 @@ RUN apt-get update \
   && apt-get install --no-install-recommends --yes git ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-# Matches the uid the runtime passes with --user, so files the agent writes stay
-# owned by the workspace owner rather than root.
-RUN useradd --uid 1000 --create-home --shell /bin/sh runner
+# The runtime passes --user 1000:1000, and the base image already owns that id as
+# the `node` user, so nothing is created here. HOME points at the tmpfs because the
+# rest of the filesystem is read-only.
 
 # A hooks directory that is empty and unwritable by the runner, so a repository
 # cannot install a hook that fires during an agent command.
@@ -29,16 +29,24 @@ ENV HOME=/tmp \
     GIT_EXTERNAL_DIFF= \
     GIT_TERMINAL_PROMPT=0 \
     GIT_OPTIONAL_LOCKS=0 \
-    GIT_CONFIG_COUNT=2 \
+    GIT_CONFIG_COUNT=3 \
     GIT_CONFIG_KEY_0=core.hooksPath \
     GIT_CONFIG_VALUE_0=/opt/fulkrum/empty-hooks \
     GIT_CONFIG_KEY_1=core.fsmonitor \
-    GIT_CONFIG_VALUE_1=false
+    GIT_CONFIG_VALUE_1=false \
+    GIT_CONFIG_KEY_2=safe.directory \
+    GIT_CONFIG_VALUE_2=*
 
-USER runner
+USER node
 WORKDIR /workspace
 
-# The image is only ever used with an explicit argv, so there is no default
-# command. Use `docker inspect --format='{{index .RepoDigests 0}}'` after building
-# and pin that digest in FULKRUM_RUNNER_IMAGE for reproducibility.
-CMD ["/bin/sh"]
+# The base image ships an entrypoint that rewrites the first argument (it runs
+# `node <arg>` when the argument is not an existing binary), which turns a missing
+# command into a confusing Node module error. The argv here is the command, so the
+# entrypoint is cleared and exec receives it directly.
+ENTRYPOINT []
+
+# There is no default command: this image is only used with an explicit argv.
+# Use `docker inspect --format='{{index .RepoDigests 0}}'` after building and pin
+# that digest in FULKRUM_RUNNER_IMAGE for reproducibility.
+CMD ["/bin/true"]

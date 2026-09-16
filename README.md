@@ -151,6 +151,23 @@ or `podman`. The permission dock shows which boundary is live, and `/api/health`
 reports the same thing: `commands: docker container` or `commands: disabled` with
 the reason.
 
+If the CLI is installed but not on the PATH your shell gives to Fulkrum — which is
+what `spawn docker ENOENT` means on a Windows service or non-interactive shell —
+point `FULKRUM_CONTAINER_CLI` at the binary.
+
+Verify the boundary yourself: ask for a command through the tools API, or run the
+container directly.
+
+```bash
+curl -s -X POST http://127.0.0.1:8787/api/runs/<run-id>/tools \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"shell.exec","agentId":"builder","input":{"command":"sh","args":["-c","echo kernel=$(uname -s) uid=$(id -u)"]}}'
+```
+
+A working boundary answers `kernel=Linux uid=1000` and reports `"boundary":"container"`.
+A command that does not exist in the image fails with `executable file not found`,
+which is the proof that nothing ran on the host.
+
 ## Cost, budgets, and traces
 
 Every model call — chat, planning, and each worker step — is written to a ledger

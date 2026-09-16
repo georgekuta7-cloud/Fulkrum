@@ -19,6 +19,9 @@ All notable changes to Fulkrum are documented here. This project follows
   execution is disabled and reported as such at boot, in the permission dock, and
   in `/api/health`. It never falls back to running on the host, and WSL2 is not
   offered as a boundary because its interop layer can execute Windows binaries.
+- `FULKRUM_CONTAINER_CLI` points at the engine binary for shells where it is not
+  on PATH, and a failed engine detection is re-probed rather than cached for the
+  process lifetime, so installing an engine does not require a restart.
 - **Denying a call.** An approval can be refused, and the worker receives the
   denial as a typed error so it can choose another approach instead of retrying.
 - **Run-scoped approvals.** "Approve for this run" records a grant so the same
