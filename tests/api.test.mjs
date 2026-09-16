@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
-import { withServer } from './helpers.mjs'
+import { withServer, withTempDirectory } from './helpers.mjs'
 
 async function makeRun(request, { permissionMode = 'selective' } = {}) {
   const project = await request('POST', '/api/projects', { name: 'api fixture' })
@@ -12,9 +11,8 @@ async function makeRun(request, { permissionMode = 'selective' } = {}) {
 }
 
 test('a malformed body is rejected without killing the bridge', async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), 'fulkrum-api-fixture-'))
-  await writeFile(path.join(directory, 'notes.txt'), 'hi', 'utf8')
-  try {
+  await withTempDirectory(async (directory) => {
+    await writeFile(path.join(directory, 'notes.txt'), 'hi', 'utf8')
     await withServer(async ({ request }) => {
       const { runId } = await makeRun(request)
 
@@ -29,9 +27,7 @@ test('a malformed body is rejected without killing the bridge', async () => {
       assert.equal(health.status, 200)
       assert.equal(health.payload.ok, true)
     }, { workspaceRoot: directory })
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
+  })
 })
 
 test('an oversized body is refused', async () => {
@@ -57,8 +53,7 @@ test('a browser origin that is not allowlisted is refused', async () => {
 })
 
 test('approving a call cannot substitute different arguments', async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), 'fulkrum-approval-'))
-  try {
+  await withTempDirectory(async (directory) => {
     await withServer(async ({ request }) => {
       const { runId } = await makeRun(request)
 
@@ -90,15 +85,12 @@ test('approving a call cannot substitute different arguments', async () => {
       assert.equal(mismatch.status, 409)
       assert.match(String(mismatch.payload.error), /fingerprint/i)
     }, { workspaceRoot: directory })
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
+  })
 })
 
 test('a tool call against a credential path is denied, not queued for approval', async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), 'fulkrum-deny-'))
-  await writeFile(path.join(directory, '.env.local'), 'SECRET=1\n', 'utf8')
-  try {
+  await withTempDirectory(async (directory) => {
+    await writeFile(path.join(directory, '.env.local'), 'SECRET=1\n', 'utf8')
     await withServer(async ({ request }) => {
       const { runId } = await makeRun(request, { permissionMode: 'autopilot' })
       const response = await request('POST', `/api/runs/${runId}/tools`, { name: 'workspace.read', agentId: 'research', input: { path: '.env.local' } })
@@ -106,9 +98,7 @@ test('a tool call against a credential path is denied, not queued for approval',
       assert.match(String(response.payload.error), /Sensitive files/)
       assert.equal(response.payload.toolCall.status, 'denied')
     }, { workspaceRoot: directory })
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
+  })
 })
 
 test('the event stream resumes from Last-Event-ID instead of replaying', async () => {
