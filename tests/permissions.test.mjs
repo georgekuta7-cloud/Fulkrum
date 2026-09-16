@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { realpathSync } from 'node:fs'
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { decidePermission, fingerprintInput, isSensitivePath, permissionMatrix, resolveWorkspacePath, resolveToolCall } from '../server/permissions.mjs'
@@ -13,6 +16,48 @@ test('paths cannot escape the workspace', async () => {
     assert.throws(() => resolveWorkspacePath(directory, path.join(directory, '..', 'outside.txt')), /inside the Fulkrum workspace/)
     assert.doesNotThrow(() => resolveWorkspacePath(directory, path.join('src', 'notes.txt')))
   })
+})
+
+test('a workspace root reached through a link still contains its files', async (t) => {
+  // The configured root can differ from its real path — an 8.3 short name on a CI
+  // runner, a symlinked or junctioned project directory. Judging containment by
+  // comparing real paths against the verbatim root reports a false escape, which
+  // is what happened on the first CI run.
+  const real = await mkdtemp(path.join(tmpdir(), 'fulkrum-real-'))
+  const holder = await mkdtemp(path.join(tmpdir(), 'fulkrum-link-'))
+  const link = path.join(holder, 'workspace')
+
+  try {
+    // A junction works on Windows without elevation and is the common real-world
+    // case (linked project folders); elsewhere a plain directory symlink.
+    await symlink(real, link, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    await rm(holder, { recursive: true, force: true })
+    await rm(real, { recursive: true, force: true })
+    t.skip(`cannot create a directory link here (${error.code})`)
+    return
+  }
+
+  try {
+    await writeFile(path.join(real, 'notes.txt'), 'link fixture content', 'utf8')
+    const realRoot = realpathSync.native(real)
+
+    // Resolution reports a path relative to the real root, not a traversal out of it.
+    const resolution = resolveWorkspacePath(link, 'notes.txt')
+    assert.equal(resolution.relative, 'notes.txt')
+    assert.equal(resolution.resolved, path.join(realRoot, 'notes.txt'))
+
+    // And the tool that actually reads files works through the linked root.
+    const broker = new FulkrumToolBroker({ workspaceRoot: link })
+    assert.equal(broker.workspaceRoot, realRoot, 'the broker normalizes its root once')
+    assert.equal((await broker.execute('workspace.read', { path: 'notes.txt' })).content, 'link fixture content')
+
+    // Containment still holds: a link inside the workspace cannot reach outside it.
+    assert.throws(() => resolveWorkspacePath(link, '../outside.txt'), /inside the Fulkrum workspace/)
+  } finally {
+    await rm(holder, { recursive: true, force: true })
+    await rm(real, { recursive: true, force: true })
+  }
 })
 
 test('windows path traps are refused', async () => {

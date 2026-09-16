@@ -59,7 +59,12 @@ function assertNoWindowsTraps(candidate) {
  * look contained.
  */
 export function resolveWorkspacePath(workspaceRoot, candidate, { forWrite = false } = {}) {
-  const root = path.resolve(workspaceRoot)
+  // Containment is judged on real paths. The configured root can be a short name,
+  // a symlink, or a junction, and comparing a real path against a verbatim root
+  // reports a false escape: a CI runner's temp directory is an 8.3 short name, so
+  // every tool call there failed the containment check while passing locally.
+  const configuredRoot = path.resolve(workspaceRoot)
+  const root = realpathOrNull(configuredRoot) ?? configuredRoot
   assertNoWindowsTraps(candidate)
 
   const resolved = path.resolve(root, String(candidate ?? '.'))

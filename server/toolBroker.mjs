@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { configuredHttpAllowlist, validateOutboundUrl } from './networkPolicy.mjs'
-import { decidePermission, fingerprintToolCall, isSensitivePath, resolveToolCall } from './permissions.mjs'
+import { decidePermission, fingerprintToolCall, isSensitivePath, resolveToolCall, resolveWorkspacePath } from './permissions.mjs'
 import { redact } from './redaction.mjs'
 
 const MAX_FILE_BYTES = 500_000
@@ -81,7 +81,10 @@ async function snapshotFile(absolutePath) {
 
 export class FulkrumToolBroker {
   constructor({ workspaceRoot = process.env.FULKRUM_WORKSPACE_ROOT ?? process.cwd(), httpAllowlist = configuredHttpAllowlist(), execution = null } = {}) {
-    this.workspaceRoot = path.resolve(workspaceRoot)
+    // Normalized once, through the same resolver the tools use, so every path the
+    // broker reports is relative to a real root. Otherwise a short-named or
+    // symlinked workspace root makes result paths point outside themselves.
+    this.workspaceRoot = resolveWorkspacePath(workspaceRoot, '.').resolved
     this.httpAllowlist = httpAllowlist
     this.execution = execution
   }
