@@ -17,7 +17,8 @@ const skippedDirectories = new Set(['.git', 'node_modules', 'dist', 'coverage', 
 /**
  * Extra patterns the workspace owner can add, one per line, `*` and `?` allowed.
  * A deny list in code cannot know what a particular repository considers
- * sensitive; this is how a user extends it without editing the code.
+ * sensitive; this is how a user extends it without editing the code. A trailing
+ * slash means "this directory", as it does in a .gitignore.
  */
 async function readIgnoreRules(root) {
   try {
@@ -27,6 +28,8 @@ async function readIgnoreRules(root) {
       .map((line) => line.trim())
       .filter((line) => line && !line.startsWith('#'))
       .slice(0, MAX_IGNORE_RULES)
+      .map((line) => line.replace(/\/+$/, ''))
+      .filter(Boolean)
       .map((line) => new RegExp(`^${line.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`))
   } catch {
     return []
@@ -250,6 +253,57 @@ export class FulkrumToolBroker {
 
   redact(value) {
     return redact(value)
+  }
+
+  /**
+   * What is in the workspace, as the tools see it.
+   *
+   * The same rules as a search apply — skipped directories, credential files, and
+   * anything `.fulkrumignore` names, with links reported rather than followed — so
+   * this view cannot show a file a tool would refuse to read, or hide one it would
+   * happily return.
+   */
+  async listTree(relativePath = '.', { depth = 2, limit = 500 } = {}) {
+    const target = resolveWorkspacePath(this.workspaceRoot, relativePath)
+    const rules = await readIgnoreRules(this.workspaceRoot)
+
+    const walk = async (directory, remaining) => {
+      const entries = await fs.readdir(directory, { withFileTypes: true })
+      const nodes = []
+      for (const entry of entries.slice(0, limit)) {
+        const absolute = path.join(directory, entry.name)
+        const relative = path.relative(this.workspaceRoot, absolute).replaceAll('\\', '/')
+        if (skippedDirectories.has(entry.name) || isIgnored(relative, rules)) {
+          nodes.push({ name: entry.name, path: relative, kind: 'skipped' })
+          continue
+        }
+        if (entry.isDirectory()) {
+          // A junction or symlink is reported, never descended into: on Windows a
+          // plain listing says it is an ordinary directory.
+          const stats = await fs.lstat(absolute).catch(() => null)
+          if (!stats || stats.isSymbolicLink() || !stats.isDirectory()) {
+            nodes.push({ name: entry.name, path: relative, kind: 'link' })
+            continue
+          }
+          const node = { name: entry.name, path: relative, kind: 'directory' }
+          if (remaining > 1) node.children = await walk(absolute, remaining - 1)
+          nodes.push(node)
+          continue
+        }
+        if (isSensitivePath(entry.name)) {
+          nodes.push({ name: entry.name, path: relative, kind: 'sensitive' })
+          continue
+        }
+        const stats = await fs.stat(absolute).catch(() => null)
+        nodes.push({ name: entry.name, path: relative, kind: 'file', bytes: stats?.size ?? null })
+      }
+      return nodes.sort((left, right) => {
+        if (left.kind !== right.kind) return left.kind === 'directory' ? -1 : right.kind === 'directory' ? 1 : 0
+        return left.name.localeCompare(right.name)
+      })
+    }
+
+    return { path: target.relative, depth: Math.min(Math.max(Number(depth) || 1, 1), 4), entries: await walk(target.resolved, Math.min(Math.max(Number(depth) || 1, 1), 4)) }
   }
 
   /**

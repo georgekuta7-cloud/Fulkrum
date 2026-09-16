@@ -9,7 +9,7 @@ import { buildRunReport, reportToMarkdown } from './runReport.mjs'
 import { findInjectionAttempts } from './injection.mjs'
 import { formatSseFrame } from './sse.mjs'
 import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
-import { fingerprintToolCall, permissionMatrix } from './permissions.mjs'
+import { PERMISSION_MODES, fingerprintToolCall, permissionMatrix } from './permissions.mjs'
 import { agentRoles } from './roles.mjs'
 
 export const MAX_JSON_BODY_BYTES = 100_000
@@ -621,6 +621,110 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           return
         }
         sendJson(response, 200, report)
+        return
+      }
+
+      if (request.method === 'GET' && requestUrl.pathname === '/api/runs') {
+        const projectId = requestUrl.searchParams.get('projectId')
+        const runs = store.listRuns({
+          projectId: projectId || null,
+          // Every active run at once, which is what a caller watching several
+          // projects needs; one project's history is the same call with a projectId.
+          activeOnly: /^(1|true)$/i.test(requestUrl.searchParams.get('active') ?? ''),
+          status: requestUrl.searchParams.get('status') || null,
+          limit: Math.min(Math.max(Number(requestUrl.searchParams.get('limit') ?? 50) || 50, 1), 200),
+        })
+        sendJson(response, 200, { runs })
+        return
+      }
+
+      const runForkMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/fork$/)
+      if (request.method === 'POST' && runForkMatch) {
+        const sourceRunId = decodeURIComponent(runForkMatch[1])
+        const source = store.getRun(sourceRunId)
+        if (!source) {
+          sendJson(response, 404, { error: 'Run not found.' })
+          return
+        }
+        const plan = (source.planId ? store.getPlan(source.planId) : null) ?? store.getLatestPlanForRun(sourceRunId)
+        if (!plan) {
+          sendJson(response, 409, { error: 'That run has no plan to re-run.' })
+          return
+        }
+        const body = await readJson(request).catch(() => ({}))
+        // A fork is a new run with the same plan as a fresh draft, plus the original
+        // direction as its first message. Re-running is a decision, so the plan goes
+        // through approval again rather than inheriting the old one.
+        const forked = store.transaction(() => {
+          const run = store.createRun({
+            projectId: source.projectId,
+            mode: source.mode,
+            permissionMode: PERMISSION_MODES.includes(body.permissionMode) ? body.permissionMode : source.permissionMode,
+            ownerId,
+          })
+          const copy = store.createPlan({
+            projectId: source.projectId,
+            runId: run.id,
+            objective: plan.plan.objective,
+            tasks: plan.tasks.map((task) => ({ role: task.role, title: task.title, instructions: task.instructions, acceptanceCheck: task.acceptanceCheck, dependsOn: task.dependsOn })),
+            contentHash: plan.plan.contentHash,
+            source: 'fork',
+          })
+          store.updateRun(run.id, { planId: copy.plan.id })
+          const direction = [...store.listMessages(sourceRunId)].reverse().find((message) => message.role === 'user')
+          if (direction) store.appendMessage({ projectId: source.projectId, runId: run.id, role: 'user', content: direction.content })
+          store.appendEvent({ runId: run.id, type: 'run.forked', agentId: 'head', payload: { from: sourceRunId, planId: copy.plan.id, version: copy.plan.version, objective: copy.plan.objective } })
+          return { run: store.getRun(run.id), plan: copy }
+        })
+        sendJson(response, 201, { run: forked.run, plan: forked.plan, from: sourceRunId })
+        return
+      }
+
+      if (request.method === 'GET' && requestUrl.pathname === '/api/search') {
+        const query = requestUrl.searchParams.get('q') ?? ''
+        if (!query.trim()) {
+          sendJson(response, 400, { error: 'A search needs a query: pass ?q=.' })
+          return
+        }
+        sendJson(response, 200, store.search({
+          query,
+          projectId: requestUrl.searchParams.get('projectId') || null,
+          limit: Math.min(Math.max(Number(requestUrl.searchParams.get('limit') ?? 30) || 30, 1), 100),
+        }))
+        return
+      }
+
+      if (request.method === 'GET' && requestUrl.pathname === '/api/workspace/tree') {
+        try {
+          sendJson(response, 200, await toolBroker.listTree(requestUrl.searchParams.get('path') ?? '.', { depth: Number(requestUrl.searchParams.get('depth') ?? 2) }))
+        } catch (error) {
+          sendJson(response, 400, { error: error instanceof Error ? error.message : 'That path cannot be listed.' })
+        }
+        return
+      }
+
+      if (request.method === 'GET' && requestUrl.pathname === '/api/workspace/history') {
+        const target = requestUrl.searchParams.get('path') ?? ''
+        if (!target.trim()) {
+          sendJson(response, 400, { error: 'A file history needs a path: pass ?path=.' })
+          return
+        }
+        const calls = store.listToolCallsForPath(target, { limit: Math.min(Math.max(Number(requestUrl.searchParams.get('limit') ?? 50) || 50, 1), 200) })
+        sendJson(response, 200, {
+          path: target,
+          calls: calls.map((call) => ({
+            id: call.id,
+            runId: call.runId,
+            agentId: call.agentId,
+            name: call.name,
+            kind: call.kind,
+            status: call.status,
+            approvedScope: call.approvalScope,
+            at: call.completedAt ?? call.createdAt,
+            bytes: call.output?.bytes ?? null,
+            created: call.output?.created ?? null,
+          })),
+        })
         return
       }
 

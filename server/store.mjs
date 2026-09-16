@@ -134,6 +134,17 @@ function taskFromRow(row) {
   }
 }
 
+/** A window of text around the first match, so a result can be judged at a glance. */
+function snippet(text, phrase, radius = 60) {
+  const value = String(text ?? '')
+  const needle = String(phrase ?? '')
+  const at = value.toLowerCase().indexOf(needle.toLowerCase())
+  if (at === -1) return value.slice(0, radius * 2)
+  const start = Math.max(at - radius, 0)
+  const end = Math.min(at + needle.length + radius, value.length)
+  return `${start > 0 ? '…' : ''}${value.slice(start, end)}${end < value.length ? '…' : ''}`
+}
+
 function providerSettingsFromRow(row) {
   return {
     providerId: row.provider_id,
@@ -325,6 +336,103 @@ export class FulkrumStore {
   getRun(runId) {
     const row = this.database.prepare('SELECT * FROM runs WHERE id = ?').get(runId)
     return row ? runFromRow(row) : null
+  }
+
+  /**
+   * Runs with what they cost, for a history view.
+   *
+   * Spend is aggregated in the same query rather than by calling `spendForRun` per
+   * row: a history list should not be a loop of queries.
+   */
+  listRuns({ projectId = null, activeOnly = false, status = null, limit = 50 } = {}) {
+    const conditions = []
+    const parameters = []
+    if (projectId) {
+      conditions.push('r.project_id = ?')
+      parameters.push(projectId)
+    }
+    if (activeOnly) conditions.push("r.status NOT IN ('cancelled', 'completed', 'failed')")
+    if (status) {
+      conditions.push('r.status = ?')
+      parameters.push(status)
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    return this.database
+      .prepare(`SELECT r.*,
+          COALESCE((SELECT SUM(cost_usd) FROM model_calls WHERE run_id = r.id), 0) AS cost_usd,
+          (SELECT COUNT(*) FROM model_calls WHERE run_id = r.id) AS call_count,
+          (SELECT COUNT(*) FROM model_calls WHERE run_id = r.id AND priced = 0) AS unpriced_count,
+          (SELECT COUNT(*) FROM run_tasks WHERE run_id = r.id) AS task_count,
+          (SELECT COUNT(*) FROM tool_calls WHERE run_id = r.id AND kind = 'write' AND status = 'completed') AS write_count,
+          (SELECT objective FROM plans WHERE plans.id = r.plan_id) AS objective
+        FROM runs r ${where} ORDER BY r.updated_at DESC LIMIT ?`)
+      .all(...parameters, limit)
+      .map((row) => ({
+        ...runFromRow(row),
+        objective: row.objective ?? null,
+        spend: { costUsd: Number(row.cost_usd ?? 0), calls: Number(row.call_count ?? 0), unpricedCalls: Number(row.unpriced_count ?? 0) },
+        taskCount: Number(row.task_count ?? 0),
+        writes: Number(row.write_count ?? 0),
+      }))
+  }
+
+  /** Tool calls that touched one file, newest first, across every run. */
+  listToolCallsForPath(relativePath, { limit = 50 } = {}) {
+    // `resolved_json` holds the canonical resolution, so the relative path appears
+    // in it verbatim; the LIKE is a coarse filter and the caller sees the rows.
+    const needle = `%"relative":"${String(relativePath).replaceAll('"', '')}"%`
+    return this.database.prepare('SELECT * FROM tool_calls WHERE resolved_json LIKE ? ORDER BY created_at DESC LIMIT ?').all(needle, limit).map(toolCallFromRow)
+  }
+
+  /**
+   * Messages and events matching a phrase.
+   *
+   * `%` and `_` are escaped so a search for "100%" does not become a wildcard, and
+   * results are snippets rather than whole payloads: the point is to find the place,
+   * not to read it here.
+   */
+  search({ query, projectId = null, limit = 30 }) {
+    const phrase = String(query ?? '').trim()
+    if (!phrase) return { query: '', messages: [], events: [], truncated: false }
+    const escaped = phrase.replace(/[%_\\]/g, (character) => `\\${character}`)
+    const like = `%${escaped}%`
+    const scope = projectId ? 'AND r.project_id = ?' : ''
+    const parameters = projectId ? [like, projectId, limit] : [like, limit]
+
+    const messages = this.database
+      .prepare(`SELECT m.id, m.run_id, m.project_id, m.role, m.agent_id, m.content, m.created_at
+        FROM messages m JOIN runs r ON r.id = m.run_id
+        WHERE m.content LIKE ? ESCAPE '\\' ${scope} ORDER BY m.created_at DESC LIMIT ?`)
+      .all(...parameters)
+      .map((row) => ({
+        kind: 'message',
+        id: String(row.id),
+        runId: row.run_id,
+        projectId: row.project_id,
+        role: row.role,
+        agentId: row.agent_id,
+        snippet: snippet(row.content, phrase),
+        createdAt: Number(row.created_at),
+      }))
+
+    const events = this.database
+      .prepare(`SELECT e.event_id, e.run_id, r.project_id, e.type, e.agent_id, e.payload_json, e.sequence, e.created_at
+        FROM run_events e JOIN runs r ON r.id = e.run_id
+        WHERE e.payload_json LIKE ? ESCAPE '\\' ${scope} ORDER BY e.created_at DESC LIMIT ?`)
+      .all(...parameters)
+      .map((row) => ({
+        kind: 'event',
+        id: row.event_id,
+        runId: row.run_id,
+        projectId: row.project_id,
+        type: row.type,
+        agentId: row.agent_id,
+        sequence: Number(row.sequence),
+        snippet: snippet(row.payload_json, phrase),
+        createdAt: Number(row.created_at),
+      }))
+
+    return { query: phrase, messages, events, truncated: messages.length >= limit || events.length >= limit }
   }
 
   updateRun(runId, patch = {}) {

@@ -524,6 +524,14 @@ test('the documented routes are the routes the server serves', async () => {
       { method: 'PATCH', template: '/api/projects/{projectId}' },
       { method: 'DELETE', template: '/api/projects/{projectId}', values: { projectId: throwawayProject } },
       { method: 'POST', template: '/api/runs' },
+      { method: 'GET', template: '/api/runs' },
+      { method: 'POST', template: '/api/runs/{runId}/fork' },
+      { method: 'GET', template: '/api/search', query: '?q=anything' },
+      { method: 'GET', template: '/api/workspace/tree' },
+      { method: 'GET', template: '/api/workspace/history', query: '?path=README.md' },
+      { method: 'GET', template: '/api/status' },
+      { method: 'POST', template: '/api/maintenance/verify' },
+      { method: 'POST', template: '/api/maintenance/backup' },
       { method: 'GET', template: '/api/runs/{runId}' },
       { method: 'GET', template: '/api/runs/{runId}/events' },
       { method: 'GET', template: '/api/runs/{runId}/audit' },
@@ -547,7 +555,7 @@ test('the documented routes are the routes the server serves', async () => {
       const values = { ...defaults, ...probe.values }
       const path = probe.template.replace(/\{(\w+)\}/g, (_, name) => encodeURIComponent(values[name] ?? 'x'))
       const body = probe.method === 'GET' || probe.method === 'DELETE' ? undefined : {}
-      const response = await request(probe.method, path, body)
+      const response = await request(probe.method, `${path}${probe.query ?? ''}`, body)
       if (response.status === 404 && response.payload.detail === 'Not found.') missing.push(`${probe.method} ${probe.template}`)
     }
     assert.deepEqual(missing, [], 'documented routes the server does not serve')
