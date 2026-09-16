@@ -63,7 +63,9 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
    * backstop: a missed notification must not strand a run forever.
    */
   function waitForRunChange(runId, timeoutMs = 5_000) {
-    return new Promise((resolve) => {
+    // Annotated so a caller can resolve it without a value: this promise says "the
+    // run changed", and there is nothing to hand back.
+    return /** @type {Promise<void>} */ (new Promise((done) => {
       let settled = false
       let unsubscribe = () => {}
       let timer = null
@@ -72,11 +74,11 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
         settled = true
         clearTimeout(timer)
         unsubscribe()
-        resolve()
+        done()
       }
       unsubscribe = store.subscribeEvents(runId, finish)
       timer = setTimeout(finish, timeoutMs)
-    })
+    }))
   }
 
   /**
