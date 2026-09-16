@@ -381,6 +381,18 @@ const providerCatalog: ProviderStatus[] = [
   { id: 'kimi', label: 'Kimi', envKey: 'KIMI_API_KEY or MOONSHOT_API_KEY', model: 'kimi-k2', protocol: 'openai-compatible', baseUrl: 'https://api.moonshot.ai/v1', configured: false, custom: false, hasKey: false, keySource: null, authStyle: 'auto', authHeader: null, headers: {}, allowPrivate: false, temperature: 'auto' },
 ]
 
+/** Save role routing to the project that owns it. Outside the component so the
+ *  debounced effect that calls it can depend on it honestly. */
+async function persistRouting(projectId: string | null, nextRouting: Record<AgentId, string>) {
+  if (!projectId) return
+  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ settings: { routing: nextRouting } }),
+  })
+  if (!response.ok) throw new Error('Could not save model routing.')
+}
+
 /**
  * Ask the server for the plan a run will execute. The stored plan is what
  * "Approve & start run" approves, so it has to exist and be visible first.
@@ -447,6 +459,8 @@ function App() {
   const [providerSettingsError, setProviderSettingsError] = useState('')
   const [execution, setExecution] = useState<ExecutionStatus | null>(null)
   const eventCursor = useRef(0)
+  /** The routing the server already knows, so opening a project does not save it. */
+  const persistedRouting = useRef(JSON.stringify(starterRouting))
 
   const runLabel = isInterrupted ? 'Interrupted' : isBudgetExceeded ? 'Budget reached' : isPaused ? 'Paused' : mode === 'review' ? 'Review ready' : approved ? 'Live run' : 'Awaiting approval'
   const headProviderLabel = routing.head.split(' · ')[0]
@@ -464,15 +478,17 @@ function App() {
     return configuredOptions.length ? configuredOptions : modelOptions[agentId]
   }
 
-  const persistRouting = async (nextRouting: Record<AgentId, string>) => {
-    if (!projectId) return
-    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ settings: { routing: nextRouting } }),
-    })
-    if (!response.ok) throw new Error('Could not save model routing.')
-  }
+  // A route can be typed by hand, so saving it must not depend on a separate
+  // action: an edit that silently reverts on reload is worse than no field at all.
+  useEffect(() => {
+    const serialized = JSON.stringify(routing)
+    if (serialized === persistedRouting.current) return
+    const timer = window.setTimeout(() => {
+      persistedRouting.current = serialized
+      void persistRouting(projectId, routing).catch(() => undefined)
+    }, 500)
+    return () => window.clearTimeout(timer)
+  }, [routing, projectId])
 
   useEffect(() => {
     let cancelled = false
@@ -524,7 +540,10 @@ function App() {
       if (!project || cancelled) return
 
       if (project.settings?.routing) {
-        setRouting((current) => ({ ...current, ...project.settings?.routing }))
+        const merged = { ...starterRouting, ...project.settings.routing }
+        // Opening a project must not write back the routing it just read.
+        persistedRouting.current = JSON.stringify(merged)
+        setRouting(merged)
       }
       let activeRun = project.runs?.find((item) => !['cancelled', 'completed'].includes(item.status))
       if (!activeRun) {
@@ -676,7 +695,6 @@ function App() {
       }
       const nextRouting = { ...routing, head: providerRoute }
       setRouting(nextRouting)
-      void persistRouting(nextRouting).catch(() => undefined)
       setCustomProvider({ label: '', baseUrl: '', model: '', envKey: '', apiKey: '' })
     } catch (error) {
       setCustomProviderError(error instanceof Error ? error.message : 'Could not add provider.')
