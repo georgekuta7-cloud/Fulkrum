@@ -5,6 +5,58 @@ All notable changes to Fulkrum are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- **Tool results are anchored outside the database.** The head of each run's chain
+  was recorded in a row in the same file, so deleting the row with the events it
+  vouched for removed every trace. An append-only `audit-heads.log` next to the
+  database now records the same head, and verification compares against both: a
+  shortened tail, a rewritten anchor, and an anchor whose row has been deleted are
+  reported separately. `npm run audit:verify` prints the anchor file.
+- **A daily backup, and an integrity check at boot.** `npm run db:backup` writes a
+  complete copy with `VACUUM INTO` — without stopping the app — copies the anchor
+  log beside it, and rotates the oldest out. The bridge takes one at boot when the
+  newest is older than `FULKRUM_BACKUP_INTERVAL_HOURS`, and `PRAGMA quick_check`
+  refuses to open a damaged file with a message pointing at the backups instead of
+  failing later on a write.
+- **A resumed task continues its conversation.** The agent loop's turns are
+  persisted per task, so a restart resumes a task where it stopped instead of
+  starting it over and re-running tool calls it had already made. The step budget
+  travels with the task, so a restart cannot hand a task a fresh allowance.
+
+### Changed
+- **Multi-statement writes are one transaction.** Approving a plan (approve, point
+  the run at it, record the event), denying a call, and reconciling interrupted runs
+  were separate autocommits: a crash between them left a state nothing could explain
+  afterwards. `store.transaction()` makes each a unit, and subscribers are notified
+  only for events that actually committed.
+- **The audit chain records the hash of a tool result, not the result.** Every
+  output was stored twice — once on the tool call, once inside the chain — and the
+  copy inside the chain can never be pruned without breaking verification, which is
+  why the retention policy shrank nothing. The chain still commits to the exact
+  content, so an altered result is as detectable as before, and the bytes live where
+  retention can reach them. Raw tool inputs get the same treatment.
+- **A paused run no longer polls.** A parked worker checked the run's status every
+  100 ms for the whole pause; it now waits on the store's event stream, with a slow
+  re-check as a backstop.
+- **A budget ceiling can no longer be passed by every parallel reader at once.** The
+  check read recorded spend, and cost is only known after a call returns, so up to
+  `maxParallelReaders` calls could clear the same ceiling together. A call that has
+  started is reserved at its estimated cost, synchronously with the check, and the
+  reservation is replaced by the real cost when the call lands.
+- **A provider that is down is skipped rather than retried by everyone.** Only
+  failures worth retrying count toward opening it, and after the cooldown a single
+  probe decides whether it recovered. Calls to one provider are limited instead of
+  piling up.
+- **Shutdown waits for the workers.** The store used to be closed while runs were
+  still writing to it; draining now ends open event streams so the server can close,
+  and the store is closed after the active runs settle (or the same 5 s budget
+  expires, which the lease makes visible on the next start).
+- **A reconnecting event stream resumes from the cursor the browser actually has.**
+  A stale `?after=` in the URL used to win over `Last-Event-ID`, so the header path
+  was dead code; the header takes precedence now.
+- **The daily budget window is documented** (local midnight) and can be pinned with
+  `FULKRUM_BUDGET_TIMEZONE=UTC`.
+
 ### Security
 - **Outbound connections are pinned to the address that was validated, and bodies
   are read with a byte cap.** Validation resolved a hostname and the request then

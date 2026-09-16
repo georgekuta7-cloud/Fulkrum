@@ -20,7 +20,7 @@ Node 22.13 or newer is required: the store uses the built-in `node:sqlite`, whic
 ## Checks
 
 ```powershell
-npm test               # 110 tests: policy, persistence, execution boundary, providers, outbound HTTP, redaction, and the HTTP API
+npm test               # 121 tests: policy, persistence, durability, execution boundary, providers, outbound HTTP, redaction, and the HTTP API
 npm run lint
 npm run typecheck      # the client, and the server and tests via checkJs
 npm run build
@@ -133,8 +133,10 @@ they are too large to diff.
 
 **Interrupted runs are recoverable.** A run holds a lease while it works. If the
 bridge is killed mid-run, the next start marks the run `interrupted` instead of
-leaving it looking alive forever, and the control room offers **Resume** (which
-continues from the last completed step) or **Abandon**.
+leaving it looking alive forever, and the control room offers **Resume** or
+**Abandon**. Each task's turns are persisted as it works, so a resumed task
+continues its conversation — including the tool results it had already seen —
+rather than starting over, and the step budget it has used travels with it.
 
 ## Execution boundary
 
@@ -244,7 +246,13 @@ was recorded. Prompt and completion content is **not** stored.
 
 Runs, messages, provider definitions, tool calls, and audit events are stored in
 `data/fulkrum.sqlite` by default; override with `FULKRUM_DB_PATH`. The database
-runs in WAL mode and is checkpointed on shutdown.
+runs in WAL mode, commits with `synchronous=FULL`, and is checked at boot: a
+damaged file is refused with a pointer to the backups rather than failing later on
+a write.
+
+`npm run db:backup` takes a consistent copy with `VACUUM INTO` — without stopping
+the app — and the bridge takes one at boot when the newest is more than a day old.
+Old copies rotate out.
 
 Every broker-mediated action is appended to a hash-chained event log, so edits
 and deletions are detectable: `npm run audit:verify` recomputes the chain and
@@ -252,9 +260,18 @@ exits non-zero on a mismatch. It reports per run, says which sequence the chain
 covers (`verified from event 1`), and counts events that predate chaining.
 
 A chain cannot detect its own truncation, so the head of each chain is also
-**anchored** by a checkpoint — automatically when a run stops moving, and on
-demand with `npm run audit:verify -- --anchor`. Deleting or rewriting the tail is
-then reported as `TRUNCATED` instead of passing.
+**anchored** twice: in a checkpoint row, recorded automatically when a run stops
+moving and on demand with `npm run audit:verify -- --anchor`, and in an
+append-only `data/audit-heads.log` beside the database. The file is what survives
+someone deleting the checkpoint row along with the events: verification reports a
+shortened tail, a rewritten anchor, and an anchor with no row to match it as three
+separate findings.
+
+The chain records the **hash** of each tool result rather than the result itself.
+Every output used to be stored twice, and the copy inside the chain can never be
+pruned without breaking verification — which is why retention shrank nothing. The
+bytes live on the tool call, where the retention window can reach them, and the
+chain still commits to them exactly.
 
 `SECURITY.md` documents the threat model, the controls, and — importantly — what
 the audit log does **not** cover, including why a checkpoint in the same file is
@@ -264,8 +281,8 @@ tamper-evident rather than tamper-proof.
 
 - **Approval is per tool call, not per plan.** Approving a plan starts it; a consequential call still parks for its own approval unless the permission mode allows it or you grant that tool for the rest of the run. Grouped approval of similar calls is not built.
 - **Commands run in a container or not at all.** `shell.exec` executes inside `FULKRUM_RUNNER_IMAGE` with no network, a read-only root filesystem, and dropped capabilities. Without an engine, execution is reported as disabled at boot rather than quietly falling back to the host.
-- **The audit chain is tamper-evident, not tamper-proof.** Checkpoints live in the same database file, so anyone who can write that file can remove the anchor together with the events. Exporting and signing the chain head outside the database is not built.
-- **Budgets are checked before each call, not reserved.** Cost is only known after a call returns, so parallel readers can pass the ceiling by more than one call. Reported spend also stays a lower bound while a model has no entry in the price table, and the daily window uses local midnight.
+- **The audit chain is tamper-evident, not tamper-proof.** The head is anchored outside the database now, so deleting the events and the checkpoint row together is detectable rather than silent — but anyone who can write both files can still rewrite both. Signing the head with a key that stays off the machine is not built, and a key stored next to what it signs would add little.
+- **Budgets reserve an estimate, not the true cost.** A call is held against the ceiling at what the largest previous call cost (or a floor), because cost is only known after it returns. That stops parallel readers passing the same check together; it does not make the ceiling exact, and reported spend stays a lower bound while a model has no entry in the price table. The daily window is local midnight unless `FULKRUM_BUDGET_TIMEZONE=UTC`.
 - **A key entered in the settings drawer is stored unencrypted** in the local database, which is gitignored. An environment variable of the same name takes precedence.
 - **There is no production run mode.** `npm run dev` starts the UI and the bridge together; `npm run preview` serves the built assets without the bridge, so the app is not functional under it.
 - **The local API has no authentication.** It binds to loopback and rejects unapproved browser origins, so this is CSRF protection, not access control: any local process can call it, including approving tool calls.

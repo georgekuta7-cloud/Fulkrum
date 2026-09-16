@@ -16,6 +16,15 @@ const planJson = JSON.stringify({
   ],
 })
 
+/** Two readers in one layer, so they run concurrently. */
+const twoReaderPlan = JSON.stringify({
+  objective: 'Research two things at once.',
+  tasks: [
+    { role: 'research', title: 'First', instructions: 'Report what is there.', dependsOn: [] },
+    { role: 'research', title: 'Second', instructions: 'Report what is there.', dependsOn: [] },
+  ],
+})
+
 /** A scripted model: planning gets JSON, everything else gets a summary. */
 const modelStub = (callUsage) => async ({ options }) => {
   const instructions = String(options?.instructions ?? '')
@@ -187,6 +196,72 @@ test('a run stops when its budget is reached instead of overspending', async () 
       while (Date.now() < resumeDeadline && store.getRun(runId).status === 'executing') await new Promise((resolve) => setTimeout(resolve, 100))
       assert.equal(store.getRun(runId).status, 'review', `unexpected status ${store.getRun(runId).status}`)
       assert.equal(store.listTasks(runId).every((task) => task.status === 'completed'), true)
+    }, { model, pricing })
+  } finally {
+    if (previousKey === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousKey
+  }
+})
+
+test('parallel readers cannot both slip past the same budget check', async () => {
+  const previousKey = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-parallel-budget'
+  // $1 per input token keeps the arithmetic obvious.
+  const pricing = createPricing({ table: { 'grok-4': { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 } } })
+  const callUsage = usage({ inputTokens: 1, billableInputTokens: 1 })
+
+  let releaseFirst
+  const gate = new Promise((resolve) => { releaseFirst = resolve })
+  let signalStarted
+  const started = new Promise((resolve) => { signalStarted = resolve })
+  let workerCalls = 0
+  const model = async ({ options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) return { text: twoReaderPlan, toolCalls: [], usage: null }
+    workerCalls += 1
+    if (workerCalls === 1) {
+      signalStarted()
+      await gate
+    }
+    return { text: 'A summary of the work.', toolCalls: [], usage: callUsage }
+  }
+
+  try {
+    await withServer(async ({ request, store, orchestrator }) => {
+      const project = await request('POST', '/api/projects', { name: 'parallel budget' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id })
+      const runId = run.payload.run.id
+      await request('POST', '/api/chat', { runId, message: 'Research both.', history: [] })
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+
+      // A ceiling that is larger than nothing spent but smaller than one
+      // reservation: with the check reading recorded spend alone, both readers
+      // would pass it before either returned.
+      const budget = await request('POST', `/api/runs/${runId}/control`, { action: 'set-budget', budgetUsd: 0.02 })
+      assert.equal(budget.status, 200)
+      const approved = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+      assert.equal(approved.status, 200)
+
+      await Promise.race([started, new Promise((resolve) => setTimeout(resolve, 5_000))])
+      assert.equal(orchestrator.inFlightBudget(runId) > 0, true, 'a call in flight is held against the ceiling')
+
+      releaseFirst()
+      const deadline = Date.now() + 10_000
+      while (Date.now() < deadline && ['planning', 'executing', 'review'].includes(store.getRun(runId).status)) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+
+      const status = store.getRun(runId).status
+      assert.equal(['budget_exceeded', 'review'].includes(status), true, `unexpected status ${status}`)
+      assert.equal(store.listEvents(runId).some((event) => event.type === 'run.budget.exceeded'), true, 'the ceiling stopped the second reader')
+
+      // A refused reader fails the batch while the first call is still finishing
+      // its own work, so wait for it to land rather than asserting mid-flight.
+      const settleDeadline = Date.now() + 5_000
+      while (Date.now() < settleDeadline && orchestrator.inFlightBudget(runId) !== 0) {
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+      assert.equal(orchestrator.inFlightBudget(runId), 0, 'nothing stays reserved once the calls have settled')
     }, { model, pricing })
   } finally {
     if (previousKey === undefined) delete process.env.XAI_API_KEY

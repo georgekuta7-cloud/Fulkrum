@@ -198,6 +198,51 @@ test('a rejected temperature is retried without it, then remembered', async () =
   })
 })
 
+test('a provider that keeps failing is skipped, then probed once', async () => {
+  const previous = {
+    attempts: process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS,
+    threshold: process.env.FULKRUM_BREAKER_THRESHOLD,
+    cooldown: process.env.FULKRUM_BREAKER_COOLDOWN_MS,
+  }
+  // One attempt per call keeps this quick; two failed calls open the breaker.
+  process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS = '1'
+  process.env.FULKRUM_BREAKER_THRESHOLD = '2'
+  process.env.FULKRUM_BREAKER_COOLDOWN_MS = '150'
+
+  try {
+    await withProviderServer((_record, response) => {
+      json(response, { error: { message: 'the provider is having a bad day' } }, 500)
+    }, async ({ baseUrl, requests }) => {
+      await withServer(async ({ request }) => {
+        const { projectId, runId } = await makeRun(request)
+        await request('POST', '/api/providers', { label: 'Flaky', baseUrl, model: 'flaky-1', apiKey: 'sk-flaky', allowPrivate: true })
+        const chat = () => request('POST', '/api/chat', { projectId, runId, routing: { head: 'Flaky · flaky-1' }, message: 'hello', history: [] })
+
+        assert.equal((await chat()).status, 502)
+        assert.equal((await chat()).status, 502)
+        assert.equal(requests.length, 2, 'each failed call reached the provider once')
+
+        // Two failures open the breaker: the next call is refused without dialing.
+        const skipped = await chat()
+        assert.equal(skipped.status, 502)
+        assert.match(String(skipped.payload.error), /skipped/i)
+        assert.equal(requests.length, 2, 'nothing was sent while the breaker was open')
+
+        // After the cooldown, one call is allowed through as a probe.
+        await new Promise((resolve) => setTimeout(resolve, 200))
+        assert.equal((await chat()).status, 502)
+        assert.equal(requests.length, 3, 'a half-open breaker probes exactly once')
+      }, { realModelCall: true })
+    })
+  } finally {
+    const restore = { FULKRUM_PROVIDER_MAX_ATTEMPTS: previous.attempts, FULKRUM_BREAKER_THRESHOLD: previous.threshold, FULKRUM_BREAKER_COOLDOWN_MS: previous.cooldown }
+    for (const [key, value] of Object.entries(restore)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
 test('the provider probe reports what it found, and why it could not', async () => {
   await withProviderServer((_record, response) => {
     json(response, { data: [{ id: 'alpha' }, { id: 'beta' }] })

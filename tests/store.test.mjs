@@ -1,8 +1,143 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
 import { FulkrumStore } from '../server/store.mjs'
 import { withStore, withTempDirectory } from './helpers.mjs'
+
+test('the audit chain records a hash of tool output, not the output itself', async () => {
+  await withTempDirectory(async (directory) => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(path.join(directory, 'notes.txt'), 'the quick brown fox\n', 'utf8')
+    const { withServer } = await import('./helpers.mjs')
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'chain fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id })
+      const runId = run.payload.run.id
+      const read = await request('POST', `/api/runs/${runId}/tools`, { name: 'workspace.read', input: { path: 'notes.txt' } })
+      assert.equal(read.status, 200, JSON.stringify(read.payload))
+
+      const completed = store.listEvents(runId).find((event) => event.type === 'tool.completed')
+      assert.equal(typeof completed.payload.outputSha256, 'string')
+      assert.equal(completed.payload.output, undefined, 'the payload is not in the chain')
+      assert.equal(JSON.stringify(store.listEvents(runId)).includes('the quick brown fox'), false, 'nor anywhere else in it')
+
+      // The bytes are on the tool call, where retention can reach them, and the
+      // chain still commits to exactly that content.
+      const call = store.getToolCall(read.payload.toolCall.id)
+      assert.equal(call.output.content, 'the quick brown fox\n')
+      assert.equal(createHash('sha256').update(JSON.stringify(call.output), 'utf8').digest('hex'), completed.payload.outputSha256)
+    }, { workspaceRoot: directory })
+  })
+})
+
+test('several writes commit as one unit, and events wait for the commit', async () => {
+  await withStore((store) => {
+    const project = store.createProject({ name: 'transactions' })
+    const run = store.createRun({ projectId: project.id })
+    const seen = []
+    const unsubscribe = store.subscribeEvents(run.id, (event) => seen.push(event.type))
+
+    store.transaction(() => {
+      store.appendEvent({ runId: run.id, type: 'inside', payload: {} })
+      assert.deepEqual(seen, [], 'a subscriber must not see an event that could still be rolled back')
+    })
+    assert.deepEqual(seen, ['inside'], 'the event is delivered once the unit commits')
+    assert.equal(store.listEvents(run.id).length, 1)
+
+    assert.throws(() => store.transaction(() => {
+      store.appendEvent({ runId: run.id, type: 'rolled-back', payload: {} })
+      throw new Error('nope')
+    }), /nope/)
+    assert.equal(store.listEvents(run.id).length, 1, 'the rolled-back event is not in the log')
+    assert.deepEqual(seen, ['inside'], 'and it was never delivered')
+
+    // A nested call joins the open unit instead of committing it early.
+    store.transaction(() => {
+      store.appendEvent({ runId: run.id, type: 'outer', payload: {} })
+      store.transaction(() => store.appendEvent({ runId: run.id, type: 'nested', payload: {} }))
+      assert.equal(store.listEvents(run.id).length, 3)
+    })
+    assert.deepEqual(store.listEvents(run.id).map((event) => event.type), ['inside', 'outer', 'nested'])
+    assert.equal(store.verifyEventChain(run.id).ok, true, 'the chain is intact after all of that')
+    unsubscribe()
+  })
+})
+
+test('a backup is a usable copy, and old ones rotate out', async () => {
+  await withStore(async (store) => {
+    const project = store.createProject({ name: 'backup fixture' })
+    const run = store.createRun({ projectId: project.id })
+    store.appendEvent({ runId: run.id, type: 'one', payload: {} })
+    store.recordAuditCheckpoint(run.id, { source: 'test' })
+
+    let latest = null
+    for (let index = 0; index < 4; index += 1) {
+      latest = store.backup({ keep: 2, now: new Date(Date.now() + index * 1_000) })
+      assert.equal(existsSync(latest.path), true)
+    }
+    assert.equal(existsSync(latest.anchorPath), true, 'the anchor log travels with the copy')
+
+    const status = store.backupStatus()
+    assert.equal(status.count, 2, 'the newest two are kept')
+
+    // The copy opens on its own, passes its integrity check, and holds the data.
+    const reopened = new FulkrumStore(status.newestPath)
+    assert.equal(reopened.listProjects().some((item) => item.name === 'backup fixture'), true)
+    assert.equal(reopened.listEvents(run.id).length, 1)
+    reopened.close()
+  })
+})
+
+test('the anchor file catches a checkpoint row that was deleted', async () => {
+  await withStore((store) => {
+    const project = store.createProject({ name: 'anchors' })
+    const run = store.createRun({ projectId: project.id })
+    store.appendEvent({ runId: run.id, type: 'one', payload: {} })
+    store.appendEvent({ runId: run.id, type: 'two', payload: {} })
+
+    store.recordAuditCheckpoint(run.id, { source: 'test' })
+    assert.equal(store.readAnchors().length, 1)
+    assert.equal(store.latestAnchor(run.id).sequence, 2)
+    assert.equal(store.verifyEventChain(run.id).ok, true)
+
+    // The tamper a checkpoint inside the same file cannot notice: delete the row
+    // along with the events it vouched for.
+    store.database.prepare('DELETE FROM audit_checkpoints WHERE run_id = ?').run(run.id)
+    const afterRowDeletion = store.verifyEventChain(run.id)
+    assert.equal(afterRowDeletion.checkpointMissing, true, 'an anchor exists with no row to match it')
+    assert.equal(afterRowDeletion.ok, false)
+
+    store.database.prepare('DELETE FROM run_events WHERE run_id = ? AND sequence > 1').run(run.id)
+    const truncated = store.verifyEventChain(run.id)
+    assert.equal(truncated.truncated, true, 'the file still remembers where the chain ended')
+    assert.equal(truncated.ok, false)
+
+    const summary = store.verifyAllEventChains()
+    assert.equal(summary.ok, false)
+    assert.equal(summary.anchorOrphaned.length, 1)
+  })
+})
+
+test('anchoring can be turned off explicitly', async () => {
+  const previous = process.env.FULKRUM_ANCHOR_FILE
+  process.env.FULKRUM_ANCHOR_FILE = 'off'
+  try {
+    await withStore((store) => {
+      const project = store.createProject({ name: 'no anchors' })
+      const run = store.createRun({ projectId: project.id })
+      store.appendEvent({ runId: run.id, type: 'one', payload: {} })
+      store.recordAuditCheckpoint(run.id, { source: 'test' })
+      assert.equal(store.anchorFile, null)
+      assert.deepEqual(store.readAnchors(), [])
+      assert.equal(store.verifyEventChain(run.id).ok, true, 'the row alone still verifies')
+    })
+  } finally {
+    if (previous === undefined) delete process.env.FULKRUM_ANCHOR_FILE
+    else process.env.FULKRUM_ANCHOR_FILE = previous
+  }
+})
 
 test('migrations apply once and are idempotent', async () => {
   await withTempDirectory(async (directory) => {

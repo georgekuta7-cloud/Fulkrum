@@ -51,6 +51,21 @@ if (interrupted.interrupted.length) {
 const { pruned } = store.pruneToolOutputs()
 if (pruned > 0) console.log(`[fulkrum] pruned ${pruned} stored tool output(s) past the retention window`)
 
+// A daily copy, written from the live database with VACUUM INTO. A corrupted file
+// with no backup is the one failure this store cannot recover from on its own.
+const backupIntervalHours = Number(process.env.FULKRUM_BACKUP_INTERVAL_HOURS ?? 24)
+if (Number.isFinite(backupIntervalHours) && backupIntervalHours > 0) {
+  try {
+    const { newestAgeMs } = store.backupStatus()
+    if (newestAgeMs === null || newestAgeMs > backupIntervalHours * 3_600_000) {
+      const result = store.backup()
+      console.log(`[fulkrum] database backed up to ${result.path}`)
+    }
+  } catch (error) {
+    console.log(`[fulkrum] could not back up the database: ${error instanceof Error ? error.message : error}`)
+  }
+}
+
 app.server.listen(port, '127.0.0.1', async () => {
   console.log(`Fulkrum API bridge listening on http://127.0.0.1:${port}`)
   console.log(`[fulkrum] schema version ${store.stats().schemaVersion}, owner ${ownerId}, prices ${pricing.version} (${pricing.known} models)`)
@@ -86,24 +101,34 @@ function shutdown(signal) {
   if (shuttingDown) return
   shuttingDown = true
   console.log(`[fulkrum] received ${signal}; draining`)
+  // Draining refuses new work and ends open event streams, so the server can
+  // actually close instead of waiting on a stream that never ends.
   app.beginDraining(signal)
-  const force = setTimeout(() => {
-    // Give in-flight steps a moment to record what they did, then close anyway.
+  const closeStore = () => {
     try {
       store.close()
     } catch {
       // Already closed.
     }
+  }
+  const force = setTimeout(() => {
+    // Give in-flight steps a moment to record what they did, then close anyway.
+    closeStore()
     process.exit(0)
   }, 5_000)
   force.unref()
 
   app.server.closeIdleConnections?.()
   app.server.close(() => {
-    clearTimeout(force)
-    store.close()
-    console.log('[fulkrum] stopped')
-    process.exit(0)
+    // Workers write to the store, so it closes after they stop rather than
+    // underneath them. A run still mid-step at the 5 s mark is stopped by the
+    // timer above; its lease makes that visible on the next start.
+    Promise.allSettled([...orchestrator.activeRuns.values()]).finally(() => {
+      clearTimeout(force)
+      closeStore()
+      console.log('[fulkrum] stopped')
+      process.exit(0)
+    })
   })
 }
 

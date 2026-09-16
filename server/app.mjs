@@ -120,6 +120,8 @@ const resumableStatuses = new Set(['paused', 'executing', 'budget_exceeded'])
 export function createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, planService, pricing, execution = null, allowedOrigins = new Set(), ownerId = 'local' }) {
   const isAllowedOrigin = (origin) => !origin || allowedOrigins.has(origin)
   let draining = null
+  /** Open event streams, so draining can end them and let the server close. */
+  const openStreams = new Set()
 
   const handleChat = async (request, response) => {
     const body = await readJson(request)
@@ -186,7 +188,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       const output = await toolBroker.execute(toolCall.name, input, resolved)
       const safeOutput = toolBroker.redact(output)
       store.updateToolCall(toolCall.id, { status: 'completed', output: safeOutput })
-      store.appendEvent({ runId, type: 'tool.completed', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, name: toolCall.name, output: safeOutput, approved } })
+      store.appendEvent({ runId, type: 'tool.completed', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, name: toolCall.name, ...store.summarizeOutput(safeOutput), approved } })
       const injectionAttempts = findInjectionAttempts(safeOutput)
       if (injectionAttempts.length) {
         store.appendEvent({ runId, type: 'tool.output.suspicious', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, name: toolCall.name, patterns: injectionAttempts, note: 'Tool output contained text aimed at the model. It is data, and was treated as data.' } })
@@ -425,11 +427,11 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           sendJson(response, 404, { error: 'Run not found.' })
           return
         }
-        // Last-Event-ID is what the browser resends after a dropped connection,
-        // so a reconnect resumes from the last event it actually saw instead of
-        // replaying the whole run.
+        // The cursor is the browser's own: on a reconnect it resends the last id it
+        // saw, and that has to win over a stale `after` in the URL. An explicit
+        // `after` is the fallback for a fresh connection that wants a starting point.
         const lastEventId = request.headers['last-event-id']
-        const requested = Number(requestUrl.searchParams.get('after') ?? Number(lastEventId ?? 0))
+        const requested = lastEventId !== undefined ? Number(lastEventId) : Number(requestUrl.searchParams.get('after') ?? 0)
         const after = Number.isFinite(requested) ? requested : 0
         response.writeHead(200, {
           'Content-Type': 'text/event-stream; charset=utf-8',
@@ -443,10 +445,12 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         }
         for (const event of store.listEvents(runId, after)) writeEvent(event)
         const unsubscribe = store.subscribeEvents(runId, writeEvent)
+        openStreams.add(response)
         const heartbeat = setInterval(() => response.write(': heartbeat\n\n'), 15_000)
         request.on('close', () => {
           clearInterval(heartbeat)
           unsubscribe()
+          openStreams.delete(response)
         })
         return
       }
@@ -535,9 +539,14 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
             return
           }
           if (plan.plan.status !== 'approved') {
-            store.approvePlan(plan.plan.id)
-            store.updateRun(runId, { planId: plan.plan.id, planVersion: plan.plan.version })
-            store.appendEvent({ runId, type: 'plan.approved', agentId: 'head', payload: { planId: plan.plan.id, version: plan.plan.version, hash: plan.plan.contentHash, tasks: plan.tasks.length, source: plan.plan.source } })
+            // Three writes that only make sense together: a crash between them
+            // would leave an approved plan the run never pointed at, with no event
+            // to explain it.
+            store.transaction(() => {
+              store.approvePlan(plan.plan.id)
+              store.updateRun(runId, { planId: plan.plan.id, planVersion: plan.plan.version })
+              store.appendEvent({ runId, type: 'plan.approved', agentId: 'head', payload: { planId: plan.plan.id, version: plan.plan.version, hash: plan.plan.contentHash, tasks: plan.tasks.length, source: plan.plan.source } })
+            })
           }
           approvalPayload = { planId: plan.plan.id, planVersion: plan.plan.version, planHash: plan.plan.contentHash, taskCount: plan.tasks.length }
         }
@@ -616,11 +625,13 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           return
         }
 
-        store.markToolCallApproved(toolCall.id, scope)
-        if (scope === 'run') {
-          const grant = store.grantApproval({ runId, toolName: toolCall.name, kind: toolCall.kind })
-          store.appendEvent({ runId, type: 'approval.granted', agentId: toolCall.agentId ?? 'head', payload: { toolName: toolCall.name, kind: toolCall.kind, scope: 'run', grantId: grant.id } })
-        }
+        store.transaction(() => {
+          store.markToolCallApproved(toolCall.id, scope)
+          if (scope === 'run') {
+            const grant = store.grantApproval({ runId, toolName: toolCall.name, kind: toolCall.kind })
+            store.appendEvent({ runId, type: 'approval.granted', agentId: toolCall.agentId ?? 'head', payload: { toolName: toolCall.name, kind: toolCall.kind, scope: 'run', grantId: grant.id } })
+          }
+        })
         const resumed = await orchestrator.approveToolCall(toolCallId)
         if (resumed.handled) {
           sendJson(response, 200, { resumed: true, result: resumed.result, toolCall: store.getToolCall(toolCallId) })
@@ -646,8 +657,10 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         }
         const body = await readJson(request)
         const reason = typeof body.reason === 'string' && body.reason.trim() ? body.reason.trim().slice(0, 500) : 'Denied by the user.'
-        store.updateToolCall(toolCall.id, { status: 'denied', error: reason })
-        store.appendEvent({ runId, type: 'tool.denied', agentId: toolCall.agentId ?? 'head', payload: { toolCallId, name: toolCall.name, reason, rule: 'deny.user', fingerprint: toolCall.fingerprint, resolved: toolCall.resolved } })
+        store.transaction(() => {
+          store.updateToolCall(toolCall.id, { status: 'denied', error: reason })
+          store.appendEvent({ runId, type: 'tool.denied', agentId: toolCall.agentId ?? 'head', payload: { toolCallId, name: toolCall.name, reason, rule: 'deny.user', fingerprint: toolCall.fingerprint, resolved: toolCall.resolved } })
+        })
         // The worker is waiting on this call, so tell it no: a denial it can read
         // is information it can act on.
         const handled = orchestrator.denyToolCall(toolCallId, reason)
@@ -756,7 +769,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           fingerprint: resolution.ok ? fingerprintToolCall(resolution) : null,
           idempotencyKey,
         })
-        store.appendEvent({ runId, type: 'tool.requested', agentId, payload: { toolCallId: toolCall.id, name: body.name, kind: tool?.kind ?? 'unknown', input: toolCall.input, resolved: toolCall.resolved, rule: authorization.ruleId } })
+        store.appendEvent({ runId, type: 'tool.requested', agentId, payload: { toolCallId: toolCall.id, name: body.name, kind: tool?.kind ?? 'unknown', input: store.summarizeInput(toolCall.input), resolved: toolCall.resolved, rule: authorization.ruleId } })
 
         if (!authorization.allowed) {
           const status = authorization.requiresApproval ? 'approval_required' : 'denied'
@@ -815,6 +828,16 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
     // the chance to finish writing its state.
     beginDraining(reason) {
       draining = reason
+      // server.close() waits for open responses, and an event stream never ends on
+      // its own: without this, shutdown hangs until the force timer.
+      for (const stream of openStreams) {
+        try {
+          stream.end()
+        } catch {
+          // The client is already gone.
+        }
+      }
+      openStreams.clear()
     },
     isDraining: () => draining,
     ownerId,

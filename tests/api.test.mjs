@@ -179,6 +179,80 @@ test('the event stream resumes from Last-Event-ID instead of replaying', async (
   })
 })
 
+test('a reconnect cursor wins over a stale one in the URL', async () => {
+  await withServer(async ({ baseUrl, store, request }) => {
+    const { runId } = await makeRun(request)
+    store.appendEvent({ runId, type: 'test.one', payload: {} })
+    store.appendEvent({ runId, type: 'test.two', payload: {} })
+    store.appendEvent({ runId, type: 'test.three', payload: {} })
+
+    // This is what a browser sends when it reconnects: the URL still says "from
+    // the beginning" because it was built before the first connection, and the
+    // header says what was actually seen.
+    const controller = new AbortController()
+    const response = await fetch(`${baseUrl}/api/runs/${runId}/stream?after=0`, { headers: { 'Last-Event-ID': '2' }, signal: controller.signal })
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let text = ''
+    const deadline = Date.now() + 4_000
+    try {
+      while (Date.now() < deadline && !text.includes('id: 3')) {
+        const { value, done } = await reader.read()
+        if (done) break
+        text += decoder.decode(value, { stream: true })
+      }
+    } finally {
+      controller.abort()
+    }
+
+    assert.match(text, /id: 3/, 'the events after the header cursor are sent')
+    assert.doesNotMatch(text, /id: 1\n/, 'and the ones already seen are not')
+  })
+})
+
+test('a resumed task continues its conversation instead of starting over', async () => {
+  const previousKey = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-task-resume'
+  const seen = []
+  const model = async ({ messages, options }) => {
+    if (String(options?.instructions ?? '').includes('You plan work')) {
+      return { text: JSON.stringify({ objective: 'Resume.', tasks: [{ role: 'research', title: 'Look', instructions: 'Report.', dependsOn: [] }] }), toolCalls: [], usage: null }
+    }
+    seen.push(messages)
+    return { text: 'Finished after resuming.', toolCalls: [], usage: null }
+  }
+
+  try {
+    await withServer(async ({ store, orchestrator }) => {
+      // A task that already took three turns, as if the bridge had died mid-loop.
+      const project = store.createProject({ name: 'resume fixture' })
+      const run = store.createRun({ projectId: project.id })
+      const plan = store.createPlan({ projectId: project.id, runId: run.id, objective: 'o', contentHash: 'h', source: 'test', tasks: [{ role: 'research', title: 'Look', instructions: 'i', dependsOn: [] }] })
+      const task = store.createTask({ runId: run.id, agentId: 'research', title: 'Look', instructions: 'i', planTaskId: plan.tasks[0].id })
+      store.appendTaskTurn(task.id, { role: 'user', content: 'Project direction: do the thing' })
+      store.appendTaskTurn(task.id, { role: 'assistant', content: 'Looking around.', toolCalls: [{ id: 'c1', name: 'workspace.list', arguments: { path: '.' } }] })
+      store.appendTaskTurn(task.id, { role: 'tool', results: [{ id: 'c1', name: 'workspace.list', content: '{"entries":[]}', isError: false }] })
+      store.updateTask(task.id, { stepCount: 3 })
+      store.updateRun(run.id, { planId: plan.plan.id, status: 'executing' })
+      store.markRunInterrupted(run.id, 'bridge stopped while this run was executing.')
+
+      await orchestrator.start(run.id, { routing: {} })
+
+      assert.equal(seen.length >= 1, true, 'the task ran')
+      const messages = seen[0]
+      assert.equal(messages[0].content, 'Project direction: do the thing', 'the earlier turns are handed back to the model')
+      assert.equal(messages[1].toolCalls?.[0]?.name, 'workspace.list')
+      assert.equal(messages[2].results?.[0]?.id, 'c1', 'including the tool result it had already seen')
+      assert.equal(store.countTaskTurns(task.id), 3, 'answering immediately adds no duplicate turns')
+      assert.equal(store.listEvents(run.id).some((event) => event.type === 'task.resumed'), true, 'and the resume is in the audit log')
+      assert.equal(store.getTask(task.id).status, 'completed')
+    }, { model })
+  } finally {
+    if (previousKey === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousKey
+  }
+})
+
 test('the audit endpoint reports chain integrity, including unverifiable history', async () => {
   await withServer(async ({ request, store }) => {
     const { runId } = await makeRun(request)

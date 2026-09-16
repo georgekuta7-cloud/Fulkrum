@@ -141,11 +141,14 @@ separately and anchored by a genesis checkpoint, so that boundary is a recorded
 fact rather than an open-ended "unverifiable" count.
 
 The honest limit: a checkpoint is a row in the same database file. Someone who can
-write the file can remove the anchor along with the events, so this is
-tamper-**evident**, not tamper-**proof**. It raises the bar from "delete some rows"
-to "delete some rows and the record that they existed". Making it tamper-proof
-needs the chain head exported outside the database and signed, which is not
-implemented.
+write that file can remove the anchor along with the events. The chain head is
+therefore also appended to `audit-heads.log` beside the database — an append-only
+file that has to be known about and edited separately — and verification compares
+against both, so an anchor whose row has been deleted is reported as its own
+finding rather than passing silently. This raises the bar from "delete some rows"
+to "delete some rows and also edit a file you had to know about"; it is not
+tamper-proof, and making it so needs the head signed with a key that does not sit
+next to what it signs.
 
 It does **not** cover:
 
@@ -153,7 +156,9 @@ It does **not** cover:
   with no network and a read-only root filesystem, so the blast radius is the
   workspace; the log records the command, not what it did to files inside.
 - Model reasoning or the contents of prompts, which are not stored. Tool call
-  arguments and results are stored, redacted.
+  arguments and results are stored, redacted — and the chain itself records only
+  their hash, so the bytes can expire with the retention window while the chain
+  still commits to them.
 - The original, unredacted arguments of a tool call. They are kept apart from the
   redacted copy — execution needs them, because redaction must never change what a
   write produces — so a call that carried a credential holds it in the database

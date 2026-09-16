@@ -11,8 +11,11 @@ node_modules
 dist
 dist-ssr
 *.local
-data/fulkrum.sqlite
-data/fulkrum.sqlite-*
+
+# Runtime state: the database and its WAL, anchor logs, and backup copies. Ignore
+# the directory rather than individual files, so a new artefact here (a backup, an
+# anchor log, a key file) is never published by default.
+data/
 
 # Local agent/editor scratch space
 .zcode/

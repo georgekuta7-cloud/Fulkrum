@@ -1,4 +1,4 @@
-import { setTimeout as wait } from 'node:timers/promises'
+import { randomUUID } from 'node:crypto'
 import { asToolResult, findInjectionAttempts } from './injection.mjs'
 import { fingerprintToolCall } from './permissions.mjs'
 import { demoPlan, planContentHash, planLayers, splitLayerForConcurrency } from './plans.mjs'
@@ -50,20 +50,93 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
       const status = store.getRun(runId)?.status
       if (!status || terminalStatuses.has(status)) return false
       if (status !== 'paused') return true
-      await wait(100)
+      await waitForRunChange(runId)
     }
   }
 
+  /**
+   * Wake when this run's status changes.
+   *
+   * Polling every 100 ms kept a parked worker awake for the whole pause; the store
+   * already notifies on every event, so this waits for that instead. The timer is a
+   * backstop: a missed notification must not strand a run forever.
+   */
+  function waitForRunChange(runId, timeoutMs = 5_000) {
+    return new Promise((resolve) => {
+      let settled = false
+      let unsubscribe = () => {}
+      let timer = null
+      const finish = () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        unsubscribe()
+        resolve()
+      }
+      unsubscribe = store.subscribeEvents(runId, finish)
+      timer = setTimeout(finish, timeoutMs)
+    })
+  }
+
+  /**
+   * The start of the current day for the daily ceiling. Local midnight by default,
+   * which is what a user means by "today", and `FULKRUM_BUDGET_TIMEZONE=UTC` for a
+   * window that does not move with daylight saving.
+   */
   const startOfToday = () => {
-    const midnight = new Date()
+    const now = new Date()
+    if (/^utc$/i.test(process.env.FULKRUM_BUDGET_TIMEZONE ?? '')) {
+      return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+    }
+    const midnight = new Date(now)
     midnight.setHours(0, 0, 0, 0)
     return midnight.getTime()
   }
 
   /**
-   * Refuse to start another model call once a ceiling is reached. The check runs
-   * before each call because cost is only known afterwards, so a run can overshoot
-   * by at most one call.
+   * Cost of the calls that are in flight right now.
+   *
+   * A ceiling checked against recorded spend alone lets every parallel reader pass
+   * the same check before any of them returns, so a run could overshoot by
+   * `maxParallelReaders` calls. A reservation is taken synchronously with the
+   * check, which is atomic in a single-threaded runtime, so the second caller sees
+   * the first one's estimate.
+   */
+  const reservations = new Map()
+
+  const reservedFor = (runId) => {
+    let total = 0
+    for (const entry of reservations.values()) {
+      if (entry.runId === runId) total += entry.costUsd
+    }
+    return total
+  }
+
+  /**
+   * What one call is assumed to cost: the largest call this run has already made,
+   * or a floor. Cost is only known afterwards, so an estimate that is too low
+   * means the run can still overshoot by the difference — at most one call's worth,
+   * not one per parallel reader.
+   */
+  const estimateCallCost = (runId) => {
+    const largest = store.listModelCalls(runId).reduce((max, call) => Math.max(max, call.costUsd ?? 0), 0)
+    return Math.max(largest, Number(process.env.FULKRUM_BUDGET_RESERVE_USD ?? 0.02))
+  }
+
+  const reserveBudget = (runId) => {
+    const id = `res-${randomUUID()}`
+    reservations.set(id, { runId, costUsd: estimateCallCost(runId) })
+    return id
+  }
+
+  const releaseBudget = (id) => {
+    reservations.delete(id)
+  }
+
+  /**
+   * Refuse to start another model call once a ceiling is reached. Recorded spend
+   * plus what is in flight is compared with the cap, so parallel calls cannot all
+   * slip through together.
    */
   function assertWithinBudget(runId) {
     const run = store.getRun(runId)
@@ -72,10 +145,11 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
 
     if (runCap) {
       const { costUsd, unpricedCalls } = store.spendForRun(runId)
+      const committed = costUsd + reservedFor(runId)
       if (unpricedCalls > 0 && !run?.budgetExceededAt) {
         store.appendEvent({ runId, type: 'run.budget.unmeasurable', agentId: 'head', payload: { unpricedCalls, reason: 'Some calls used a model with no known price, so spend is a lower bound.' } })
       }
-      if (costUsd >= runCap) throw new BudgetExceededError(`This run reached its $${runCap.toFixed(2)} budget (spent $${costUsd.toFixed(4)}).`, { scope: 'run' })
+      if (committed >= runCap) throw new BudgetExceededError(`This run reached its $${runCap.toFixed(2)} budget (spent $${costUsd.toFixed(4)}${reservedFor(runId) > 0 ? `, plus $${reservedFor(runId).toFixed(4)} in flight` : ''}).`, { scope: 'run' })
     }
 
     if (dayCap) {
@@ -102,8 +176,11 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
         attributes: { 'gen_ai.operation.name': 'chat', 'gen_ai.provider.name': provider.id, 'gen_ai.request.model': model, 'gen_ai.agent.name': role },
       })
       const startedAt = Date.now()
+      // The check and the reservation happen in the same synchronous block, so no
+      // other caller can slip between them.
+      assertWithinBudget(runId)
+      const reservationId = reserveBudget(runId)
       try {
-        assertWithinBudget(runId)
         const response = await callModel(provider, model, messages, { tools, instructions })
         const latencyMs = Date.now() - startedAt
         const cost = pricing ? pricing.costOf({ model, usage: response.usage }) : { costUsd: null, priced: false, version: null }
@@ -130,6 +207,10 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
         if (error instanceof BudgetExceededError) throw error
         lastError = error
         store.recordModelCall({ runId, taskId, spanId: span.id, role, provider: provider.id, model, status: 'error', usage: null, cost: { costUsd: null, priced: false, version: pricing?.version ?? null }, latencyMs: Date.now() - startedAt })
+      } finally {
+        // Once the call is no longer in flight, the recorded cost replaces the
+        // estimate it was holding.
+        releaseBudget(reservationId)
       }
     }
     throw lastError ?? new Error('No provider route could serve this request.')
@@ -142,7 +223,7 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
       const output = await toolBroker.execute(toolCall.name, input, resolution ?? null)
       const safeOutput = toolBroker.redact(output)
       store.updateToolCall(toolCall.id, { status: 'completed', output: safeOutput })
-      store.appendEvent({ runId, type: 'tool.completed', agentId: task.agentId, payload: { toolCallId: toolCall.id, name: toolCall.name, output: safeOutput, approved } })
+      store.appendEvent({ runId, type: 'tool.completed', agentId: task.agentId, payload: { toolCallId: toolCall.id, name: toolCall.name, ...store.summarizeOutput(safeOutput), approved } })
       // Tool output is where an injected instruction would arrive, so a match is
       // recorded rather than acted on: the log explains a strange run afterwards.
       const injectionAttempts = findInjectionAttempts(safeOutput)
@@ -185,7 +266,7 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
       resolved: resolution.ok ? resolution.resolved : null,
       fingerprint: resolution.ok ? fingerprintToolCall(resolution) : null,
     })
-    store.appendEvent({ runId, type: 'tool.requested', agentId: task.agentId, payload: { toolCallId: toolCall.id, name, kind: tool?.kind ?? 'unknown', input: safeInput, resolved: toolCall.resolved, rule: authorization.ruleId } })
+    store.appendEvent({ runId, type: 'tool.requested', agentId: task.agentId, payload: { toolCallId: toolCall.id, name, kind: tool?.kind ?? 'unknown', input: store.summarizeInput(safeInput), resolved: toolCall.resolved, rule: authorization.ruleId } })
 
     // A tool span covers the approval wait as well as the execution, so a slow
     // step is visible as "waiting on a human" rather than "slow tool".
@@ -253,7 +334,15 @@ Rules:
     /** @type {Array<Record<string, any>>} */
     const messages = [{ role: 'user', content: context }]
     const usedTools = []
-    let steps = 0
+    // A task that already took turns is continued rather than restarted: the
+    // conversation is on disk, and so is how much of the step budget it used, so a
+    // restart does not hand a task a fresh allowance.
+    const previousTurns = store.listTaskTurns(task.id)
+    if (previousTurns.length) {
+      messages.splice(0, messages.length, ...previousTurns)
+      store.appendEvent({ runId, type: 'task.resumed', agentId: task.agentId, payload: { taskId: task.id, turns: previousTurns.length, stepCount: task.stepCount } })
+    }
+    let steps = previousTurns.length ? task.stepCount : 0
 
     while (steps < maxStepsPerTask) {
       if (!await waitUntilRunnable(runId)) return { cancelled: true, steps, usedTools, text: '' }
@@ -266,6 +355,7 @@ Rules:
       }
 
       messages.push({ role: 'assistant', content: response.text, toolCalls: response.toolCalls })
+      store.appendTaskTurn(task.id, { role: 'assistant', content: response.text, toolCalls: response.toolCalls })
       const results = []
 
       for (const toolCall of response.toolCalls) {
@@ -297,6 +387,7 @@ Rules:
       }
 
       messages.push({ role: 'tool', results })
+      store.appendTaskTurn(task.id, { role: 'tool', results })
       store.updateTask(task.id, { stepCount: steps })
     }
 
@@ -606,5 +697,5 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
     return { handled: true }
   }
 
-  return { start, activeRuns, approvalWaiters, approveToolCall, denyToolCall, maxStepsPerTask }
+  return { start, activeRuns, approvalWaiters, approveToolCall, denyToolCall, maxStepsPerTask, inFlightBudget: reservedFor }
 }

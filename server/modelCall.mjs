@@ -247,9 +247,95 @@ export function normalizeUsage(protocol, usage) {
 }
 
 const retryableStatuses = new Set([408, 409, 425, 429, 500, 502, 503, 504])
-const maxAttempts = Number(process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS ?? 3)
+const defaultMaxAttempts = 3
 const requestTimeoutMs = Number(process.env.FULKRUM_PROVIDER_TIMEOUT_MS ?? 60_000)
 const maxResponseBytes = Number(process.env.FULKRUM_MAX_PROVIDER_BYTES ?? 8_000_000)
+
+// Read where they are used rather than at import, so a caller can configure them
+// before the first call and a test does not have to reload the module.
+const configuredMaxAttempts = () => Number(process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS ?? defaultMaxAttempts)
+const configuredConcurrency = () => Math.max(Number(process.env.FULKRUM_PROVIDER_MAX_CONCURRENCY ?? 3), 1)
+
+/**
+ * One provider at a time, up to a limit.
+ *
+ * Parallel readers share a provider, and a slow one otherwise holds a worker for
+ * the whole timeout on every attempt. Queuing here bounds how many are in flight
+ * rather than letting them pile up.
+ */
+export function createLimiter(max = configuredConcurrency()) {
+  let active = 0
+  const queue = []
+  return {
+    async run(task) {
+      if (active < max) {
+        active += 1
+      } else {
+        // The slot is handed over inside the releaser, which is why nothing is
+        // incremented here.
+        await new Promise((resolve) => queue.push(resolve))
+      }
+      try {
+        return await task()
+      } finally {
+        active -= 1
+        const resume = queue.shift()
+        if (resume) {
+          active += 1
+          resume()
+        }
+      }
+    },
+  }
+}
+
+/**
+ * A breaker per provider, half-open after a cooldown.
+ *
+ * Without one, a provider that is down keeps costing every worker a full timeout
+ * per attempt. Only failures that were worth retrying count: a 400 says the
+ * request was wrong, not that the provider is unavailable.
+ */
+export function createBreaker({ threshold = Number(process.env.FULKRUM_BREAKER_THRESHOLD ?? 3), cooldownMs = Number(process.env.FULKRUM_BREAKER_COOLDOWN_MS ?? 30_000), now = () => Date.now() } = {}) {
+  const states = new Map()
+  const stateFor = (key) => states.get(key) ?? { failures: 0, openUntil: 0, probing: false }
+  return {
+    /** Why the provider is being skipped, or null when a call may proceed. */
+    reject(key, label) {
+      const state = stateFor(key)
+      const nowMs = now()
+      if (state.openUntil === 0) return null
+      if (nowMs < state.openUntil) {
+        return `${label} is being skipped for another ${Math.max(Math.ceil((state.openUntil - nowMs) / 1000), 1)}s after repeated failures.`
+      }
+      // Half-open: the cooldown has passed, so exactly one call is let through to
+      // find out whether the provider recovered.
+      if (state.probing) return `${label} is still being probed after repeated failures.`
+      state.probing = true
+      states.set(key, state)
+      return null
+    },
+    succeeded(key) {
+      states.set(key, { failures: 0, openUntil: 0, probing: false })
+    },
+    failed(key) {
+      const state = stateFor(key)
+      // A failed probe re-opens immediately: the provider just answered badly.
+      const wasProbing = state.probing
+      state.probing = false
+      state.failures += 1
+      if (wasProbing || state.failures >= threshold) {
+        state.openUntil = now() + cooldownMs
+        state.failures = 0
+      }
+      states.set(key, state)
+    },
+    state(key) {
+      const state = stateFor(key)
+      return { failures: state.failures, openUntil: state.openUntil, open: state.openUntil > now() }
+    },
+  }
+}
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -279,6 +365,8 @@ export class ProviderError extends Error {
 }
 
 export function createModelCaller({ providerRegistry, allowPrivate = privateProviderUrlsAllowed() }) {
+  const limiter = createLimiter()
+  const breaker = createBreaker()
   /**
    * One request, to an address that was validated and is then pinned: the name is
    * resolved once, the socket goes to that address, and the response is read with
@@ -314,6 +402,7 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
   }
 
   const requestWithRetry = async (attempt, url, options) => {
+    const maxAttempts = configuredMaxAttempts()
     try {
       return await requestOnce(url, options)
     } catch (error) {
@@ -343,20 +432,33 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
     const headers = { 'Content-Type': 'application/json', ...providerAuthHeaders(provider.protocol, credentials) }
     const requestOptions = { method: 'POST', headers, body: JSON.stringify(body), allowPrivate: allow }
 
+    const skipReason = breaker.reject(provider.id, provider.label)
+    if (skipReason) throw new ProviderError(`${provider.label} is being skipped: ${skipReason}`, { status: 503, retryable: false })
+
     let payload
     try {
-      payload = await requestWithRetry(0, url, requestOptions)
+      payload = await limiter.run(async () => {
+        try {
+          return await requestWithRetry(0, url, requestOptions)
+        } catch (error) {
+          // A model that fixes its own sampling settings answers 400 to any
+          // temperature we send. Retry once without it and remember the answer, so
+          // a model this application has never seen costs at most one rejected call.
+          const rejectedTemperature = body.temperature !== undefined && error instanceof ProviderError && error.status === 400 && /temperature/i.test(error.message)
+          if (!rejectedTemperature) throw error
+          const retryBody = { ...body }
+          delete retryBody.temperature
+          const retried = await requestWithRetry(0, url, { ...requestOptions, body: JSON.stringify(retryBody) })
+          providerRegistry.rememberTemperature?.(provider, 'omit')
+          return retried
+        }
+      })
     } catch (error) {
-      // A model that fixes its own sampling settings answers 400 to any temperature
-      // we send. Retry once without it and remember the answer, so a model this
-      // application has never seen costs at most one rejected call.
-      const rejectedTemperature = body.temperature !== undefined && error instanceof ProviderError && error.status === 400 && /temperature/i.test(error.message)
-      if (!rejectedTemperature) throw error
-      const retryBody = { ...body }
-      delete retryBody.temperature
-      payload = await requestWithRetry(0, url, { ...requestOptions, body: JSON.stringify(retryBody) })
-      providerRegistry.rememberTemperature?.(provider, 'omit')
+      // Only failures worth retrying count against the provider's health.
+      if (error instanceof ProviderError && (error.retryable || error.status === undefined)) breaker.failed(provider.id)
+      throw error
     }
+    breaker.succeeded(provider.id)
     return parseResponse(provider.protocol, payload)
   }
 
@@ -366,5 +468,5 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
     return response.text
   }
 
-  return { callModel, callText, buildRequest }
+  return { callModel, callText, buildRequest, breaker }
 }

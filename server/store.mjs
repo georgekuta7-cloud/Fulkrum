@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
+import { appendFileSync, copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { canonicalJson } from './canonicalJson.mjs'
 import { applyMigrations } from './migrations.mjs'
+
+const anchorFileName = 'audit-heads.log'
 
 // node:sqlite exists from Node 22.5 but was gated behind --experimental-sqlite
 // until 22.13. A static import would fail while Node links this module's imports,
@@ -174,9 +176,23 @@ export class FulkrumStore {
     this.filePath = filePath
     this.database = new DatabaseSync(filePath)
     this.eventListeners = new Map()
+    // Set while a transaction is open, so nested calls join it instead of
+    // committing early, and listeners fire after the commit rather than before.
+    this.transactionDepth = 0
+    this.deferredEvents = null
     this.database.exec('PRAGMA journal_mode = WAL')
     this.database.exec('PRAGMA foreign_keys = ON')
     this.database.exec('PRAGMA busy_timeout = 5000')
+    // WAL with the default synchronous setting can lose the last commits to a
+    // power cut; this is a single-user tool, so paying for durability is cheap.
+    this.database.exec('PRAGMA synchronous = FULL')
+    this.database.exec(`PRAGMA wal_autocheckpoint = ${Number(process.env.FULKRUM_WAL_AUTOCHECKPOINT ?? 1000)}`)
+    // Anchors live beside the database unless told otherwise, and `off` disables
+    // writing them at all.
+    const requestedAnchorFile = String(process.env.FULKRUM_ANCHOR_FILE ?? '').trim()
+    this.anchorFile = requestedAnchorFile.toLowerCase() === 'off'
+      ? null
+      : requestedAnchorFile || path.join(path.dirname(filePath), anchorFileName)
     try {
       this.migrations = applyMigrations(this.database)
     } catch (error) {
@@ -188,6 +204,67 @@ export class FulkrumStore {
         // Already unusable.
       }
       throw error
+    }
+
+    // A damaged file is worth knowing about now, not at the first write that
+    // quietly lands in a corrupted page.
+    const verdict = Object.values(this.database.prepare('PRAGMA quick_check(1)').get() ?? {})[0]
+    if (verdict !== 'ok') {
+      try {
+        this.database.close()
+      } catch {
+        // Already unusable.
+      }
+      throw new Error(`The database failed its integrity check (${verdict ?? 'no result'}). Restore a backup from ${path.join(path.dirname(filePath), 'backups')} rather than writing to this file.`)
+    }
+  }
+
+  /**
+   * Run several writes as one unit.
+   *
+   * Three separate autocommits — approve a plan, point the run at it, record the
+   * event — leave a crash free to stop between them, and the audit log then cannot
+   * explain the state it finds. Nested calls join the open transaction: the store
+   * holds one connection, so a second BEGIN would either deadlock or commit the
+   * outer unit early.
+   */
+  transaction(fn) {
+    if (this.transactionDepth > 0) return fn()
+    this.database.exec('BEGIN IMMEDIATE')
+    this.transactionDepth += 1
+    this.deferredEvents = []
+    let committed = false
+    try {
+      const result = fn()
+      this.database.exec('COMMIT')
+      committed = true
+      return result
+    } catch (error) {
+      try {
+        this.database.exec('ROLLBACK')
+      } catch {
+        // The transaction is already gone; the original error is what matters.
+      }
+      throw error
+    } finally {
+      this.transactionDepth -= 1
+      const pending = this.deferredEvents ?? []
+      this.deferredEvents = null
+      // Listeners run only for events that survived the commit, and only when it
+      // happened: a subscriber must not see an event that was rolled back.
+      if (committed) {
+        for (const event of pending) this.notifyEvent(event)
+      }
+    }
+  }
+
+  notifyEvent(event) {
+    for (const listener of this.eventListeners.get(event.runId) ?? []) {
+      try {
+        listener(event)
+      } catch {
+        // A disconnected stream must not interrupt event persistence.
+      }
     }
   }
 
@@ -329,13 +406,8 @@ export class FulkrumStore {
     this.database.prepare('INSERT INTO run_events(event_id, run_id, sequence, type, agent_id, payload_json, prev_hash, hash, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(event.eventId, runId, sequence, type, agentId, JSON.stringify(payload), prevHash, hash, createdAt)
     this.database.prepare('UPDATE runs SET updated_at = ? WHERE id = ?').run(createdAt, runId)
-    for (const listener of this.eventListeners.get(runId) ?? []) {
-      try {
-        listener(event)
-      } catch {
-        // A disconnected stream must not interrupt event persistence.
-      }
-    }
+    if (this.deferredEvents) this.deferredEvents.push(event)
+    else this.notifyEvent(event)
     return event
   }
 
@@ -355,6 +427,7 @@ export class FulkrumStore {
   verifyEventChain(runId) {
     const rows = this.database.prepare('SELECT * FROM run_events WHERE run_id = ? ORDER BY sequence ASC').all(runId)
     const checkpoint = this.getLatestCheckpoint(runId)
+    const anchor = this.latestAnchor(runId)
     let prevHash = genesisHash
     let checked = 0
     let unverifiable = 0
@@ -367,7 +440,7 @@ export class FulkrumStore {
       const body = { runId: event.runId, sequence: event.sequence, type: event.type, agentId: event.agentId, payload: event.payload, createdAt: event.createdAt }
       const expected = createHash('sha256').update(`${prevHash}\n${canonicalJson(body)}`, 'utf8').digest('hex')
       if (event.prevHash !== prevHash || event.hash !== expected) {
-        return { ok: false, checked, unverifiable, total: rows.length, brokenAt: event.sequence, eventId: event.eventId, checkpoint, truncated: false, anchored: false }
+        return { ok: false, checked, unverifiable, total: rows.length, brokenAt: event.sequence, eventId: event.eventId, checkpoint, anchor, truncated: false, anchored: false, checkpointMissing: false }
       }
       prevHash = expected
       checked += 1
@@ -375,22 +448,31 @@ export class FulkrumStore {
 
     // The chain is internally consistent. Whether the tail is intact is a
     // different question: deleting the last events would leave every remaining
-    // link valid, so the anchor is what makes truncation detectable.
+    // link valid, so the anchor is what makes truncation detectable. There are two
+    // of them, and the one outside the database is the one that survives the row
+    // being deleted with the events.
     const lastSequence = rows.length ? Number(rows[rows.length - 1].sequence) : 0
-    const anchored = !checkpoint || lastSequence >= checkpoint.sequence
-    const truncated = Boolean(checkpoint && lastSequence < checkpoint.sequence)
+    const recorded = [checkpoint?.sequence, anchor?.sequence].filter((value) => Number.isFinite(value))
+    const highest = recorded.length ? Math.max(...recorded) : null
+    const truncated = highest !== null && lastSequence < highest
+    const anchored = highest === null || lastSequence >= highest
     const checkpointHashIntact = !checkpoint || !checkpoint.hash || rows.some((row) => row.sequence === checkpoint.sequence && row.hash === checkpoint.hash)
+    // An anchor exists for this run but the row that recorded it does not: the row
+    // was removed, which is a deletion rather than a run that never anchored.
+    const checkpointMissing = Boolean(anchor && !checkpoint)
 
     return {
-      ok: anchored && checkpointHashIntact,
+      ok: anchored && checkpointHashIntact && !checkpointMissing,
       checked,
       unverifiable,
       total: rows.length,
       brokenAt: null,
       checkpoint,
+      anchor,
       anchored,
       truncated,
       checkpointHashIntact,
+      checkpointMissing,
       // The first sequence covered by the chain, for an honest summary line.
       verifiedFrom: rows.find((row) => row.hash)?.sequence ?? null,
     }
@@ -402,7 +484,107 @@ export class FulkrumStore {
     const count = Number(this.database.prepare('SELECT COUNT(*) AS count FROM run_events WHERE run_id = ?').get(runId).count)
     this.database.prepare('INSERT INTO audit_checkpoints(run_id, sequence, hash, event_count, anchored_at, source, note) VALUES(?, ?, ?, ?, ?, ?, ?)')
       .run(runId, Number(head.sequence), head.hash ?? null, count, Date.now(), source, note)
-    return this.getLatestCheckpoint(runId)
+    const checkpoint = this.getLatestCheckpoint(runId)
+    this.appendAnchor(checkpoint)
+    return checkpoint
+  }
+
+  /**
+   * Record the anchored head outside the database.
+   *
+   * A checkpoint inside the file cannot survive someone deleting the file's
+   * contents, which is exactly what tampering looks like. An append-only line
+   * elsewhere turns "delete some rows" into "delete some rows and also edit a file
+   * you had to know about", and it is what verification compares against.
+   */
+  appendAnchor(checkpoint) {
+    if (!this.anchorFile || !checkpoint) return
+    const line = `${canonicalJson({ runId: checkpoint.runId, sequence: checkpoint.sequence, hash: checkpoint.hash, eventCount: checkpoint.eventCount, anchoredAt: checkpoint.anchoredAt, source: checkpoint.source })}\n`
+    try {
+      appendFileSync(this.anchorFile, line, 'utf8')
+    } catch (error) {
+      // Losing the anchor must not lose the checkpoint that was just recorded, but
+      // it is worth saying out loud rather than discovering later.
+      console.error(`[fulkrum] could not append to the anchor file ${this.anchorFile}: ${error instanceof Error ? error.message : error}`)
+    }
+  }
+
+  /** Every anchor line, oldest first. A missing or unreadable file reads as none. */
+  readAnchors() {
+    if (!this.anchorFile) return []
+    try {
+      return readFileSync(this.anchorFile, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => {
+          try {
+            return JSON.parse(line)
+          } catch {
+            return null
+          }
+        })
+        .filter(Boolean)
+    } catch {
+      return []
+    }
+  }
+
+  latestAnchor(runId) {
+    const anchors = this.readAnchors().filter((anchor) => anchor.runId === runId)
+    return anchors.length ? anchors[anchors.length - 1] : null
+  }
+
+  /**
+   * What the audit chain records about a tool result: the hash of the payload and
+   * its size, never the payload itself.
+   *
+   * Every output used to be stored twice — once on the tool call, once inside the
+   * chain — and the copy inside the chain can never be pruned without breaking
+   * verification, which is how a retention policy ends up shrinking nothing. The
+   * chain still commits to the exact content, so an altered result is as
+   * detectable as before, and the bytes live where retention can reach them.
+   */
+  summarizeOutput(output) {
+    const serialized = JSON.stringify(output ?? null)
+    return { outputSha256: createHash('sha256').update(serialized, 'utf8').digest('hex'), outputBytes: Buffer.byteLength(serialized, 'utf8') }
+  }
+
+  /** The same treatment for an input whose bulk is file content. */
+  summarizeInput(input) {
+    if (!input || typeof input !== 'object' || typeof input.content !== 'string') return input
+    const { content, ...rest } = input
+    return { ...rest, contentSha256: createHash('sha256').update(content, 'utf8').digest('hex'), contentBytes: Buffer.byteLength(content, 'utf8') }
+  }
+
+  /**
+   * A consistent copy of the database without stopping the process: VACUUM INTO
+   * writes a complete file from the current contents. Rotation keeps the newest
+   * few, because a backup that fills the disk is its own outage. The anchor log is
+   * copied alongside, so restoring both together does not look like tampering.
+   */
+  backup({ directory = path.join(path.dirname(this.filePath), 'backups'), keep = Number(process.env.FULKRUM_BACKUP_KEEP ?? 7), now = new Date() } = {}) {
+    mkdirSync(directory, { recursive: true })
+    const stamp = now.toISOString().replace(/[:.]/g, '-')
+    const target = path.join(directory, `fulkrum-${stamp}.sqlite`)
+    this.database.prepare('VACUUM INTO ?').run(target)
+
+    let anchorCopy = null
+    if (this.anchorFile) {
+      anchorCopy = path.join(directory, `audit-heads-${stamp}.log`)
+      try {
+        copyFileSync(this.anchorFile, anchorCopy)
+      } catch {
+        anchorCopy = null
+      }
+    }
+
+    const removed = []
+    const existing = readdirSync(directory).filter((name) => /^fulkrum-.*\.sqlite$/.test(name)).sort()
+    for (const name of existing.slice(0, Math.max(existing.length - keep, 0))) {
+      rmSync(path.join(directory, name), { force: true })
+      removed.push(name)
+    }
+    return { path: target, anchorPath: anchorCopy, removed, keep }
   }
 
   getLatestCheckpoint(runId) {
@@ -431,9 +613,12 @@ export class FulkrumStore {
       eventsUnverifiable: results.reduce((total, result) => total + result.unverifiable, 0),
       // A chain can be internally valid and still have lost its tail, so both are
       // reported separately rather than folded into one boolean.
-      broken: results.filter((result) => !result.ok && !result.truncated && result.checkpointHashIntact !== false),
+      broken: results.filter((result) => !result.ok && !result.truncated && result.checkpointHashIntact !== false && !result.checkpointMissing),
       truncated: results.filter((result) => result.truncated),
       anchorMismatch: results.filter((result) => result.checkpoint && !result.checkpointHashIntact),
+      // An anchor outside the database with no row to match it means the row was
+      // deleted, which a checkpoint-only scheme cannot notice.
+      anchorOrphaned: results.filter((result) => result.checkpointMissing),
     }
   }
 
@@ -472,6 +657,28 @@ export class FulkrumStore {
 
   listTasks(runId) {
     return this.database.prepare('SELECT * FROM run_tasks WHERE run_id = ? ORDER BY created_at ASC').all(runId).map(taskFromRow)
+  }
+
+  /**
+   * The turns a task has already taken. Appended as the agent loop runs, so a
+   * restart can continue the same conversation instead of starting it again.
+   */
+  appendTaskTurn(taskId, message) {
+    const row = this.database.prepare('SELECT COALESCE(MAX(turn_index), -1) + 1 AS next FROM task_turns WHERE task_id = ?').get(taskId)
+    this.database.prepare('INSERT INTO task_turns(task_id, turn_index, message_json, created_at) VALUES(?, ?, ?, ?)')
+      .run(taskId, Number(row?.next ?? 0), JSON.stringify(message), Date.now())
+  }
+
+  listTaskTurns(taskId) {
+    return this.database
+      .prepare('SELECT message_json FROM task_turns WHERE task_id = ? ORDER BY turn_index ASC')
+      .all(taskId)
+      .map((row) => parseJson(row.message_json, null))
+      .filter(Boolean)
+  }
+
+  countTaskTurns(taskId) {
+    return Number(this.database.prepare('SELECT COUNT(*) AS count FROM task_turns WHERE task_id = ?').get(taskId).count)
   }
 
   createToolCall({ runId, agentId = null, name, kind, input = {}, rawInput = null, resolved = null, fingerprint = null, idempotencyKey = null, status = 'requested', id = `tool-${randomUUID()}` }) {
@@ -649,8 +856,7 @@ export class FulkrumStore {
   createPlan({ projectId, runId = null, objective, tasks, contentHash, source = 'model', id = `plan-${randomUUID()}` }) {
     const now = Date.now()
     const version = this.nextPlanVersion(projectId)
-    this.database.exec('BEGIN IMMEDIATE')
-    try {
+    this.transaction(() => {
       if (runId) this.database.prepare("UPDATE plans SET status = 'superseded' WHERE run_id = ? AND status = 'draft'").run(runId)
       this.database.prepare('INSERT INTO plans(id, project_id, run_id, version, objective, content_hash, status, source, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .run(id, projectId, runId, version, objective, contentHash, 'draft', source, now)
@@ -658,11 +864,7 @@ export class FulkrumStore {
       tasks.forEach((task, index) => {
         insertTask.run(`plantask-${randomUUID()}`, id, index, task.role, task.title, task.instructions, task.acceptanceCheck ?? '', JSON.stringify(task.dependsOn ?? []), now)
       })
-      this.database.exec('COMMIT')
-    } catch (error) {
-      this.database.exec('ROLLBACK')
-      throw error
-    }
+    })
     return this.getPlan(id)
   }
 
@@ -688,7 +890,7 @@ export class FulkrumStore {
   /** Create the execution rows for a plan, reusing any that already exist. */
   materializeRunTasks({ runId, plan }) {
     const existing = this.listTasks(runId)
-    return plan.tasks.map((planTask) => {
+    return this.transaction(() => plan.tasks.map((planTask) => {
       const match = existing.find((task) => task.planTaskId === planTask.id)
       if (match) return match
       return this.createTask({
@@ -698,7 +900,7 @@ export class FulkrumStore {
         instructions: planTask.instructions,
         planTaskId: planTask.id,
       })
-    })
+    }))
   }
 
   /**
@@ -803,13 +1005,32 @@ export class FulkrumStore {
    * one would break verification of every event after it.
    */
   pruneToolOutputs({ retentionDays = Number(process.env.FULKRUM_TOOL_OUTPUT_RETENTION_DAYS ?? 14), now = Date.now() } = {}) {
-    if (!Number.isFinite(retentionDays) || retentionDays <= 0) return { pruned: 0, prunedInputs: 0 }
+    if (!Number.isFinite(retentionDays) || retentionDays <= 0) return { pruned: 0, prunedInputs: 0, prunedTurns: 0 }
     const cutoff = now - retentionDays * 24 * 60 * 60 * 1000
     const result = this.database.prepare('UPDATE tool_calls SET output_json = NULL, output_pruned_at = ? WHERE completed_at IS NOT NULL AND completed_at < ? AND output_json IS NOT NULL').run(now, cutoff)
     // Raw inputs go with their outputs, but only for calls that can no longer be
     // approved: a pending approval must keep the arguments it will execute.
     const inputs = this.database.prepare("DELETE FROM tool_call_inputs WHERE created_at < ? AND tool_call_id IN (SELECT id FROM tool_calls WHERE status IN ('completed', 'denied', 'failed'))").run(cutoff)
-    return { pruned: Number(result.changes), prunedInputs: Number(inputs.changes), cutoff }
+    // Task turns carry tool results, so they are pruned on the same window — and
+    // only for runs that can no longer be resumed.
+    const turns = this.database
+      .prepare("DELETE FROM task_turns WHERE created_at < ? AND task_id IN (SELECT t.id FROM run_tasks t JOIN runs r ON r.id = t.run_id WHERE r.status IN ('completed', 'cancelled', 'failed'))")
+      .run(cutoff)
+    return { pruned: Number(result.changes), prunedInputs: Number(inputs.changes), prunedTurns: Number(turns.changes), cutoff }
+  }
+
+  /** When the newest backup was taken, so a daily one can be skipped. */
+  backupStatus({ directory = path.join(path.dirname(this.filePath), 'backups') } = {}) {
+    try {
+      const files = readdirSync(directory)
+        .filter((name) => /^fulkrum-.*\.sqlite$/.test(name))
+        .map((name) => ({ name, mtimeMs: statSync(path.join(directory, name)).mtimeMs }))
+        .sort((left, right) => left.mtimeMs - right.mtimeMs)
+      const newest = files.length ? files[files.length - 1] : null
+      return { count: files.length, newestAgeMs: newest === null ? null : Date.now() - newest.mtimeMs, newestPath: newest === null ? null : path.join(directory, newest.name) }
+    } catch {
+      return { count: 0, newestAgeMs: null, newestPath: null }
+    }
   }
 
   checkpoint() {

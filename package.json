@@ -15,6 +15,7 @@
     "test:watch": "node --test --watch \"tests/**/*.test.mjs\"",
     "typecheck": "tsc -b && tsc -p tsconfig.server.json",
     "audit:verify": "node --env-file-if-exists=.env.local server/verifyAudit.mjs",
+    "db:backup": "node --env-file-if-exists=.env.local server/backup.mjs",
     "build": "tsc -b && vite build",
     "runner:build": "docker build --tag fulkrum-runner:local server/runner",
     "lint": "oxlint",
