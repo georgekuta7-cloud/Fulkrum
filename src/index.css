@@ -1,29 +1,18 @@
-:root {
-  font-family: 'Space Grotesk', 'IBM Plex Sans', 'Trebuchet MS', sans-serif;
-  color: #1f2424;
-  background: #e8e5dc;
+/*
+ * Reset only. The palette, the layout and the type scale live in app.css, so there
+ * is one place to change how this looks rather than two that disagree.
+ */
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  min-width: 320px;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-* {
-  box-sizing: border-box;
-}
-
-body {
-  margin: 0;
-  min-width: 320px;
-  min-height: 100vh;
-}
-
-button,
-textarea,
-select {
-  font: inherit;
-}
-
-button {
-  border: 0;
-}
+button, textarea, select, input { font: inherit; }

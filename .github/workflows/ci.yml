@@ -25,6 +25,7 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+      - run: npm run test:ui
       - run: npm run build
       # One job measures coverage: the thresholds live in the script, so a
       # regression fails here rather than being noticed later.
