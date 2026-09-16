@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs'
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -12,7 +13,11 @@ import { FulkrumToolBroker } from '../server/toolBroker.mjs'
 export async function withTempDirectory(callback) {
   const directory = await mkdtemp(path.join(tmpdir(), 'fulkrum-test-'))
   try {
-    return await callback(directory)
+    // Hand out the real path. Temp directories on Windows are routinely reached
+    // through an 8.3 short name (RUNNER~1 on a CI runner), and the tools resolve
+    // containment on real paths, so a test comparing against the spelled path
+    // would be comparing two different strings for the same directory.
+    return await callback(realpathSync.native(directory))
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

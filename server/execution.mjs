@@ -33,10 +33,13 @@ const maxOutputBytes = 100_000
 
 /** Convert a Windows path to the path an engine running inside WSL sees. */
 export function toEnginePath(target, { inWsl = false } = {}) {
-  const resolved = path.resolve(target)
-  if (!inWsl) return resolved
-  const driveMatch = resolved.match(/^([A-Za-z]):[\\/](.*)$/)
-  if (!driveMatch) return resolved.replaceAll('\\', '/')
+  const raw = String(target)
+  if (!inWsl) return path.resolve(raw)
+  // Drive letters are matched on the string, not through the host's path rules:
+  // this translation only makes sense for Windows paths, and it must behave the
+  // same when it is exercised from a machine that is not Windows.
+  const driveMatch = raw.match(/^([A-Za-z]):[\\/](.*)$/)
+  if (!driveMatch) return raw.replaceAll('\\', '/')
   return `/mnt/${driveMatch[1].toLowerCase()}/${driveMatch[2].replaceAll('\\', '/')}`
 }
 
