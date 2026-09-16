@@ -162,6 +162,36 @@ test('cancelling a run takes its container with it', async () => {
   await running.catch(() => {})
 })
 
+test('every container a run started can be stopped, not only the last one', async () => {
+  const calls = []
+  /** @type {(value?: unknown) => void} */
+  let releaseRun = () => {}
+  const runGate = new Promise((resolve) => { releaseRun = resolve })
+  const execFileImpl = async (_file, args) => {
+    calls.push(args)
+    if (args[0] === 'version') return { stdout: '29.8.0\n', stderr: '' }
+    if (args[0] === 'image') return { stdout: args.includes('{{json .RepoDigests}}') ? '[]\n' : 'sha256:abc\n', stderr: '' }
+    if (args[0] === 'run') {
+      await runGate
+      return { stdout: '', stderr: '' }
+    }
+    return { stdout: '', stderr: '' }
+  }
+
+  const runtime = createExecutionRuntime({ execFileImpl, workspaceRoot: process.cwd() })
+  const first = runtime.run(['sleep', '10'], { runId: 'run-two' })
+  const second = runtime.run(['sleep', '20'], { runId: 'run-two' })
+  while (calls.filter((args) => args[0] === 'run').length < 2) await new Promise((resolve) => setTimeout(resolve, 5))
+
+  assert.equal(runtime.runningNow().length, 2, 'both commands are tracked, not just the newest')
+  const stopped = await runtime.kill('run-two')
+  assert.equal(stopped.containers.length, 2, 'a cancel stops everything that run started')
+  assert.deepEqual(runtime.runningNow(), [])
+
+  releaseRun()
+  await Promise.allSettled([first, second])
+})
+
 test('paths are translated for an engine that lives inside WSL', () => {
   assert.equal(toEnginePath('D:\\projects\\fulkrum', { inWsl: true }), '/mnt/d/projects/fulkrum')
   assert.equal(toEnginePath('C:/Users/proga', { inWsl: true }), '/mnt/c/Users/proga')

@@ -198,16 +198,19 @@ test('a rejected temperature is retried without it, then remembered', async () =
   })
 })
 
-test('a provider that keeps failing is skipped, then probed once', async () => {
+test('a provider that keeps failing is skipped without being dialed', async () => {
   const previous = {
     attempts: process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS,
     threshold: process.env.FULKRUM_BREAKER_THRESHOLD,
     cooldown: process.env.FULKRUM_BREAKER_COOLDOWN_MS,
   }
-  // One attempt per call keeps this quick; two failed calls open the breaker.
+  // One attempt per call keeps this quick, and a cooldown far longer than the test
+  // means the window cannot close mid-test however loaded the machine is. The
+  // half-open behaviour is checked against a controlled clock below, because a
+  // timing window this narrow is not something a test should depend on.
   process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS = '1'
   process.env.FULKRUM_BREAKER_THRESHOLD = '2'
-  process.env.FULKRUM_BREAKER_COOLDOWN_MS = '150'
+  process.env.FULKRUM_BREAKER_COOLDOWN_MS = '60000'
 
   try {
     await withProviderServer((_record, response) => {
@@ -227,11 +230,6 @@ test('a provider that keeps failing is skipped, then probed once', async () => {
         assert.equal(skipped.status, 502)
         assert.match(String(skipped.payload.error), /skipped/i)
         assert.equal(requests.length, 2, 'nothing was sent while the breaker was open')
-
-        // After the cooldown, one call is allowed through as a probe.
-        await new Promise((resolve) => setTimeout(resolve, 200))
-        assert.equal((await chat()).status, 502)
-        assert.equal(requests.length, 3, 'a half-open breaker probes exactly once')
       }, { realModelCall: true })
     })
   } finally {
@@ -241,6 +239,37 @@ test('a provider that keeps failing is skipped, then probed once', async () => {
       else process.env[key] = value
     }
   }
+})
+
+test('the breaker opens, probes once, and closes again on a controlled clock', async () => {
+  const { createBreaker } = await import('../server/modelCall.mjs')
+  let clock = 1_000
+  const breaker = createBreaker({ threshold: 2, cooldownMs: 5_000, now: () => clock })
+
+  assert.equal(breaker.reject('p', 'Provider'), null, 'a fresh provider is allowed')
+
+  breaker.failed('p')
+  assert.equal(breaker.reject('p', 'Provider'), null, 'one failure is not enough to open it')
+
+  breaker.failed('p')
+  assert.match(String(breaker.reject('p', 'Provider')), /skipped for another/, 'the second failure opens it')
+
+  // The cooldown passes: exactly one call is let through to find out if it recovered.
+  clock += 5_001
+  assert.equal(breaker.reject('p', 'Provider'), null, 'a half-open breaker probes')
+  assert.match(String(breaker.reject('p', 'Provider')), /still being probed/, 'and only once')
+
+  // A probe that fails re-opens it immediately, without waiting for the threshold again.
+  breaker.failed('p')
+  assert.match(String(breaker.reject('p', 'Provider')), /skipped for another/, 'a failed probe re-opens the breaker')
+
+  // A probe that succeeds closes it.
+  clock += 5_001
+  assert.equal(breaker.reject('p', 'Provider'), null)
+  breaker.succeeded('p')
+  assert.equal(breaker.reject('p', 'Provider'), null)
+  breaker.failed('p')
+  assert.equal(breaker.reject('p', 'Provider'), null, 'failures start again from zero after a success')
 })
 
 test('the provider probe reports what it found, and why it could not', async () => {

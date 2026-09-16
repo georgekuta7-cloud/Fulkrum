@@ -217,6 +217,25 @@ test('a stream that fails before its first token is retried, and one that fails 
   }
 })
 
+test('a tool name that arrives twice is one name, not two', () => {
+  // Some gateways resend the whole name in the chunk after the one that introduced
+  // it. Concatenating blindly would produce "workspace.readworkspace.read", which is
+  // a tool nobody has.
+  const stream = createProviderStream('openai-compatible')
+  stream.push('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"workspace.read","arguments":"{\\"path\\":"}}]}}]}\n\n')
+  stream.push('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"workspace.read","arguments":"\\"a.txt\\"}"}}]}}]}\n\n')
+  const result = stream.finish()
+  assert.equal(result.toolCalls.length, 1)
+  assert.equal(result.toolCalls[0].name, 'workspace.read')
+  assert.deepEqual(result.toolCalls[0].arguments, { path: 'a.txt' })
+
+  // And a name genuinely split across chunks is still reassembled.
+  const split = createProviderStream('openai-compatible')
+  split.push('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"workspace."}}]}}]}\n\n')
+  split.push('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"read","arguments":"{}"}}]}}]}\n\n')
+  assert.equal(split.finish().toolCalls[0].name, 'workspace.read')
+})
+
 test('a stream cut off part way is an error, not a short answer', async () => {
   const server = http.createServer((_request, response) => {
     response.writeHead(200, { 'content-type': 'text/event-stream' })
