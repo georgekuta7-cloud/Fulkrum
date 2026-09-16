@@ -163,8 +163,9 @@ export function createExecutionRuntime({
    * Containers that are running right now, by run id.
    *
    * A cancelled run used to leave its command running to completion or to its
-   * timeout: the run stopped, the work did not. Keeping the handle lets a cancel
-   * mean the same thing on both sides.
+   * timeout: the run stopped, the work did not. Keyed by run so a cancel can find
+   * them, and a set per run because a run is not guaranteed to have only one in
+   * flight forever — an overwritten entry would be a container nobody could stop.
    */
   const running = new Map()
 
@@ -271,7 +272,12 @@ export function createExecutionRuntime({
       const name = `fulkrum-${randomUUID().slice(0, 8)}`
       const args = containerArgs({ argv, workspaceRoot, workdir: cwd, image, network: status.network, inWsl: status.viaWsl, name, memory, cpus, pidsLimit, runtimeUser: effectiveUser(), userNamespace, nofile })
       const timeout = Math.min(Math.max(Number(timeoutMs) || defaultTimeoutMs, 1_000), 600_000)
-      if (runId) running.set(runId, { name, candidate })
+      const handle = { name, candidate }
+      if (runId) {
+        const handles = running.get(runId) ?? new Set()
+        handles.add(handle)
+        running.set(runId, handles)
+      }
 
       try {
         const result = await invoke(candidate, args, { timeout, maxBuffer: maxOutputBytes, windowsHide: true, killSignal: 'SIGKILL' })
@@ -299,7 +305,13 @@ export function createExecutionRuntime({
         }
         throw new Error(`${detail || 'The command failed.'}${exitCode}${stdout ? `\n${stdout}` : ''}`)
       } finally {
-        if (runId) running.delete(runId)
+        if (runId) {
+          const handles = running.get(runId)
+          if (handles) {
+            handles.delete(handle)
+            if (!handles.size) running.delete(runId)
+          }
+        }
       }
     },
 
@@ -311,20 +323,26 @@ export function createExecutionRuntime({
      * killed as a side effect of the container disappearing.
      */
     async kill(runId, { reason = 'the run was cancelled' } = {}) {
-      const entry = running.get(runId)
-      if (!entry) return { stopped: false }
+      const handles = running.get(runId)
+      if (!handles?.size) return { stopped: false, containers: [], errors: ['nothing could be removed'] }
       running.delete(runId)
-      try {
-        await invoke(entry.candidate, ['rm', '--force', entry.name], { timeout: 15_000, windowsHide: true })
-        return { stopped: true, container: entry.name, reason }
-      } catch (error) {
-        return { stopped: false, container: entry.name, error: error instanceof Error ? error.message : 'could not remove the container' }
+      const stopped = []
+      const failures = []
+      for (const handle of handles) {
+        try {
+          await invoke(handle.candidate, ['rm', '--force', handle.name], { timeout: 15_000, windowsHide: true })
+          stopped.push(handle.name)
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : 'could not remove the container')
+        }
       }
+      if (!stopped.length) return { stopped: false, containers: [], errors: failures.length ? failures : ['nothing could be removed'] }
+      return { stopped: true, containers: stopped, reason, ...(failures.length ? { errors: failures } : {}) }
     },
 
     /** What is running right now, for the status panel. */
     runningNow() {
-      return [...running.entries()].map(([runId, entry]) => ({ runId, container: entry.name }))
+      return [...running.entries()].flatMap(([runId, handles]) => [...handles].map((handle) => ({ runId, container: handle.name })))
     },
 
     /** Exposed for tests and documentation: the exact argv a run would use. */

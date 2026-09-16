@@ -151,12 +151,12 @@ test('cancelling a run takes its container with it', async () => {
   const removal = calls.find((args) => args[0] === 'rm')
   assert.ok(removal, 'the container was removed')
   assert.equal(removal[1], '--force')
-  assert.equal(removal[2], stopped.container, 'and it was the container that was running')
+  assert.equal(removal[2], stopped.containers[0], 'and it was the container that was running')
   assert.deepEqual(runtime.runningNow(), [], 'nothing is left marked as running')
 
   // Cancelling twice, or cancelling a run with nothing running, is not an error.
-  assert.deepEqual(await runtime.kill('run-cancel'), { stopped: false })
-  assert.deepEqual(await runtime.kill('run-that-never-ran'), { stopped: false })
+  assert.deepEqual(await runtime.kill('run-cancel'), { stopped: false, containers: [], errors: ['nothing could be removed'] })
+  assert.deepEqual(await runtime.kill('run-that-never-ran'), { stopped: false, containers: [], errors: ['nothing could be removed'] })
 
   releaseRun()
   await running.catch(() => {})

@@ -217,6 +217,52 @@ test('a stream that fails before its first token is retried, and one that fails 
   }
 })
 
+test('a stream cut off part way is an error, not a short answer', async () => {
+  const server = http.createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/event-stream' })
+    response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'half an answer' } }] })}\n\n`)
+    // Then the connection dies without a terminator: what a dropped upstream, a
+    // proxy timeout, or a killed provider looks like from here.
+    setTimeout(() => response.destroy(), 20)
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(undefined)))
+  const address = server.address()
+  const port = address && typeof address === 'object' ? address.port : 0
+
+  const previous = process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS
+  process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS = '1'
+  try {
+    const { createModelCaller } = await import('../server/modelCall.mjs')
+    const { createProviderRegistry } = await import('../server/providerRegistry.mjs')
+    const { FulkrumStore } = await import('../server/store.mjs')
+    const { mkdtemp, rm } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const path = await import('node:path')
+
+    const directory = await mkdtemp(path.join(tmpdir(), 'fulkrum-stream-cut-'))
+    const store = new FulkrumStore(path.join(directory, 'db.sqlite'))
+    try {
+      const registry = createProviderRegistry(store)
+      registry.addCustom({ label: 'Cut off', baseUrl: `http://127.0.0.1:${port}/v1`, model: 'cut-1', apiKey: 'sk-cut', allowPrivate: true })
+      const caller = createModelCaller({ providerRegistry: registry })
+      const deltas = []
+      await assert.rejects(
+        () => caller.callModel(registry.resolve('Cut off'), 'cut-1', [{ role: 'user', content: 'hi' }], { onDelta: (delta) => deltas.push(delta) }),
+        (error) => /aborted|socket|closed|premature|ECONNRESET/i.test(error instanceof Error ? error.message : String(error)),
+        'a truncated stream must fail rather than look like a complete short reply',
+      )
+      assert.deepEqual(deltas, ['half an answer'], 'what arrived before the cut was still delivered')
+    } finally {
+      store.close()
+      await rm(directory, { recursive: true, force: true })
+    }
+  } finally {
+    if (previous === undefined) delete process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS
+    else process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS = previous
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
 test('the run stream carries partial text as its own frame', async () => {
   await withServer(async ({ baseUrl, store, request }) => {
     const project = await request('POST', '/api/projects', { name: 'stream fixture' })

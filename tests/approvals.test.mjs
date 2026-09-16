@@ -208,25 +208,117 @@ test('a run grant cannot override a deny rule', async () => {
   }
 })
 
-test('a persistent "always" approval is refused rather than silently downgraded', async () => {
+test('"always" creates a scoped standing grant, and the scope is what holds', async () => {
   const previousKey = process.env.XAI_API_KEY
-  process.env.XAI_API_KEY = 'sk-test-key-for-always'
-  const model = twoWriteScript([{ path: 'c.txt', content: 'x\n' }])
+  process.env.XAI_API_KEY = 'sk-test-key-for-standing'
+  // Three writes: two in one directory, one outside it.
+  const model = twoWriteScript([
+    { path: 'src/a.txt', content: 'first\n' },
+    { path: 'src/b.txt', content: 'second\n' },
+    { path: 'docs/c.txt', content: 'third\n' },
+  ])
 
   try {
-    await withServer(async ({ request, store, orchestrator }) => {
+    await withServer(async ({ request, store }) => {
       const runId = await startRun(request)
       const pending = await waitFor(store, () => store.listToolCalls(runId).find((call) => call.status === 'approval_required'))
-      const response = await request('POST', `/api/runs/${runId}/tools/${pending.id}/approve`, { scope: 'always' })
-      assert.equal(response.status, 400)
-      assert.match(String(response.payload.error), /management view/)
-      assert.equal(store.getToolCall(pending.id).status, 'approval_required', 'the call is untouched')
-      orchestrator.denyToolCall(pending.id, 'test cleanup')
+      assert.ok(pending, 'the first write waits')
+
+      const approved = await request('POST', `/api/runs/${runId}/tools/${pending.id}/approve`, { scope: 'always', fingerprint: pending.fingerprint })
+      assert.equal(approved.status, 200, JSON.stringify(approved.payload))
+      assert.equal(approved.payload.standingGrant.scopeKind, 'path')
+      assert.equal(approved.payload.standingGrant.scopeValue, 'src', 'scoped to the directory the file is in, not to the file')
+
+      // The second write is in the same directory, so it does not ask again.
+      const inside = await waitFor(store, () => store.listToolCalls(runId).find((call) => call.input?.path === 'src/b.txt' && call.status === 'completed'))
+      assert.ok(inside, 'the second write in the same directory ran without a prompt')
+
+      // ...while one outside the scope stopped for a person, which is the whole
+      // point of scoping rather than allowing the tool outright.
+      const outside = await waitFor(store, () => store.listToolCalls(runId).find((call) => call.input?.path === 'docs/c.txt' && call.status === 'approval_required'))
+      assert.ok(outside, 'a write outside the scope asks')
+      assert.equal(store.listEvents(runId).some((event) => event.type === 'approval.requested' && event.payload.rule === 'ask.default'), true)
+
+      // Denying it lets the run finish: the point was that it asked at all.
+      const denied = await request('POST', `/api/runs/${runId}/tools/${outside.id}/deny`, { reason: 'outside the granted scope' })
+      assert.equal(denied.status, 200)
+      const finished = await waitFor(store, () => (store.getRun(runId).status === 'review' ? true : null))
+      assert.ok(finished, `run should finish, saw ${store.getRun(runId).status}`)
+
+      const grants = await request('GET', '/api/grants')
+      assert.equal(grants.payload.grants.length, 1)
+      assert.equal(grants.payload.grants[0].useCount >= 1, true, 'using a grant records that it was used')
+      assert.equal(grants.payload.history.some((entry) => entry.summary.includes('allowed')), true, 'and creating it is recorded')
+
+      // Revoking it puts the prompt back for the directory it covered.
+      const revoked = await request('DELETE', `/api/grants/${grants.payload.grants[0].id}`)
+      assert.equal(revoked.status, 200)
+      assert.deepEqual(revoked.payload.grants, [])
+      assert.equal(store.findStandingGrant({ toolName: 'workspace.write', resolved: { relative: 'src/a.txt' } }), null)
+
+      // The audit shows both the grant and the call it covered.
+      const types = store.listEvents(runId).map((event) => event.type)
+      assert.equal(types.includes('approval.standing'), true)
+      assert.equal(store.verifyEventChain(runId).ok, true)
     }, { model })
   } finally {
     if (previousKey === undefined) delete process.env.XAI_API_KEY
     else process.env.XAI_API_KEY = previousKey
   }
+})
+
+test('"always" refuses when the scope would be unbounded', async () => {
+  const previousKey = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-unbounded'
+  const model = twoWriteScript([{ path: 'top-level.txt', content: 'x\n' }])
+
+  try {
+    await withServer(async ({ request, store }) => {
+      const runId = await startRun(request)
+      const pending = await waitFor(store, () => store.listToolCalls(runId).find((call) => call.status === 'approval_required'))
+      assert.ok(pending)
+
+      // A file in the workspace root scopes to the whole workspace, which is the
+      // blanket permission this avoids.
+      const response = await request('POST', `/api/runs/${runId}/tools/${pending.id}/approve`, { scope: 'always' })
+      assert.equal(response.status, 400)
+      assert.match(String(response.payload.error), /workspace root/)
+      assert.equal(store.listStandingGrants().length, 0)
+      assert.equal(store.getToolCall(pending.id).status, 'approval_required', 'and the call is untouched')
+    }, { model })
+  } finally {
+    if (previousKey === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousKey
+  }
+})
+
+test('a standing grant cannot be created for a command, or override a refusal', async () => {
+  await withServer(async ({ request, store }) => {
+    // A command has no boundary to grant within.
+    const shellGrant = await request('POST', '/api/grants', { toolName: 'shell.exec', scopeKind: 'path', scopeValue: 'src' })
+    assert.equal(shellGrant.status, 400)
+    assert.match(String(shellGrant.payload.error), /no scope/)
+
+    // A path scope must be relative, inside the workspace, and not the root.
+    for (const scopeValue of ['/etc', 'C:\\Windows', '../outside', '.', '']) {
+      const attempt = await request('POST', '/api/grants', { toolName: 'workspace.write', scopeKind: 'path', scopeValue })
+      assert.equal(attempt.status, 400, `${scopeValue} should be refused`)
+    }
+
+    const { runId } = { runId: (await request('POST', '/api/runs', { projectId: (await request('POST', '/api/projects', { name: 'deny fixture' })).payload.project.id })).payload.run.id }
+    const good = await request('POST', '/api/grants', { toolName: 'workspace.write', scopeKind: 'path', scopeValue: 'src' })
+    assert.equal(good.status, 201)
+    assert.equal(store.findStandingGrant({ toolName: 'workspace.write', resolved: { relative: 'src/deep/file.txt' } }).id, good.payload.grant.id, 'a path scope covers what is under it')
+    assert.equal(store.findStandingGrant({ toolName: 'workspace.write', resolved: { relative: 'src2/file.txt' } }), null, 'but not a sibling with a shared prefix')
+
+    // The grant exists, and a credential path is still denied rather than allowed.
+    const denied = await request('POST', `/api/runs/${runId}/tools`, { name: 'workspace.write', agentId: 'builder', input: { path: 'src/.env.local', content: 'SECRET=1\n' } })
+    assert.equal(denied.status, 403, 'a standing grant softens "ask", and deny still wins')
+    assert.equal(denied.payload.rule, 'deny.sensitive-path')
+
+    const mismatched = await request('DELETE', '/api/grants/standing-nope')
+    assert.equal(mismatched.status, 404)
+  })
 })
 
 test('an approved write lands the original bytes, not the redacted copy', async () => {

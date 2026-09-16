@@ -211,7 +211,9 @@ export function createProviderStream(protocol) {
       const index = Number(call.index ?? 0)
       const entry = toolBlocks[index] ?? (toolBlocks[index] = { name: '', json: '' })
       if (call.id) entry.id = call.id
-      if (call.function?.name) entry.name += call.function.name
+      // A name can arrive whole or in fragments, and a gateway may resend what it
+      // already sent; appending blindly would produce "readread".
+      if (call.function?.name && !entry.name.includes(call.function.name)) entry.name += call.function.name
       if (call.function?.arguments) entry.json += call.function.arguments
     }
     return piece

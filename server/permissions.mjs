@@ -126,6 +126,7 @@ function describeWrite(value) {
  * log records, and what the fingerprint commits to. Never the model's summary.
  *
  * @param {{ name: string, input?: Record<string, any>, workspaceRoot: string }} request
+ * @returns {{ ok: boolean, error?: string, sensitive?: boolean, resolved?: Record<string, any> }}
  */
 export function resolveToolCall({ name, input = {}, workspaceRoot }) {
   const raw = input && typeof input === 'object' ? input : {}
@@ -134,7 +135,9 @@ export function resolveToolCall({ name, input = {}, workspaceRoot }) {
       const target = resolveWorkspacePath(workspaceRoot, raw.path)
       return {
         ok: true,
-        resolved: { tool: name, path: target.resolved, relative: target.relative, query: name === 'workspace.search' ? String(raw.query ?? '') : undefined },
+        // `directory` is what tells a standing grant where to draw its boundary:
+        // these two tools act on a directory, the others on a file.
+        resolved: { tool: name, path: target.resolved, relative: target.relative, ...(name === 'workspace.read' ? {} : { directory: true }), query: name === 'workspace.search' ? String(raw.query ?? '') : undefined },
         sensitive: isSensitivePath(target.relative),
       }
     }
@@ -199,6 +202,77 @@ const credentialHeaders = new Set(['authorization', 'proxy-authorization', 'cook
 function carriesCredentialHeader(resolution) {
   const names = resolution?.resolved?.headerNames
   return Array.isArray(names) && names.some((name) => credentialHeaders.has(String(name).toLowerCase()))
+}
+
+/**
+ * The scope a standing grant could cover, derived from a call the user just
+ * approved with "always".
+ *
+ * Only calls whose risk can be *bounded* get a scope. A file write is bounded by the
+ * directory it is in; a request is bounded by its host. A command is bounded by
+ * nothing — its argv can be anything — so it cannot be made standing, and a file in
+ * the workspace root would scope to the whole workspace, which is the blanket
+ * permission this exists to avoid. Both refuse with a reason rather than quietly
+ * turning into more than the user asked for.
+ */
+export function standingScopeFor({ toolName, resolved }) {
+  if (!resolved || typeof resolved !== 'object') return { ok: false, error: 'That call has no resolved arguments to scope a standing grant to.' }
+  if (typeof resolved.relative === 'string' && resolved.relative) {
+    // For a tool that works on a directory, the directory itself is the scope; for
+    // a file, it is the directory the file is in.
+    const scope = resolved.directory === true
+      ? resolved.relative
+      : resolved.relative.includes('/') ? resolved.relative.slice(0, resolved.relative.lastIndexOf('/')) : '.'
+    if (scope === '.' || scope === '') {
+      return { ok: false, error: 'That path is in the workspace root, so allowing it would allow anything in the workspace. Approve it once, or for this run.' }
+    }
+    return { ok: true, kind: 'path', value: scope, label: `${toolName} under ${scope}/` }
+  }
+  if (typeof resolved.host === 'string' && resolved.host) {
+    return { ok: true, kind: 'host', value: resolved.host, label: `${toolName} to ${resolved.host}` }
+  }
+  return { ok: false, error: 'That tool has no scope to bind a standing grant to, so it has to be approved each time.' }
+}
+
+/** Whether an already-recorded standing grant covers this call. */
+export function standingScopeMatches(grant, resolved) {
+  if (!grant || !resolved) return false
+  if (grant.scopeKind === 'path') {
+    const relative = String(resolved.relative ?? '')
+    if (!relative) return false
+    const scope = String(grant.scopeValue ?? '')
+    if (!scope) return false
+    // A directory boundary, not a string prefix: `src` must not match `src2/a.txt`.
+    return relative === scope || relative.startsWith(`${scope}/`)
+  }
+  if (grant.scopeKind === 'host') {
+    // Exact, deliberately: a grant for api.example.com is not a grant for
+    // anything.example.com.
+    return String(resolved.host ?? '') === String(grant.scopeValue ?? '')
+  }
+  return false
+}
+
+/** Validate a scope a caller supplied directly, rather than one derived from a call. */
+export function validateStandingScope({ toolName, scopeKind, scopeValue }) {
+  if (!['path', 'host'].includes(scopeKind)) return { ok: false, error: 'A standing grant scope must be a path or a host.' }
+  const value = String(scopeValue ?? '').trim()
+  if (!value) return { ok: false, error: 'A standing grant needs a scope value.' }
+  if (scopeKind === 'path') {
+    if (value.startsWith('/') || value.startsWith('\\') || /^[a-zA-Z]:/.test(value)) return { ok: false, error: 'A path scope is relative to the workspace root.' }
+    // Normalize before checking: `src/../etc` and `src//sub` are refused or reduced,
+    // never stored as written, because the stored value is what matching compares.
+    const normalized = value
+      .replaceAll('\\', '/')
+      .replace(/\/{2,}/g, '/')
+      .replace(/^\.\//, '')
+      .replace(/\/+$/, '')
+    if (value.split(/[\\/]/).includes('..')) return { ok: false, error: 'A path scope cannot leave the workspace.' }
+    if (!normalized || normalized === '.') return { ok: false, error: 'Scoping to the workspace root would allow anything in it.' }
+    return { ok: true, kind: 'path', value: normalized, label: `${toolName} under ${normalized}/` }
+  }
+  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i.test(value)) return { ok: false, error: `"${value}" is not a host name.` }
+  return { ok: true, kind: 'host', value: value.toLowerCase(), label: `${toolName} to ${value.toLowerCase()}` }
 }
 
 /**

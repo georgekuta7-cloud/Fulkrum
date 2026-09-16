@@ -4,6 +4,7 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { canonicalJson } from './canonicalJson.mjs'
 import { applyMigrations } from './migrations.mjs'
+import { standingScopeMatches } from './permissions.mjs'
 
 const anchorFileName = 'audit-heads.log'
 
@@ -134,6 +135,21 @@ function taskFromRow(row) {
   }
 }
 
+function standingGrantFromRow(row) {
+  return {
+    id: row.id,
+    toolName: row.tool_name,
+    scopeKind: row.scope_kind,
+    scopeValue: row.scope_value,
+    label: row.label,
+    createdBy: row.created_by ?? null,
+    createdAt: Number(row.created_at),
+    lastUsedAt: row.last_used_at === null || row.last_used_at === undefined ? null : Number(row.last_used_at),
+    useCount: Number(row.use_count ?? 0),
+    revokedAt: row.revoked_at === null || row.revoked_at === undefined ? null : Number(row.revoked_at),
+  }
+}
+
 /** A window of text around the first match, so a result can be judged at a glance. */
 function snippet(text, phrase, radius = 60) {
   const value = String(text ?? '')
@@ -169,6 +185,8 @@ function toolCallFromRow(row) {
     input: parseJson(row.input_json),
     resolved: parseJson(row.resolved_json, null),
     fingerprint: row.call_fingerprint ?? null,
+    ruleId: row.rule_id ?? null,
+    warnings: parseJson(row.warnings_json, []),
     idempotencyKey: row.idempotency_key ?? null,
     approvedAt: row.approved_at === null || row.approved_at === undefined ? null : Number(row.approved_at),
     approvalScope: row.approval_scope ?? null,
@@ -848,10 +866,10 @@ export class FulkrumStore {
     return Number(this.database.prepare('SELECT COUNT(*) AS count FROM task_turns WHERE task_id = ?').get(taskId).count)
   }
 
-  createToolCall({ runId, agentId = null, name, kind, input = {}, rawInput = null, resolved = null, fingerprint = null, idempotencyKey = null, status = 'requested', id = `tool-${randomUUID()}` }) {
+  createToolCall({ runId, agentId = null, name, kind, input = {}, rawInput = null, resolved = null, fingerprint = null, idempotencyKey = null, status = 'requested', ruleId = null, warnings = [], id = `tool-${randomUUID()}` }) {
     const now = Date.now()
-    this.database.prepare('INSERT INTO tool_calls(id, run_id, agent_id, name, kind, status, input_json, resolved_json, call_fingerprint, idempotency_key, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, runId, agentId, name, kind, status, JSON.stringify(input), resolved ? JSON.stringify(resolved) : null, fingerprint, idempotencyKey, now)
+    this.database.prepare('INSERT INTO tool_calls(id, run_id, agent_id, name, kind, status, input_json, resolved_json, call_fingerprint, idempotency_key, rule_id, warnings_json, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, runId, agentId, name, kind, status, JSON.stringify(input), resolved ? JSON.stringify(resolved) : null, fingerprint, idempotencyKey, ruleId, JSON.stringify(warnings ?? []), now)
     if (rawInput !== null && rawInput !== undefined) {
       this.database.prepare('INSERT INTO tool_call_inputs(tool_call_id, raw_json, created_at) VALUES(?, ?, ?)').run(id, JSON.stringify(rawInput), now)
     }
@@ -1006,9 +1024,102 @@ export class FulkrumStore {
     }))
   }
 
-  /** A run's trace: spans, priced calls, and the totals for the header. */
+  /** A run's trace: spans, priced calls, where the money went, and the totals. */
   getRunTrace(runId) {
-    return { spans: this.listSpans(runId), calls: this.listModelCalls(runId), spend: this.spendForRun(runId) }
+    return { spans: this.listSpans(runId), calls: this.listModelCalls(runId), spend: this.spendForRun(runId), byTask: this.spendByTask(runId) }
+  }
+
+  /**
+   * What each task cost.
+   *
+   * Calls with no task are the supervisor's own — planning, chat, and the review —
+   * and are reported as such rather than being dropped or attributed to a worker.
+   */
+  spendByTask(runId) {
+    const rows = this.database
+      .prepare(`SELECT task_id,
+          COALESCE(SUM(cost_usd), 0) AS cost,
+          COUNT(*) AS calls,
+          SUM(CASE WHEN priced = 0 THEN 1 ELSE 0 END) AS unpriced,
+          COALESCE(SUM(input_tokens), 0) AS input_tokens,
+          COALESCE(SUM(output_tokens), 0) AS output_tokens
+        FROM model_calls WHERE run_id = ? GROUP BY task_id`)
+      .all(runId)
+    const tasks = new Map(this.listTasks(runId).map((task) => [task.id, task]))
+    return rows.map((row) => ({
+      taskId: row.task_id ?? null,
+      title: row.task_id ? tasks.get(row.task_id)?.title ?? null : 'supervisor',
+      agentId: row.task_id ? tasks.get(row.task_id)?.agentId ?? null : 'head',
+      costUsd: Number(row.cost ?? 0),
+      calls: Number(row.calls ?? 0),
+      unpricedCalls: Number(row.unpriced ?? 0),
+      inputTokens: Number(row.input_tokens ?? 0),
+      outputTokens: Number(row.output_tokens ?? 0),
+    }))
+  }
+
+  /**
+   * Spend over time, by model, and by project.
+   *
+   * Grouped in SQL rather than in the caller: a usage view over a month of runs is
+   * not something to assemble row by row.
+   */
+  usageSummary({ days = 30, projectId = null, now = Date.now() } = {}) {
+    const window = Math.min(Math.max(Number(days) || 30, 1), 365)
+    const since = now - window * 24 * 60 * 60 * 1000
+    const scope = projectId ? 'AND r.project_id = ?' : ''
+    const args = projectId ? [since, projectId] : [since]
+    const group = (expression, alias) => this.database
+      .prepare(`SELECT ${expression} AS ${alias}, COALESCE(SUM(c.cost_usd), 0) AS cost, COUNT(*) AS calls,
+          SUM(CASE WHEN c.priced = 0 THEN 1 ELSE 0 END) AS unpriced
+        FROM model_calls c LEFT JOIN runs r ON r.id = c.run_id
+        WHERE c.created_at >= ? ${scope} GROUP BY ${alias} ORDER BY cost DESC`)
+      .all(...args)
+      .map((row) => ({ key: row[alias] ?? 'unknown', costUsd: Number(row.cost ?? 0), calls: Number(row.calls ?? 0), unpricedCalls: Number(row.unpriced ?? 0) }))
+
+    const byDay = this.database
+      .prepare(`SELECT date(c.created_at / 1000, 'unixepoch', 'localtime') AS day, COALESCE(SUM(c.cost_usd), 0) AS cost, COUNT(*) AS calls,
+          SUM(CASE WHEN c.priced = 0 THEN 1 ELSE 0 END) AS unpriced
+        FROM model_calls c LEFT JOIN runs r ON r.id = c.run_id
+        WHERE c.created_at >= ? ${scope} GROUP BY day ORDER BY day ASC`)
+      .all(...args)
+      .map((row) => ({ day: row.day, costUsd: Number(row.cost ?? 0), calls: Number(row.calls ?? 0), unpricedCalls: Number(row.unpriced ?? 0) }))
+
+    const totals = byDay.reduce((sum, row) => ({ costUsd: sum.costUsd + row.costUsd, calls: sum.calls + row.calls, unpricedCalls: sum.unpricedCalls + row.unpricedCalls }), { costUsd: 0, calls: 0, unpricedCalls: 0 })
+    return { since, days: window, totals, byDay, byModel: group('c.model', 'model'), byProvider: group('c.provider', 'provider'), byRole: group('c.role', 'role') }
+  }
+
+  /**
+   * What a plan is likely to cost, as a range from this database's own history.
+   *
+   * Cost is only known after a call returns, so this cannot be a number. It reports
+   * the basis it used and says when there is no history to base it on, rather than
+   * presenting a guess as an estimate.
+   */
+  estimateRunCost(runId, { callsPerTask = Number(process.env.FULKRUM_ESTIMATE_CALLS_PER_TASK ?? 4) } = {}) {
+    const run = this.getRun(runId)
+    if (!run) return null
+    const plan = (run.planId ? this.getPlan(run.planId) : null) ?? this.getLatestPlanForRun(runId)
+    const tasks = plan?.tasks.length ?? 0
+    const observed = this.database.prepare('SELECT COUNT(*) AS calls, AVG(cost_usd) AS average, MIN(cost_usd) AS low, MAX(cost_usd) AS high, SUM(CASE WHEN priced = 0 THEN 1 ELSE 0 END) AS unpriced FROM model_calls WHERE priced = 1').get()
+    const pricedCalls = Number(observed?.calls ?? 0)
+    // One call per step, each task ending with a summary, plus planning and review.
+    const expectedCalls = tasks * Math.max(Number(callsPerTask) || 1, 1) + 2
+    if (!pricedCalls) {
+      return { runId, tasks, expectedCalls, basis: 'no priced calls in this database yet', estimateUsd: null, perCall: null }
+    }
+    const average = Number(observed.average ?? 0)
+    const low = Number(observed.low ?? 0)
+    const high = Number(observed.high ?? 0)
+    return {
+      runId,
+      tasks,
+      expectedCalls,
+      basis: `from ${pricedCalls} priced call(s) in this database${Number(observed.unpriced ?? 0) ? `, ${observed.unpriced} unpriced and excluded` : ''}`,
+      perCall: { average, low, high },
+      estimateUsd: { low: Number((low * expectedCalls).toFixed(4)), average: Number((average * expectedCalls).toFixed(4)), high: Number((high * expectedCalls).toFixed(4)) },
+      ceilingUsd: run.budgetUsd ?? null,
+    }
   }
 
   nextPlanVersion(projectId) {
@@ -1107,6 +1218,53 @@ export class FulkrumStore {
   revokeApprovalGrant(runId, toolName) {
     const result = this.database.prepare('UPDATE approval_grants SET revoked_at = ? WHERE run_id = ? AND tool_name = ? AND revoked_at IS NULL').run(Date.now(), runId, toolName)
     return Number(result.changes) > 0
+  }
+
+  /**
+   * A grant that keeps applying to later runs, bounded by a scope.
+   *
+   * Creation and revocation are recorded in the maintenance log: they are security
+   * decisions with no run of their own to attach to, and a reader needs to know when
+   * one was made and when it stopped.
+   */
+  createStandingGrant({ toolName, scopeKind, scopeValue, label, createdBy = 'user', id = `standing-${randomUUID()}` }) {
+    const now = Date.now()
+    this.database.prepare('INSERT INTO standing_grants(id, tool_name, scope_kind, scope_value, label, created_at, created_by) VALUES(?, ?, ?, ?, ?, ?, ?)')
+      .run(id, toolName, scopeKind, scopeValue, label, now, createdBy)
+    this.recordMaintenance({ kind: 'standing-grant', ok: true, summary: `allowed ${label}`, payload: { action: 'created', id, toolName, scopeKind, scopeValue } })
+    return this.getStandingGrant(id)
+  }
+
+  getStandingGrant(grantId) {
+    const row = this.database.prepare('SELECT * FROM standing_grants WHERE id = ?').get(grantId)
+    return row ? standingGrantFromRow(row) : null
+  }
+
+  listStandingGrants({ includeRevoked = false } = {}) {
+    const rows = includeRevoked
+      ? this.database.prepare('SELECT * FROM standing_grants ORDER BY created_at DESC').all()
+      : this.database.prepare('SELECT * FROM standing_grants WHERE revoked_at IS NULL ORDER BY created_at DESC').all()
+    return rows.map(standingGrantFromRow)
+  }
+
+  revokeStandingGrant(grantId) {
+    const grant = this.getStandingGrant(grantId)
+    if (!grant || grant.revokedAt) return null
+    this.database.prepare('UPDATE standing_grants SET revoked_at = ? WHERE id = ?').run(Date.now(), grantId)
+    this.recordMaintenance({ kind: 'standing-grant', ok: true, summary: `revoked ${grant.label}`, payload: { action: 'revoked', id: grantId, toolName: grant.toolName, scopeKind: grant.scopeKind, scopeValue: grant.scopeValue } })
+    return this.getStandingGrant(grantId)
+  }
+
+  /**
+   * The standing grant that covers this call, if one does. Using one records that
+   * it was used, so a grant nobody needs can be recognised and revoked.
+   */
+  findStandingGrant({ toolName, resolved }) {
+    const candidates = this.database.prepare('SELECT * FROM standing_grants WHERE tool_name = ? AND revoked_at IS NULL').all(toolName)
+    const match = candidates.map(standingGrantFromRow).find((grant) => standingScopeMatches(grant, resolved))
+    if (!match) return null
+    this.database.prepare('UPDATE standing_grants SET last_used_at = ?, use_count = use_count + 1 WHERE id = ?').run(Date.now(), match.id)
+    return match
   }
 
   listCustomProviders() {

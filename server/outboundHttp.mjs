@@ -86,12 +86,16 @@ export async function pinnedStream(rawUrl, options = {}) {
       }
     },
     async *[Symbol.asyncIterator]() {
-      let stopped = false
-      response.on('error', () => {
-        stopped = true
+      // A stream that fails part way through must not look like a short, complete
+      // answer: without this, a timeout or a dropped connection would be handed to
+      // the caller as whatever had arrived, and a truncated reply would be recorded
+      // as the model's whole response.
+      let failure = null
+      response.on('error', (error) => {
+        failure = error
       })
       for await (const chunk of response) {
-        if (truncated || stopped) return
+        if (failure) break
         const remaining = maxBytes - received
         if (chunk.length >= remaining) {
           if (remaining > 0) {
@@ -105,6 +109,7 @@ export async function pinnedStream(rawUrl, options = {}) {
         received += chunk.length
         yield chunk
       }
+      if (failure) throw failure
     },
   }
 }

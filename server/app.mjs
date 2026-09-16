@@ -3,13 +3,17 @@ import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { openApiDocument } from './apiDocs.mjs'
 import { buildArtifacts } from './artifacts.mjs'
+import { createZip } from './zip.mjs'
 import { canonicalJson } from './canonicalJson.mjs'
 import { settingReport } from './config.mjs'
 import { buildRunReport, reportToMarkdown } from './runReport.mjs'
+import { diffHunks } from './diff.mjs'
 import { findInjectionAttempts } from './injection.mjs'
 import { formatSseFrame } from './sse.mjs'
 import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
-import { PERMISSION_MODES, fingerprintToolCall, permissionMatrix } from './permissions.mjs'
+import { PERMISSION_MODES, fingerprintToolCall, permissionMatrix, standingScopeFor, validateStandingScope } from './permissions.mjs'
+import { scanArguments } from './redaction.mjs'
+import { planContentHash, validatePlan } from './plans.mjs'
 import { agentRoles } from './roles.mjs'
 
 export const MAX_JSON_BODY_BYTES = 100_000
@@ -305,6 +309,28 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
   }
 
   /**
+   * What a pending write would change, against the file as it is right now.
+   *
+   * The snapshot taken at write time is what a revert restores; this is for the
+   * approval prompt, where the question is "what changes if I say yes".
+   */
+  const buildWritePreview = async (name, resolution, rawInput) => {
+    if (name !== 'workspace.write' || !resolution?.ok) return null
+    const after = String(rawInput?.content ?? '')
+    const stats = await stat(resolution.resolved.path).catch(() => null)
+    if (stats?.isDirectory()) return null
+    const before = stats ? await readFile(resolution.resolved.path, 'utf8').catch(() => null) : null
+    const diff = diffHunks(before ?? '', after)
+    return {
+      path: resolution.resolved.relative,
+      created: before === null,
+      bytes: Buffer.byteLength(after, 'utf8'),
+      previousBytes: before === null ? null : Buffer.byteLength(before, 'utf8'),
+      ...diff,
+    }
+  }
+
+  /**
    * Take one tool call through the whole path: resolve it, decide it, record it, and
    * either run it or park it for approval.
    *
@@ -315,13 +341,23 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
   const submitToolCall = async ({ runId, run, name, input, agentId = 'head', idempotencyKey = null }) => {
     const tool = toolBroker.get(name)
     const resolution = toolBroker.resolve(name, input)
-    const authorization = toolBroker.authorize({ mode: run?.permissionMode, tool, resolution })
+    const decision = toolBroker.authorize({ mode: run?.permissionMode, tool, resolution })
+    // A standing grant is consulted only when the decision was already "ask": it
+    // softens a prompt and can never override a refusal.
+    const standing = decision.decision === 'ask' && resolution.ok ? store.findStandingGrant({ toolName: name, resolved: resolution.resolved }) : null
+    const authorization = standing
+      ? { ...decision, decision: 'allow', allowed: true, requiresApproval: false, ruleId: 'allow.standing-grant', reason: `Allowed by a standing grant: ${standing.label}.`, standingGrantId: standing.id }
+      : decision
 
     const existing = store.findToolCallByIdempotencyKey(runId, idempotencyKey)
     if (existing && ['completed', 'running'].includes(existing.status)) {
       return { status: 200, payload: { replayed: true, toolCall: existing, output: existing.output } }
     }
 
+    // What is in the arguments, before anything decides about them: a call that
+    // carries a credential is a fact the approver should see, and the audit should
+    // record that it was there even though the stored copy is redacted.
+    const warnings = scanArguments(input)
     const toolCall = store.createToolCall({
       runId,
       agentId,
@@ -332,23 +368,31 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       resolved: resolution.ok ? resolution.resolved : null,
       fingerprint: resolution.ok ? fingerprintToolCall(resolution) : null,
       idempotencyKey,
+      ruleId: authorization.ruleId,
+      warnings,
     })
     store.appendEvent({ runId, type: 'tool.requested', agentId, payload: { toolCallId: toolCall.id, name, kind: tool?.kind ?? 'unknown', input: store.summarizeInput(toolCall.input), resolved: toolCall.resolved, rule: authorization.ruleId } })
+    if (warnings.length) {
+      store.appendEvent({ runId, type: 'tool.arguments.suspicious', agentId, payload: { toolCallId: toolCall.id, name, warnings, note: 'The arguments contain something shaped like a credential. The stored copy is redacted; this records that it was there.' } })
+    }
 
     if (!authorization.allowed) {
       const status = authorization.requiresApproval ? 'approval_required' : 'denied'
       store.updateToolCall(toolCall.id, { status, error: authorization.reason })
       store.appendEvent({ runId, type: authorization.requiresApproval ? 'approval.requested' : 'tool.denied', agentId, payload: { toolCallId: toolCall.id, name, reason: authorization.reason, rule: authorization.ruleId, fingerprint: toolCall.fingerprint, resolved: toolCall.resolved } })
+      // What an approver needs to decide: why it stopped, what looks risky about the
+      // arguments, and what a write would change.
+      const preview = authorization.requiresApproval ? await buildWritePreview(name, resolution, input) : null
       return {
         status: authorization.requiresApproval ? 409 : 403,
-        payload: { error: authorization.reason, approvalRequired: authorization.requiresApproval, rule: authorization.ruleId, toolCall: store.getToolCall(toolCall.id) },
+        payload: { error: authorization.reason, approvalRequired: authorization.requiresApproval, rule: authorization.ruleId, toolCall: store.getToolCall(toolCall.id), warnings, ...(preview ? { preview } : {}) },
       }
     }
 
     const result = await runToolCall({ runId, toolCall, input, resolved: resolution, approved: false })
     return {
       status: result.ok ? 200 : 502,
-      payload: result.ok ? { output: result.output, toolCall: store.getToolCall(toolCall.id) } : { error: result.error, toolCall: store.getToolCall(toolCall.id) },
+      payload: result.ok ? { output: result.output, toolCall: store.getToolCall(toolCall.id), warnings } : { error: result.error, toolCall: store.getToolCall(toolCall.id), warnings },
     }
   }
 
@@ -728,6 +772,135 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         return
       }
 
+      if (request.method === 'GET' && requestUrl.pathname === '/api/grants') {
+        const includeRevoked = /^(1|true)$/i.test(requestUrl.searchParams.get('revoked') ?? '')
+        sendJson(response, 200, {
+          grants: store.listStandingGrants({ includeRevoked }),
+          // When each was created or revoked, which is the part a reader needs and
+          // the part that cannot be reconstructed from the grants themselves.
+          history: store.listMaintenance({ limit: 50 }).filter((entry) => entry.kind === 'standing-grant'),
+        })
+        return
+      }
+
+      if (request.method === 'POST' && requestUrl.pathname === '/api/grants') {
+        const body = await readJson(request)
+        const tool = toolBroker.get(body.toolName)
+        if (!tool) {
+          sendJson(response, 400, { error: `Unknown tool: ${body.toolName ?? '(missing)'}` })
+          return
+        }
+        if (tool.kind === 'shell') {
+          // The same rule the "always" approval follows: a command's argv can be
+          // anything, so there is no boundary to grant within.
+          sendJson(response, 400, { error: 'A command has no scope to bind a standing grant to, so it has to be approved each time.' })
+          return
+        }
+        const scope = validateStandingScope({ toolName: body.toolName, scopeKind: body.scopeKind ?? body.scope?.kind, scopeValue: body.scopeValue ?? body.scope?.value })
+        if (!scope.ok) {
+          sendJson(response, 400, { error: scope.error })
+          return
+        }
+        const grant = store.createStandingGrant({ toolName: body.toolName, scopeKind: scope.kind, scopeValue: scope.value, label: typeof body.label === 'string' && body.label.trim() ? body.label.trim().slice(0, 120) : scope.label, createdBy: 'user' })
+        sendJson(response, 201, { grant, grants: store.listStandingGrants() })
+        return
+      }
+
+      const standingGrantMatch = requestUrl.pathname.match(/^\/api\/grants\/([^/]+)$/)
+      if (request.method === 'DELETE' && standingGrantMatch) {
+        const revoked = store.revokeStandingGrant(decodeURIComponent(standingGrantMatch[1]))
+        sendJson(response, revoked ? 200 : 404, revoked ? { grant: revoked, grants: store.listStandingGrants() } : { error: 'No active standing grant with that id.' })
+        return
+      }
+
+      const toolPreviewMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/tools\/([^/]+)\/preview$/)
+      if (request.method === 'GET' && toolPreviewMatch) {
+        const runId = decodeURIComponent(toolPreviewMatch[1])
+        const toolCallId = decodeURIComponent(toolPreviewMatch[2])
+        const toolCall = store.getToolCall(toolCallId)
+        if (!toolCall || toolCall.runId !== runId) {
+          sendJson(response, 404, { error: 'Tool call not found.' })
+          return
+        }
+        const rawInput = store.getToolCallInput(toolCallId) ?? toolCall.input
+        const resolution = toolBroker.resolve(toolCall.name, rawInput)
+        if (!resolution.ok) {
+          sendJson(response, 409, { error: `That call can no longer be resolved: ${resolution.error}` })
+          return
+        }
+        const preview = await buildWritePreview(toolCall.name, resolution, rawInput)
+        sendJson(response, 200, { toolCallId, rule: toolCall.ruleId, warnings: toolCall.warnings ?? [], status: toolCall.status, ...(preview ? { preview } : {}) })
+        return
+      }
+
+      const runBundleMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/bundle$/)
+      if (request.method === 'GET' && runBundleMatch) {
+        const runId = decodeURIComponent(runBundleMatch[1])
+        const report = buildRunReport({ store, runId })
+        if (!report) {
+          sendJson(response, 404, { error: 'Run not found.' })
+          return
+        }
+        const entries = [
+          { name: `${runId}/report.md`, data: reportToMarkdown(report) },
+          { name: `${runId}/report.json`, data: JSON.stringify(report, null, 2) },
+          { name: `${runId}/events.json`, data: JSON.stringify(store.listEvents(runId), null, 2) },
+          { name: `${runId}/artifacts.json`, data: JSON.stringify(buildArtifacts(store, runId), null, 2) },
+        ]
+        // Every file the run wrote, and the bytes it replaced, so the bundle can be
+        // read without the database or the workspace. Capped: a run that wrote a
+        // large tree would otherwise be assembled into memory whole.
+        const maxBundleBytes = Math.max(Number(process.env.FULKRUM_BUNDLE_MAX_BYTES ?? 32_000_000), 100_000)
+        let total = entries.reduce((sum, entry) => sum + Buffer.byteLength(String(entry.data), 'utf8'), 0)
+        const omitted = []
+        for (const call of store.listToolCalls(runId).filter((candidate) => candidate.kind === 'write' && candidate.status === 'completed')) {
+          const rawInput = store.getToolCallInput(call.id) ?? call.input
+          const relative = call.resolved?.relative ?? `unknown-${call.id}`
+          const after = String(rawInput?.content ?? '')
+          const before = typeof call.output?.previousContent === 'string' ? call.output.previousContent : null
+          const size = Buffer.byteLength(after, 'utf8') + (before ? Buffer.byteLength(before, 'utf8') : 0)
+          if (total + size > maxBundleBytes) {
+            omitted.push(relative)
+            continue
+          }
+          total += size
+          entries.push({ name: `${runId}/files/after/${relative}`, data: after })
+          if (before !== null) entries.push({ name: `${runId}/files/before/${relative}`, data: before })
+        }
+        if (omitted.length) {
+          entries.push({ name: `${runId}/files/OMITTED.txt`, data: `These files were left out of the bundle because it would have exceeded ${maxBundleBytes} bytes:\n\n${omitted.join('\n')}\n` })
+        }
+        const zip = createZip(entries)
+        response.writeHead(200, {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': `attachment; filename="fulkrum-${runId}.zip"`,
+          'Content-Length': String(zip.byteLength),
+          'Cache-Control': 'no-store',
+        })
+        response.end(zip)
+        return
+      }
+
+      if (request.method === 'GET' && requestUrl.pathname === '/api/usage') {
+        sendJson(response, 200, store.usageSummary({
+          days: Number(requestUrl.searchParams.get('days') ?? 30),
+          projectId: requestUrl.searchParams.get('projectId') || null,
+        }))
+        return
+      }
+
+      const runEstimateMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/estimate$/)
+      if (request.method === 'GET' && runEstimateMatch) {
+        const runId = decodeURIComponent(runEstimateMatch[1])
+        const estimate = store.estimateRunCost(runId)
+        if (!estimate) {
+          sendJson(response, 404, { error: 'Run not found.' })
+          return
+        }
+        sendJson(response, 200, estimate)
+        return
+      }
+
       const runEventsMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/events$/)
       if (request.method === 'GET' && runEventsMatch) {
         const runId = decodeURIComponent(runEventsMatch[1])
@@ -819,6 +992,45 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           sendJson(response, plan ? 200 : 404, plan ? { ...plan, roles: agentRoles } : { error: 'This run has no plan yet.' })
           return
         }
+        if (request.method === 'PATCH') {
+          // A plan in use cannot be edited underneath the workers running it.
+          if (['executing', 'paused'].includes(run.status)) {
+            sendJson(response, 409, { error: `A plan cannot be edited while the run is ${run.status}. Wait for it to stop, or cancel it.` })
+            return
+          }
+          const current = store.getLatestPlanForRun(runId)
+          if (!current) {
+            sendJson(response, 409, { error: 'There is no plan to edit yet. Draft one first.' })
+            return
+          }
+          const body = await readJson(request)
+          // Edits go through the same validation the model's own output gets, so a
+          // hand-written plan cannot be looser than a generated one.
+          const validation = validatePlan({ objective: body.objective ?? current.plan.objective, tasks: body.tasks ?? current.tasks })
+          if (!validation.ok) {
+            sendJson(response, 400, { error: `That plan cannot be used: ${validation.problems.join(' ')}`, problems: validation.problems })
+            return
+          }
+          const edited = store.createPlan({
+            projectId: run.projectId,
+            runId,
+            objective: validation.plan.objective,
+            tasks: validation.plan.tasks,
+            contentHash: planContentHash(validation.plan),
+            source: 'edited',
+          })
+          // The new version supersedes the old one, so any approval the old hash
+          // carried is no longer attached to what the run would execute.
+          store.updateRun(runId, {
+            planId: edited.plan.id,
+            planVersion: edited.plan.version,
+            ...(['review', 'interrupted'].includes(run.status) ? { status: 'planning' } : {}),
+          })
+          store.appendEvent({ runId, type: 'plan.edited', agentId: 'head', payload: { planId: edited.plan.id, version: edited.plan.version, hash: edited.plan.contentHash, tasks: edited.tasks.length, replacedVersion: current.plan.version, replacedHash: current.plan.contentHash } })
+          sendJson(response, 200, { plan: edited.plan, tasks: edited.tasks, replacedVersion: current.plan.version })
+          return
+        }
+
         if (request.method === 'POST') {
           const body = await readJson(request)
           const routing = body.routing ?? store.getProject(run.projectId)?.project?.settings?.routing ?? {}
@@ -883,6 +1095,15 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
             sendJson(response, 409, { error: 'That plan belongs to a different run.' })
             return
           }
+          // A superseded version is a plan the user replaced, by editing or by
+          // redrafting. Approving it would quietly point the run back at it, so it
+          // is refused rather than accepted: the hash matches, but the decision was
+          // made about a plan that is no longer the current one.
+          if (plan.plan.status === 'superseded') {
+            store.appendEvent({ runId, type: 'plan.approval.rejected', agentId: 'head', payload: { planId: plan.plan.id, version: plan.plan.version, reason: 'superseded' } })
+            sendJson(response, 409, { error: `Plan v${plan.plan.version} was replaced. Review the current version and approve that.` })
+            return
+          }
           // Approval binds to the exact plan content the user was shown.
           if (typeof body.planHash === 'string' && body.planHash !== plan.plan.contentHash) {
             store.appendEvent({ runId, type: 'plan.approval.rejected', agentId: 'head', payload: { planId: plan.plan.id, expected: plan.plan.contentHash, received: body.planHash } })
@@ -922,7 +1143,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           // container would keep working until its timeout. Cancelling stops both.
           const stopped = await execution.kill(runId, { reason: 'the run was cancelled' })
           if (stopped.stopped) {
-            store.appendEvent({ runId, type: 'run.command.stopped', payload: { container: stopped.container, reason: stopped.reason } })
+            store.appendEvent({ runId, type: 'run.command.stopped', payload: { containers: stopped.containers, reason: stopped.reason } })
           }
         }
         sendJson(response, 200, { run: nextRun, event })
@@ -949,13 +1170,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           return
         }
 
-        const scope = body.scope === 'run' ? 'run' : 'once'
-        if (body.scope === 'always') {
-          // A standing exception needs somewhere to review and revoke it, which
-          // does not exist yet, so it is refused rather than quietly downgraded.
-          sendJson(response, 400, { error: 'Only "once" and "run" scopes are supported. A persistent exception needs a management view first.' })
-          return
-        }
+        const scope = body.scope === 'run' ? 'run' : body.scope === 'always' ? 'always' : 'once'
         // Execute the arguments as they were sent, not the redacted copy kept for
         // display: redaction would otherwise rewrite a file whose content happens
         // to match a secret pattern.
@@ -984,23 +1199,36 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           return
         }
 
+        let standingGrant = null
+        // "Always" is not blanket: it is scoped to what this call can be bounded by,
+        // and it refuses rather than widening when nothing bounds it. Derived here,
+        // after the call is resolved, because the scope comes from the resolution.
+        const standingScope = scope === 'always' ? standingScopeFor({ toolName: toolCall.name, resolved: resolution.resolved }) : null
+        if (standingScope && !standingScope.ok) {
+          sendJson(response, 400, { error: standingScope.error })
+          return
+        }
         store.transaction(() => {
           store.markToolCallApproved(toolCall.id, scope)
           if (scope === 'run') {
             const grant = store.grantApproval({ runId, toolName: toolCall.name, kind: toolCall.kind })
             store.appendEvent({ runId, type: 'approval.granted', agentId: toolCall.agentId ?? 'head', payload: { toolName: toolCall.name, kind: toolCall.kind, scope: 'run', grantId: grant.id } })
           }
+          if (standingScope?.ok) {
+            standingGrant = store.createStandingGrant({ toolName: toolCall.name, scopeKind: standingScope.kind, scopeValue: standingScope.value, label: standingScope.label, createdBy: 'user' })
+            store.appendEvent({ runId, type: 'approval.standing', agentId: toolCall.agentId ?? 'head', payload: { grantId: standingGrant.id, toolName: toolCall.name, scopeKind: standingScope.kind, scopeValue: standingScope.value, label: standingScope.label } })
+          }
         })
         const resumed = await orchestrator.approveToolCall(toolCallId)
         if (resumed.handled) {
-          sendJson(response, 200, { resumed: true, result: resumed.result, toolCall: store.getToolCall(toolCallId) })
+          sendJson(response, 200, { resumed: true, result: resumed.result, toolCall: store.getToolCall(toolCallId), standingGrant })
           return
         }
 
         // No worker is parked on this call (it was raised through the tools API),
         // so execute it directly and record that no run resumed.
         const result = await runToolCall({ runId, toolCall: store.getToolCall(toolCallId), input: rawInput, resolved: resolution, approved: true })
-        sendJson(response, result.ok ? 200 : 502, result.ok ? { output: result.output, toolCall: store.getToolCall(toolCallId), resumed: false } : { error: result.error, toolCall: store.getToolCall(toolCallId) })
+        sendJson(response, result.ok ? 200 : 502, result.ok ? { output: result.output, toolCall: store.getToolCall(toolCallId), resumed: false, standingGrant } : { error: result.error, toolCall: store.getToolCall(toolCallId), standingGrant })
         return
       }
 

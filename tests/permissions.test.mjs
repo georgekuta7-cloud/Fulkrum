@@ -4,7 +4,7 @@ import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { decidePermission, fingerprintInput, isSensitivePath, permissionMatrix, resolveWorkspacePath, resolveToolCall } from '../server/permissions.mjs'
+import { decidePermission, fingerprintInput, isSensitivePath, permissionMatrix, resolveWorkspacePath, resolveToolCall, standingScopeFor, standingScopeMatches, validateStandingScope } from '../server/permissions.mjs'
 import { FulkrumToolBroker } from '../server/toolBroker.mjs'
 import { withWorkspace } from './helpers.mjs'
 
@@ -166,6 +166,37 @@ test('an outbound request that carries a credential needs approval', async () =>
     })
     assert.equal(allowlisted.decision, 'allow')
   })
+})
+
+test('a standing scope is drawn where the risk ends', () => {
+  // A file's scope is the directory it is in; a directory tool's scope is the
+  // directory itself, which is the difference between usable and pointless.
+  assert.deepEqual(standingScopeFor({ toolName: 'workspace.write', resolved: { relative: 'src/app.js' } }).value, 'src')
+  assert.deepEqual(standingScopeFor({ toolName: 'workspace.list', resolved: { relative: 'src', directory: true } }).value, 'src')
+  assert.equal(standingScopeFor({ toolName: 'http.request', resolved: { host: 'api.example.com' } }).kind, 'host')
+
+  // Nothing to bound: the workspace root would cover everything, and a command has
+  // no boundary at all.
+  assert.equal(standingScopeFor({ toolName: 'workspace.write', resolved: { relative: 'README.md' } }).ok, false)
+  assert.equal(standingScopeFor({ toolName: 'workspace.list', resolved: { relative: '.', directory: true } }).ok, false)
+  assert.equal(standingScopeFor({ toolName: 'shell.exec', resolved: { argv: ['rm', '-rf', '/'] } }).ok, false)
+
+  // Matching is on directory boundaries, not string prefixes, and a host grant is
+  // exactly that host.
+  const pathGrant = { scopeKind: 'path', scopeValue: 'src' }
+  assert.equal(standingScopeMatches(pathGrant, { relative: 'src/app.js' }), true)
+  assert.equal(standingScopeMatches(pathGrant, { relative: 'src' }), true, 'a directory tool on the scope itself is covered')
+  assert.equal(standingScopeMatches(pathGrant, { relative: 'src2/app.js' }), false, 'a sibling with a shared prefix is not')
+  assert.equal(standingScopeMatches({ scopeKind: 'host', scopeValue: 'api.example.com' }, { host: 'api.example.com' }), true)
+  assert.equal(standingScopeMatches({ scopeKind: 'host', scopeValue: 'api.example.com' }, { host: 'evil.api.example.com' }), false)
+
+  // Values a caller supplies directly are checked rather than trusted.
+  for (const value of ['/etc', 'C:\\Windows', '../outside', '.', '', 'src/../../etc']) {
+    assert.equal(validateStandingScope({ toolName: 'workspace.write', scopeKind: 'path', scopeValue: value }).ok, false, `${value} should be refused`)
+  }
+  assert.equal(validateStandingScope({ toolName: 'workspace.write', scopeKind: 'path', scopeValue: 'src/\\sub/' }).value, 'src/sub')
+  assert.equal(validateStandingScope({ toolName: 'http.request', scopeKind: 'host', scopeValue: 'not a host' }).ok, false)
+  assert.equal(validateStandingScope({ toolName: 'http.request', scopeKind: 'other', scopeValue: 'x' }).ok, false)
 })
 
 test('deny rules are evaluated before ask and allow rules', () => {

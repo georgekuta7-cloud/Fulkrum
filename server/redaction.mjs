@@ -111,6 +111,33 @@ export function redact(value, key = '') {
 }
 
 /**
+ * Where in a tool call's arguments something secret-shaped appears.
+ *
+ * Reported rather than removed: the arguments are what the model sent, and a call
+ * that carries a credential is a fact the person approving it should see. Removal
+ * belongs at the storage boundary, which is `redact` and `hashHeaderValues`.
+ */
+export function scanArguments(value, prefix = '') {
+  const findings = []
+  const walk = (node, path) => {
+    if (typeof node === 'string') {
+      const kinds = findSecrets(node)
+      if (kinds.length) findings.push({ field: path || '(value)', kinds })
+      return
+    }
+    if (Array.isArray(node)) {
+      node.forEach((item, index) => walk(item, `${path}[${index}]`))
+      return
+    }
+    if (node && typeof node === 'object') {
+      for (const [key, item] of Object.entries(node)) walk(item, path ? `${path}.${key}` : key)
+    }
+  }
+  walk(value, prefix)
+  return findings
+}
+
+/**
  * Header names are kept, values are not: the audit log records that a request
  * carried an Authorization header and what it hashed to, so a changed payload
  * invalidates an approval without putting the credential in the log.

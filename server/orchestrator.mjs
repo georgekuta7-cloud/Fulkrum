@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { asToolResult, findInjectionAttempts } from './injection.mjs'
+import { scanArguments } from './redaction.mjs'
 import { fingerprintToolCall } from './permissions.mjs'
 import { demoPlan, planContentHash, planLayers, splitLayerForConcurrency } from './plans.mjs'
 import { agentRoles, roleOrDefault } from './roles.mjs'
@@ -253,13 +254,17 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
     const tool = toolBroker?.get(name)
     const resolution = toolBroker?.resolve(name, input) ?? { ok: false, error: 'Tool broker is unavailable.' }
     const decision = toolBroker?.authorize({ mode: run?.permissionMode, tool, resolution }) ?? { allowed: false, requiresApproval: false, reason: 'Tool broker is unavailable.', decision: 'deny', ruleId: 'deny.broker-unavailable' }
-    // A run grant can only soften an "ask". Deny stays deny, which is what keeps
-    // "approve for this run" from also approving a credential read.
-    const grant = decision.decision === 'ask' ? store.findActiveGrant(runId, name) : null
-    const authorization = grant
-      ? { ...decision, decision: 'allow', allowed: true, requiresApproval: false, ruleId: 'allow.run-grant', reason: `Allowed for this run by a grant approved ${new Date(grant.grantedAt).toLocaleString()}.` }
-      : decision
+    // A run grant or a standing grant can only soften an "ask". Deny stays deny,
+    // which is what keeps "approve for this run" from also approving a credential read.
+    const runGrant = decision.decision === 'ask' ? store.findActiveGrant(runId, name) : null
+    const standingGrant = !runGrant && decision.decision === 'ask' && resolution.ok ? store.findStandingGrant({ toolName: name, resolved: resolution.resolved }) : null
+    const authorization = runGrant
+      ? { ...decision, decision: 'allow', allowed: true, requiresApproval: false, ruleId: 'allow.run-grant', reason: `Allowed for this run by a grant approved ${new Date(runGrant.grantedAt).toLocaleString()}.` }
+      : standingGrant
+        ? { ...decision, decision: 'allow', allowed: true, requiresApproval: false, ruleId: 'allow.standing-grant', reason: `Allowed by a standing grant: ${standingGrant.label}.`, standingGrantId: standingGrant.id }
+        : decision
     const safeInput = toolBroker?.sanitizeInput(name, input) ?? input
+    const warnings = scanArguments(input)
     const toolCall = store.createToolCall({
       runId,
       agentId: task.agentId,
@@ -269,8 +274,13 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
       rawInput: input,
       resolved: resolution.ok ? resolution.resolved : null,
       fingerprint: resolution.ok ? fingerprintToolCall(resolution) : null,
+      ruleId: authorization.ruleId,
+      warnings,
     })
     store.appendEvent({ runId, type: 'tool.requested', agentId: task.agentId, payload: { toolCallId: toolCall.id, name, kind: tool?.kind ?? 'unknown', input: store.summarizeInput(safeInput), resolved: toolCall.resolved, rule: authorization.ruleId } })
+    if (warnings.length) {
+      store.appendEvent({ runId, type: 'tool.arguments.suspicious', agentId: task.agentId, payload: { toolCallId: toolCall.id, name, warnings, note: 'The arguments contain something shaped like a credential. The stored copy is redacted; this records that it was there.' } })
+    }
 
     // A tool span covers the approval wait as well as the execution, so a slow
     // step is visible as "waiting on a human" rather than "slow tool".
