@@ -6,6 +6,15 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **Audit checkpoints, so a truncated log is detectable.** A hash chain proves
+  nothing in the middle was edited, but deleting the last events leaves every
+  remaining link valid. Each run's chain head is now anchored when the run stops
+  moving (and on demand via `npm run audit:verify -- --anchor`); verification
+  reports `TRUNCATED` for a shortened tail and an anchor mismatch for a rewritten
+  one, and says which sequence the chain covers. Pre-chain events are anchored by
+  a genesis checkpoint, so that boundary is a recorded fact rather than an open
+  count. A checkpoint is a row in the same file, so this is tamper-evident rather
+  than tamper-proof, and `SECURITY.md` says so.
 - **The container execution boundary.** Agent commands run in a fresh container
   per command: no network, read-only root filesystem with only the workspace
   writable, non-root user, all capabilities dropped, `no-new-privileges`, memory
@@ -101,6 +110,8 @@ All notable changes to Fulkrum are documented here. This project follows
 - A malformed JSON body to `/api/runs/:id/control`, `/api/runs/:id/tools`, or the
   tools approval endpoint killed the whole API bridge process, orphaning every
   active run.
+- A failed migration left the SQLite file locked rather than closed, so the error
+  that mattered was masked by a file-in-use error from whatever cleaned up next.
 - `shell.exec` allowlist escapes: argument lists are validated as a whole rather
   than trusting the first element, closing `--no-index`, `-c`, `--config-env`,
   pager, hook, and textconv paths.

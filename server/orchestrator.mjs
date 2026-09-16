@@ -522,6 +522,11 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
       clearInterval(heartbeat)
       try {
         const finalStatus = store.getRun(runId)?.status
+        // Anchor the head once a run stops moving, so a later truncation of its log
+        // is detectable rather than silently valid.
+        if (['review', 'cancelled', 'failed', 'budget_exceeded'].includes(finalStatus ?? '')) {
+          store.recordAuditCheckpoint(runId, { source: 'run-complete', note: `Run reached ${finalStatus}.` })
+        }
         store.endSpan(runSpan.id, { status: finalStatus === 'review' ? 'ok' : finalStatus ?? 'unknown', attributes: { 'fulkrum.final_status': finalStatus ?? 'unknown' } })
       } catch {
         // The store was closed underneath us, which happens during shutdown.

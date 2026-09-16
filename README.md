@@ -213,11 +213,17 @@ runs in WAL mode and is checkpointed on shutdown.
 
 Every broker-mediated action is appended to a hash-chained event log, so edits
 and deletions are detectable: `npm run audit:verify` recomputes the chain and
-exits non-zero on a mismatch. Events written before chaining existed are reported
-as unverifiable rather than assumed intact.
+exits non-zero on a mismatch. It reports per run, says which sequence the chain
+covers (`verified from event 1`), and counts events that predate chaining.
+
+A chain cannot detect its own truncation, so the head of each chain is also
+**anchored** by a checkpoint — automatically when a run stops moving, and on
+demand with `npm run audit:verify -- --anchor`. Deleting or rewriting the tail is
+then reported as `TRUNCATED` instead of passing.
 
 `SECURITY.md` documents the threat model, the controls, and — importantly — what
-the audit log does **not** cover.
+the audit log does **not** cover, including why a checkpoint in the same file is
+tamper-evident rather than tamper-proof.
 
 ## Current limits
 

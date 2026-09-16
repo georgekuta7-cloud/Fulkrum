@@ -78,6 +78,70 @@ test('events written before the chain existed are reported as unverifiable, not 
   })
 })
 
+test('a checkpoint makes a truncated or rewritten tail detectable', async () => {
+  await withStore((store) => {
+    const project = store.createProject({ name: 'checkpoints' })
+    const run = store.createRun({ projectId: project.id })
+    store.appendEvent({ runId: run.id, type: 'one', payload: {} })
+    store.appendEvent({ runId: run.id, type: 'two', payload: {} })
+    store.appendEvent({ runId: run.id, type: 'three', payload: {} })
+
+    const fresh = store.verifyEventChain(run.id)
+    assert.equal(fresh.ok, true)
+    assert.equal(fresh.truncated, false)
+    assert.equal(fresh.verifiedFrom, 1, 'the whole chain is verifiable')
+
+    const checkpoint = store.recordAuditCheckpoint(run.id, { source: 'test' })
+    assert.equal(checkpoint.sequence, 3)
+    assert.equal(checkpoint.eventCount, 3)
+
+    // Growth past the anchor is normal, not a problem.
+    store.appendEvent({ runId: run.id, type: 'four', payload: {} })
+    const grown = store.verifyEventChain(run.id)
+    assert.equal(grown.ok, true)
+    assert.equal(grown.anchored, true)
+    assert.equal(grown.truncated, false)
+
+    // Deleting the tail leaves every remaining link valid: without the anchor this
+    // would still report a healthy chain.
+    store.database.prepare('DELETE FROM run_events WHERE run_id = ? AND sequence > ?').run(run.id, 1)
+    const truncated = store.verifyEventChain(run.id)
+    assert.equal(truncated.truncated, true, 'the missing tail is reported')
+    assert.equal(truncated.ok, false)
+    assert.equal(truncated.brokenAt, null, 'nothing in the remaining chain is inconsistent')
+
+    // Rewriting the tail back to the same length is caught by the anchored hash.
+    store.appendEvent({ runId: run.id, type: 'rewritten-two', payload: {} })
+    store.appendEvent({ runId: run.id, type: 'rewritten-three', payload: {} })
+    const rewritten = store.verifyEventChain(run.id)
+    assert.equal(rewritten.truncated, false, 'the length matches the anchor again')
+    assert.equal(rewritten.checkpointHashIntact, false, 'but the anchored content does not')
+    assert.equal(rewritten.ok, false)
+
+    const summary = store.verifyAllEventChains()
+    assert.equal(summary.ok, false)
+    assert.equal(summary.anchorMismatch.length, 1)
+  })
+})
+
+test('an anchor alone cannot vouch for events written before the chain existed', async () => {
+  await withStore((store) => {
+    const project = store.createProject({ name: 'legacy anchor' })
+    const run = store.createRun({ projectId: project.id })
+    store.database.prepare('INSERT INTO run_events(event_id, run_id, sequence, type, agent_id, payload_json, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)')
+      .run('legacy-1', run.id, 1, 'legacy', null, '{}', Date.now())
+    store.appendEvent({ runId: run.id, type: 'chained', payload: {} })
+
+    const checkpoint = store.recordAuditCheckpoint(run.id, { source: 'test' })
+    assert.equal(checkpoint.sequence, 2)
+
+    const result = store.verifyEventChain(run.id)
+    assert.equal(result.ok, true)
+    assert.equal(result.unverifiable, 1, 'the pre-chain event stays outside the guarantee')
+    assert.equal(result.verifiedFrom, 2, 'and the report says where verification starts')
+  })
+})
+
 test('run leases distinguish an active run from an abandoned one', async () => {
   await withStore((store) => {
     const project = store.createProject({ name: 'leases' })

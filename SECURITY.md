@@ -92,12 +92,29 @@ Every broker-mediated action is recorded in an append-only, hash-chained event
 log. Each event commits to the hash of the event before it, so edits, deletions,
 and reordering are detectable. Run `npm run audit:verify` to check a database.
 
+A hash chain cannot detect its own truncation: deleting the last events leaves
+every remaining link valid. **Checkpoints** anchor the head of a chain in a
+separate row, recorded when a run stops moving and on demand
+(`npm run audit:verify -- --anchor`). Verification then reports truncation and
+tail rewriting, and says which sequence number the chain covers
+(`verified from event N`). Events written before chaining existed are counted
+separately and anchored by a genesis checkpoint, so that boundary is a recorded
+fact rather than an open-ended "unverifiable" count.
+
+The honest limit: a checkpoint is a row in the same database file. Someone who can
+write the file can remove the anchor along with the events, so this is
+tamper-**evident**, not tamper-**proof**. It raises the bar from "delete some rows"
+to "delete some rows and the record that they existed". Making it tamper-proof
+needs the chain head exported outside the database and signed, which is not
+implemented.
+
 It does **not** cover:
 
-- Anything that happens outside the broker. While execution runs on the host the
-  agents cannot spawn processes at all, so this gap is currently closed by
-  capability removal rather than by monitoring.
-- Model reasoning or the contents of prompts, which are not stored.
+- Anything that happens outside the broker. Command execution runs in a container
+  with no network and a read-only root filesystem, so the blast radius is the
+  workspace; the log records the command, not what it did to files inside.
+- Model reasoning or the contents of prompts, which are not stored. Tool call
+  arguments and results are stored, redacted.
 - Side effects of the model provider itself (their logs, their retention).
 - Changes made by the user, or by other software, while a run is in progress.
 

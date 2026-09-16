@@ -151,7 +151,18 @@ export class FulkrumStore {
     this.database.exec('PRAGMA journal_mode = WAL')
     this.database.exec('PRAGMA foreign_keys = ON')
     this.database.exec('PRAGMA busy_timeout = 5000')
-    this.migrations = applyMigrations(this.database)
+    try {
+      this.migrations = applyMigrations(this.database)
+    } catch (error) {
+      // A failed migration must not leave the file locked: the caller cannot close
+      // a store it never received.
+      try {
+        this.database.close()
+      } catch {
+        // Already unusable.
+      }
+      throw error
+    }
   }
 
   listProjects() {
@@ -307,7 +318,8 @@ export class FulkrumStore {
   }
 
   /**
-   * Recompute the chain and report the first event that does not match.
+   * Recompute the chain and report the first event that does not match, plus
+   * whether the recorded head is still present.
    *
    * Events written before hash chaining existed carry no hash. Those cannot be
    * verified, so they are counted separately rather than reported as tampering:
@@ -316,6 +328,7 @@ export class FulkrumStore {
    */
   verifyEventChain(runId) {
     const rows = this.database.prepare('SELECT * FROM run_events WHERE run_id = ? ORDER BY sequence ASC').all(runId)
+    const checkpoint = this.getLatestCheckpoint(runId)
     let prevHash = genesisHash
     let checked = 0
     let unverifiable = 0
@@ -328,23 +341,73 @@ export class FulkrumStore {
       const body = { runId: event.runId, sequence: event.sequence, type: event.type, agentId: event.agentId, payload: event.payload, createdAt: event.createdAt }
       const expected = createHash('sha256').update(`${prevHash}\n${canonicalJson(body)}`, 'utf8').digest('hex')
       if (event.prevHash !== prevHash || event.hash !== expected) {
-        return { ok: false, checked, unverifiable, total: rows.length, brokenAt: event.sequence, eventId: event.eventId }
+        return { ok: false, checked, unverifiable, total: rows.length, brokenAt: event.sequence, eventId: event.eventId, checkpoint, truncated: false, anchored: false }
       }
       prevHash = expected
       checked += 1
     }
-    return { ok: true, checked, unverifiable, total: rows.length, brokenAt: null }
+
+    // The chain is internally consistent. Whether the tail is intact is a
+    // different question: deleting the last events would leave every remaining
+    // link valid, so the anchor is what makes truncation detectable.
+    const lastSequence = rows.length ? Number(rows[rows.length - 1].sequence) : 0
+    const anchored = !checkpoint || lastSequence >= checkpoint.sequence
+    const truncated = Boolean(checkpoint && lastSequence < checkpoint.sequence)
+    const checkpointHashIntact = !checkpoint || !checkpoint.hash || rows.some((row) => row.sequence === checkpoint.sequence && row.hash === checkpoint.hash)
+
+    return {
+      ok: anchored && checkpointHashIntact,
+      checked,
+      unverifiable,
+      total: rows.length,
+      brokenAt: null,
+      checkpoint,
+      anchored,
+      truncated,
+      checkpointHashIntact,
+      // The first sequence covered by the chain, for an honest summary line.
+      verifiedFrom: rows.find((row) => row.hash)?.sequence ?? null,
+    }
+  }
+
+  recordAuditCheckpoint(runId, { source = 'manual', note = null } = {}) {
+    const head = this.database.prepare('SELECT sequence, hash FROM run_events WHERE run_id = ? ORDER BY sequence DESC LIMIT 1').get(runId)
+    if (!head) return null
+    const count = Number(this.database.prepare('SELECT COUNT(*) AS count FROM run_events WHERE run_id = ?').get(runId).count)
+    this.database.prepare('INSERT INTO audit_checkpoints(run_id, sequence, hash, event_count, anchored_at, source, note) VALUES(?, ?, ?, ?, ?, ?, ?)')
+      .run(runId, Number(head.sequence), head.hash ?? null, count, Date.now(), source, note)
+    return this.getLatestCheckpoint(runId)
+  }
+
+  getLatestCheckpoint(runId) {
+    const row = this.database.prepare('SELECT * FROM audit_checkpoints WHERE run_id = ? ORDER BY sequence DESC, anchored_at DESC LIMIT 1').get(runId)
+    if (!row) return null
+    return {
+      id: Number(row.id),
+      runId: row.run_id,
+      sequence: Number(row.sequence),
+      hash: row.hash ?? null,
+      eventCount: Number(row.event_count),
+      anchoredAt: Number(row.anchored_at),
+      source: row.source,
+      note: row.note ?? null,
+    }
   }
 
   verifyAllEventChains() {
-    const runIds = this.database.prepare('SELECT DISTINCT run_id FROM run_events ORDER BY run_id').all().map((row) => row.run_id)
+    const runIds = this.database.prepare('SELECT DISTINCT run_id FROM run_events ORDER BY run_id').all().map((row) => String(row.run_id))
     const results = runIds.map((runId) => ({ runId, ...this.verifyEventChain(runId) }))
     return {
       ok: results.every((result) => result.ok),
       runs: results.length,
+      details: results,
       eventsChecked: results.reduce((total, result) => total + result.checked, 0),
       eventsUnverifiable: results.reduce((total, result) => total + result.unverifiable, 0),
-      broken: results.filter((result) => !result.ok),
+      // A chain can be internally valid and still have lost its tail, so both are
+      // reported separately rather than folded into one boolean.
+      broken: results.filter((result) => !result.ok && !result.truncated && result.checkpointHashIntact !== false),
+      truncated: results.filter((result) => result.truncated),
+      anchorMismatch: results.filter((result) => result.checkpoint && !result.checkpointHashIntact),
     }
   }
 
