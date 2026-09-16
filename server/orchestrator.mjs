@@ -107,6 +107,12 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
    */
   const reservations = new Map()
 
+  /**
+   * Runs that have had the unmeasurable-spend note logged. Cleared when a run ends,
+   * so a ceiling raised after a budget stop says it again — the spend has changed.
+   */
+  const unmeasurableLogged = new Set()
+
   const reservedFor = (runId) => {
     let total = 0
     for (const entry of reservations.values()) {
@@ -149,7 +155,10 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
     if (runCap) {
       const { costUsd, unpricedCalls } = store.spendForRun(runId)
       const committed = costUsd + reservedFor(runId)
-      if (unpricedCalls > 0 && !run?.budgetExceededAt) {
+      // Once per run, not once per call: every unpriced call would otherwise append
+      // the same sentence to the log again.
+      if (unpricedCalls > 0 && !run?.budgetExceededAt && !unmeasurableLogged.has(runId)) {
+        unmeasurableLogged.add(runId)
         store.appendEvent({ runId, type: 'run.budget.unmeasurable', agentId: 'head', payload: { unpricedCalls, reason: 'Some calls used a model with no known price, so spend is a lower bound.' } })
       }
       if (committed >= runCap) throw new BudgetExceededError(`This run reached its $${runCap.toFixed(2)} budget (spent $${costUsd.toFixed(4)}${reservedFor(runId) > 0 ? `, plus $${reservedFor(runId).toFixed(4)} in flight` : ''}).`, { scope: 'run' })
@@ -343,6 +352,12 @@ Rules:
 
     const context = [
       `Project direction:\n${goal}`,
+      // What this task actually is. This used to be dropped: the planner's tasks were
+      // validated, stored, shown to the user — and never put in the prompt, so two
+      // tasks with the same role got the same prompt and every worker re-derived its
+      // own assignment. The approval binds to a hash of this plan, so the plan is
+      // what the workers must see.
+      `Your task: ${task.title}\n${task.instructions}`,
       acceptanceCheck ? `Acceptance check for this task: ${acceptanceCheck}` : '',
       handoff ? `Handoff from earlier work:\n${handoff}` : '',
     ].filter(Boolean).join('\n\n')
@@ -668,6 +683,9 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
       }
       try {
         store.releaseRunLease(runId, ownerId)
+        // A new run of the same id never happens, but a resumed one logs its own
+        // spend — the note should say again what changed.
+        unmeasurableLogged.delete(runId)
       } catch {
         // The store was closed underneath us, which happens during shutdown.
       }
@@ -713,5 +731,28 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
     return { handled: true }
   }
 
-  return { start, activeRuns, approvalWaiters, approveToolCall, denyToolCall, maxStepsPerTask, inFlightBudget: reservedFor }
+  /**
+   * Resolve every parked call, and say why.
+   *
+   * A parked worker holds a promise nobody else will resolve: cancel used to stop the
+   * run and leave the worker parked forever, and a restart simply lost the map. Both
+   * the worker that is waiting and the audit log need the call to end as a fact.
+   */
+  const abandonWaiters = (reason) => {
+    const abandoned = []
+    for (const [toolCallId, pending] of approvalWaiters) {
+      approvalWaiters.delete(toolCallId)
+      try {
+        store.updateToolCall(toolCallId, { status: 'interrupted', error: reason })
+        store.appendEvent({ runId: pending.runId, type: 'tool.denied', agentId: pending.task?.agentId ?? 'head', payload: { toolCallId, name: pending.toolCall?.name ?? 'unknown', reason, rule: 'deny.run-ended' } })
+      } catch {
+        // The store may already be closing; the worker still gets its answer.
+      }
+      pending.resolve({ ok: false, denied: true, error: reason })
+      abandoned.push(toolCallId)
+    }
+    return abandoned
+  }
+
+  return { start, activeRuns, approvalWaiters, approveToolCall, denyToolCall, abandonWaiters, maxStepsPerTask, inFlightBudget: reservedFor }
 }

@@ -636,11 +636,18 @@ test('a run report summarises the run, and reads as Markdown', async () => {
 test('an interrupted run can be resumed, and a completed task is not repeated', async () => {
   await withServer(async ({ request, store }) => {
     const { runId } = await makeRun(request)
-    store.updateRun(runId, { status: 'interrupted' })
+    // A run can only be interrupted from executing, and executing needs an approved
+    // plan — so the fixture drafts and approves one, the way a real interruption
+    // would find it.
+    await request('POST', '/api/chat', { runId, message: 'Ship a narrow proof.', history: [] })
+    const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+    await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+    // Re-run the interruption the way recovery does, now that the run is approved.
+    store.updateRun(runId, { status: 'interrupted', interruptedFrom: 'executing' })
     store.markRunInterrupted(runId, 'bridge stopped')
 
     const resumed = await request('POST', `/api/runs/${runId}/control`, { action: 'resume' })
-    assert.equal(resumed.status, 200)
+    assert.equal(resumed.status, 200, JSON.stringify(resumed.payload))
     const run = store.getRun(runId)
     assert.equal(run.interruptedAt, null)
     assert.equal(run.interruptionReason, null)

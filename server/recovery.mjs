@@ -1,14 +1,18 @@
 /**
  * Reconcile runs left behind by a previous process.
  *
- * Active runs live in memory while they work, so a crash or restart used to
- * leave rows stuck in `executing` forever: the UI showed a live run that would
- * never progress, and its pending approval could never resolve. A lease makes
- * "abandoned" a detectable fact rather than a guess.
+ * Active runs live in memory while they work, so a crash or restart used to leave rows
+ * stuck in `executing` forever: the UI showed a live run that would never progress, and
+ * its pending approval could never resolve. A lease makes "abandoned" a detectable fact
+ * rather than a guess.
  *
- * @param {{ store: any, log?: (message: string) => void }} options
+ * @param {{ store: any, log?: (message: string) => void, abandonWaiters?: (reason: string) => string[] }} options
  */
-export function reconcileInterruptedRuns({ store, log = () => {} }) {
+export function reconcileInterruptedRuns({ store, log = () => {}, abandonWaiters = null }) {
+  // A fresh process has no in-memory waiters — the map died with the old one. The
+  // hook exists so a host that somehow still holds waiters (a hot reload, an embedded
+  // boot) can clear them the same way a cancel does.
+  if (abandonWaiters) abandonWaiters('The API bridge restarted while this call awaited approval.')
   const stranded = store.listStrandedRuns()
   const interrupted = []
 
@@ -17,7 +21,9 @@ export function reconcileInterruptedRuns({ store, log = () => {} }) {
     // One unit: a run marked interrupted with its tool calls and tasks still
     // claiming to be running is a state nothing can explain afterwards.
     store.transaction(() => {
-      store.updateRun(run.id, { status: 'interrupted' })
+      // Where the run was, so the resume guard can tell "was executing an approved
+      // plan" from "was planning one": only the former is resumable.
+      store.updateRun(run.id, { status: 'interrupted', interruptedFrom: run.status })
       store.markRunInterrupted(run.id, reason)
 
       // A tool call mid-flight has an unknown outcome: it may or may not have

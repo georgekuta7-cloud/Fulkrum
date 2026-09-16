@@ -135,7 +135,7 @@ const controlTransitions = {
   cancel: ['cancelled', 'run.cancelled'],
 }
 
-const resumableStatuses = new Set(['paused', 'executing', 'budget_exceeded'])
+
 
 /**
  * Build the API bridge.
@@ -1079,6 +1079,31 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           sendJson(response, 400, { error: 'Unknown run or control action.' })
           return
         }
+        // Where a transition may start from.
+        const allowedFrom = {
+          'approve-plan': ['planning', 'review', 'interrupted'],
+          pause: ['planning', 'executing', 'budget_exceeded'],
+          // Interrupted is what resume exists for, and budget_exceeded resumes once
+          // the ceiling is raised.
+          resume: ['paused', 'interrupted', 'budget_exceeded'],
+          cancel: ['planning', 'executing', 'paused', 'review', 'interrupted', 'budget_exceeded'],
+        }
+        if (!allowedFrom[body.action].includes(run.status)) {
+          sendJson(response, 409, { error: `A run in ${run.status} state cannot be ${body.action === 'approve-plan' ? 'approved' : body.action + 'd'}.` })
+          return
+        }
+        // Entering executing — by approval or by resume — requires an approved plan.
+        // This is the guard that closes the bypass where pause in planning, followed
+        // by resume, produced an executing run nobody had approved, from which
+        // further pause → resume cycles kept it alive. A paused run from planning is
+        // legitimate to *pause*, but resuming it into executing needs the plan.
+        if (body.action === 'resume' || (body.action === 'approve-plan' && run.status !== 'planning')) {
+          const plan = run.planId ? store.getPlan(run.planId) : store.getLatestPlanForRun(runId)
+          if (!plan || plan.plan.status !== 'approved') {
+            sendJson(response, 409, { error: 'That run has no approved plan to resume. Approve a plan first.' })
+            return
+          }
+        }
 
         const routing = body.routing ?? store.getProject(run.projectId)?.project?.settings?.routing ?? {}
         let approvalPayload = null
@@ -1123,11 +1148,6 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           approvalPayload = { planId: plan.plan.id, planVersion: plan.plan.version, planHash: plan.plan.contentHash, taskCount: plan.tasks.length }
         }
 
-        if (body.action === 'resume' && !resumableStatuses.has(run.status) && run.status !== 'interrupted') {
-          sendJson(response, 409, { error: `A run in ${run.status} state cannot be resumed.` })
-          return
-        }
-
         const patch = { status: transition[0] }
         if (body.action === 'resume' && run.status === 'interrupted') {
           patch.interruptedAt = null
@@ -1135,6 +1155,19 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         }
         const nextRun = store.updateRun(runId, patch)
         const event = store.appendEvent({ runId, type: transition[1], payload: { source: 'user', previousStatus: run.status, ...(approvalPayload ?? {}) } })
+        if (body.action === 'resume') {
+          // Resuming is only legitimate for a run whose plan somebody approved.
+          // Guarding the transition alone was not enough: planning → pause → resume
+          // produced an *executing* run with no approved plan, from which pause →
+          // resume worked forever after. An interrupted run that never got as far as
+          // approving a plan (planning → interrupted, no plan id) is in the same
+          // boat: `ensurePlan` would quietly attach a demo plan and start it.
+          const plan = run.planId ? store.getPlan(run.planId) : store.getLatestPlanForRun(runId)
+          if (!plan || plan.plan.status !== 'approved') {
+            sendJson(response, 409, { error: 'That run has no approved plan to resume. Approve a plan first.' })
+            return
+          }
+        }
         if (body.action === 'approve-plan' || body.action === 'resume') {
           orchestrator.start(runId, { routing })
         }
@@ -1144,6 +1177,15 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           const stopped = await execution.kill(runId, { reason: 'the run was cancelled' })
           if (stopped.stopped) {
             store.appendEvent({ runId, type: 'run.command.stopped', payload: { containers: stopped.containers, reason: stopped.reason } })
+          }
+        }
+        if (body.action === 'cancel') {
+          // A worker parked on an approval holds a promise only an approve or a deny
+          // resolves; cancelling the run has to end the call as well, or the worker
+          // waits forever on a run that no longer exists.
+          const abandoned = orchestrator.abandonWaiters('The run was cancelled while this call awaited approval.')
+          if (abandoned.length) {
+            store.appendEvent({ runId, type: 'run.cancelled', agentId: 'head', payload: { ...({ source: 'user', previousStatus: run.status }), abandonedCalls: abandoned.length } })
           }
         }
         sendJson(response, 200, { run: nextRun, event })
@@ -1208,8 +1250,16 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           sendJson(response, 400, { error: standingScope.error })
           return
         }
+        // Claim the call atomically before anything else: two rapid approvals both
+        // pass the status check above, but only one claim succeeds, so only one
+        // execution happens. The claim is the same transaction as the grants it
+        // produces, so a call is never both approved twice and granted once.
+        const claim = store.claimToolCallForApproval(toolCall.id, scope)
+        if (!claim.claimed) {
+          sendJson(response, 409, { error: 'Tool call is no longer awaiting approval.' })
+          return
+        }
         store.transaction(() => {
-          store.markToolCallApproved(toolCall.id, scope)
           if (scope === 'run') {
             const grant = store.grantApproval({ runId, toolName: toolCall.name, kind: toolCall.kind })
             store.appendEvent({ runId, type: 'approval.granted', agentId: toolCall.agentId ?? 'head', payload: { toolName: toolCall.name, kind: toolCall.kind, scope: 'run', grantId: grant.id } })
@@ -1244,10 +1294,15 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         }
         const body = await readJson(request)
         const reason = typeof body.reason === 'string' && body.reason.trim() ? body.reason.trim().slice(0, 500) : 'Denied by the user.'
-        store.transaction(() => {
-          store.updateToolCall(toolCall.id, { status: 'denied', error: reason })
-          store.appendEvent({ runId, type: 'tool.denied', agentId: toolCall.agentId ?? 'head', payload: { toolCallId, name: toolCall.name, reason, rule: 'deny.user', fingerprint: toolCall.fingerprint, resolved: toolCall.resolved } })
-        })
+        // The same atomic claim an approval makes: a deny racing an approve (or
+        // another deny) resolves the call exactly once.
+        const claim = store.claimToolCallForApproval(toolCall.id, null)
+        if (!claim.claimed) {
+          sendJson(response, 409, { error: 'Tool call is no longer awaiting approval.' })
+          return
+        }
+        store.updateToolCall(toolCall.id, { status: 'denied', error: reason })
+        store.appendEvent({ runId, type: 'tool.denied', agentId: toolCall.agentId ?? 'head', payload: { toolCallId, name: toolCall.name, reason, rule: 'deny.user', fingerprint: toolCall.fingerprint, resolved: toolCall.resolved } })
         // The worker is waiting on this call, so tell it no: a denial it can read
         // is information it can act on.
         const handled = orchestrator.denyToolCall(toolCallId, reason)

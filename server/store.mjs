@@ -58,6 +58,7 @@ function runFromRow(row) {
     leaseExpiresAt: row.lease_expires_at === null || row.lease_expires_at === undefined ? null : Number(row.lease_expires_at),
     interruptedAt: row.interrupted_at === null || row.interrupted_at === undefined ? null : Number(row.interrupted_at),
     interruptionReason: row.interruption_reason ?? null,
+    interruptedFrom: row.interrupted_from ?? null,
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   }
@@ -469,9 +470,10 @@ export class FulkrumStore {
       leaseExpiresAt: patch.leaseExpiresAt === undefined ? current.leaseExpiresAt : patch.leaseExpiresAt,
       interruptedAt: patch.interruptedAt === undefined ? current.interruptedAt : patch.interruptedAt,
       interruptionReason: patch.interruptionReason === undefined ? current.interruptionReason : patch.interruptionReason,
+      interruptedFrom: patch.interruptedFrom === undefined ? current.interruptedFrom : patch.interruptedFrom,
     }
-    this.database.prepare('UPDATE runs SET status = ?, mode = ?, permission_mode = ?, plan_version = ?, plan_id = ?, budget_usd = ?, budget_exceeded_at = ?, owner_id = ?, heartbeat_at = ?, lease_expires_at = ?, interrupted_at = ?, interruption_reason = ?, updated_at = ? WHERE id = ?')
-      .run(next.status, next.mode, next.permissionMode, next.planVersion, next.planId, next.budgetUsd, next.budgetExceededAt, next.ownerId, next.heartbeatAt, next.leaseExpiresAt, next.interruptedAt, next.interruptionReason, Date.now(), runId)
+    this.database.prepare('UPDATE runs SET status = ?, mode = ?, permission_mode = ?, plan_version = ?, plan_id = ?, budget_usd = ?, budget_exceeded_at = ?, owner_id = ?, heartbeat_at = ?, lease_expires_at = ?, interrupted_at = ?, interruption_reason = ?, interrupted_from = ?, updated_at = ? WHERE id = ?')
+      .run(next.status, next.mode, next.permissionMode, next.planVersion, next.planId, next.budgetUsd, next.budgetExceededAt, next.ownerId, next.heartbeatAt, next.leaseExpiresAt, next.interruptedAt, next.interruptionReason, next.interruptedFrom, Date.now(), runId)
     return this.getRun(runId)
   }
 
@@ -916,6 +918,24 @@ export class FulkrumStore {
   markToolCallApproved(toolCallId, scope = 'once') {
     this.database.prepare('UPDATE tool_calls SET approved_at = ?, approval_scope = ? WHERE id = ?').run(Date.now(), scope, toolCallId)
     return this.getToolCall(toolCallId)
+  }
+
+  /**
+   * Claim a call for approval: flip it to `approved` only while it still says
+   * `approval_required`.
+   *
+   * The approve endpoint read the status, awaited the body, and then wrote — a
+   * window wide enough for two rapid approvals to both pass the check and execute
+   * the same call. The claim is the atomic step: one UPDATE whose WHERE clause is
+   * the condition being checked, so the second request changes no rows and gets
+   * told the call was already taken. `runToolCall` re-reads and re-runs the check
+   * on the row it returns, so the caller never has to trust the earlier read.
+   */
+  claimToolCallForApproval(toolCallId, scope = 'once') {
+    const result = this.database
+      .prepare("UPDATE tool_calls SET approved_at = ?, approval_scope = ?, status = 'approved' WHERE id = ? AND status = 'approval_required'")
+      .run(Date.now(), scope, toolCallId)
+    return { claimed: Number(result.changes) === 1, toolCall: this.getToolCall(toolCallId) }
   }
 
   listToolCalls(runId) {

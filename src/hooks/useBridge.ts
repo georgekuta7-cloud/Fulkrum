@@ -152,6 +152,20 @@ export function useBridge() {
     if (event.type === 'approval.requested' || event.type === 'tool.denied' || event.type === 'approval.granted' || event.type === 'approval.standing') await loadGrants()
   }, [loadArtifacts, loadEstimate, loadGrants, loadPlan, loadRun, loadTrace])
 
+  // The dock is a queue derived from the run's own state, not the last event that
+  // happened to mention an approval: on load, or after a reconnect, whatever is
+  // genuinely parked still shows, and a stale prompt never lingers after its call
+  // has resolved.
+  const syncApprovalQueue = useCallback(async (id: string) => {
+    const snapshot = await loadRun(id)
+    if (!snapshot) return
+    const pending = (snapshot.toolCalls as ToolCall[]).filter((call) => call.status === 'approval_required')
+    setApproval((current) => {
+      const next = pending.find((call) => call.id === current?.toolCall.id) ?? pending[0] ?? null
+      return next ? { toolCall: next, rule: next.ruleId ?? null, warnings: next.warnings ?? [], preview: null } : null
+    })
+  }, [loadRun])
+
   const ingestEvent = useCallback((event: RunEvent) => {
     if (runIdRef.current !== event.runId) return
     setEvents((current) => (current.some((candidate) => candidate.sequence === event.sequence) ? current : [...current, event]))
@@ -170,8 +184,10 @@ export function useBridge() {
     if ((event.type === 'tool.completed' || event.type === 'tool.denied' || event.type === 'tool.failed') && callId) {
       setApproval((current) => (current?.toolCall.id === callId ? null : current))
     }
+    if (event.type === 'approval.requested') void syncApprovalQueue(event.runId)
     void refreshAfterEvent(event.runId, event)
-  }, [loadRun, refreshAfterEvent])
+  }, [loadRun, refreshAfterEvent, syncApprovalQueue])
+
 
   const ingestDelta = useCallback((frame: { role?: string; delta?: string }) => {
     if (!frame?.delta) return
@@ -202,8 +218,9 @@ export function useBridge() {
     setByTask([])
     setStreaming(null)
     await Promise.all([loadRun(id), loadPlan(id), loadTrace(id), loadArtifacts(id), loadEstimate(id)])
+    await syncApprovalQueue(id)
     watchRun(id)
-  }, [loadArtifacts, loadEstimate, loadPlan, loadRun, loadTrace, watchRun])
+  }, [loadArtifacts, loadEstimate, loadPlan, loadRun, loadTrace, syncApprovalQueue, watchRun])
 
   /** The newest run for a project, or a new one when there is none to resume. */
   const openProject = useCallback(async (forProject: string, { permissionMode = 'selective', preferRun = null }: { permissionMode?: string; preferRun?: string | null } = {}) => {
