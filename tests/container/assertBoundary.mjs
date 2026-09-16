@@ -58,8 +58,14 @@ await check('HOME is writable and executable', async () => {
 })
 
 await check('/tmp cannot execute anything', async () => {
-  const result = await runtime.run(['sh', '-c', 'cp "$HOME/t" /tmp/t 2>/dev/null; chmod +x /tmp/t 2>/dev/null; (/tmp/t || echo noexec)'])
-  assert.match(result.stdout, /noexec/)
+  // Each command gets a fresh container, so this writes its own script: the
+  // requirement is that a file placed in /tmp cannot run, which makes the shell's
+  // refusal the pass condition and a successful run the failure.
+  const outcome = await runtime
+    .run(['sh', '-c', 'printf "#!/bin/sh\\necho ran\\n" > /tmp/t && chmod +x /tmp/t && exec /tmp/t'])
+    .then(() => 'the script ran')
+    .catch((error) => error.message)
+  assert.match(outcome, /Permission denied|not permitted|noexec/i, `expected the script not to run: ${outcome}`)
 })
 
 await check('there is no network', async () => {
