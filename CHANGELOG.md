@@ -5,6 +5,10 @@ All notable changes to Fulkrum are documented here. This project follows
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.2.0] - 2026-09-16
+
 ### Added
 - **Tool results are anchored outside the database.** The head of each run's chain
   was recorded in a row in the same file, so deleting the row with the events it
@@ -57,7 +61,7 @@ All notable changes to Fulkrum are documented here. This project follows
 - **The daily budget window is documented** (local midnight) and can be pinned with
   `FULKRUM_BUDGET_TIMEZONE=UTC`.
 
-### Added (product)
+### Added
 - **A production mode.** `npm run build && npm start` runs one process that serves
   the interface, the API, and the event stream on loopback; previously `npm run dev`
   was the only way to run it, and `npm run preview` served the built UI without any
