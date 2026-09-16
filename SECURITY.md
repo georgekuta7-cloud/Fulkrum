@@ -1,0 +1,120 @@
+# Security policy
+
+## Reporting a vulnerability
+
+Open a private security advisory on the repository, or contact the maintainer
+directly. Please do not file public issues for exploitable problems. Include the
+version, the exact tool call or HTTP request, and what you expected to happen.
+
+## What Fulkrum is
+
+A **single-user, local-first** application. The API bridge binds to `127.0.0.1`
+and is never exposed to a network. There are no accounts, no sessions, and no
+remote users. That shapes the threat model below: the interesting adversary is
+not a remote attacker, it is **content that the model reads**.
+
+## Threat model
+
+The model is not a security boundary. Any file, web page, tool result, or
+provider response the agents read may contain text that steers them. Fulkrum
+therefore does not try to detect prompt injection. It assumes injection succeeds
+and constrains what an injected instruction can actually do.
+
+This application has all three legs of the "lethal trifecta" (private data
+access, exposure to untrusted content, and outbound communication), so the
+controls that matter are the ones that make an injected instruction unable to
+act:
+
+1. **Deny by default.** A single permission matrix decides every tool call. It is
+   evaluated deny → ask → allow, first match wins, and anything unparseable,
+   unknown, or ambiguous is denied rather than guessed at.
+2. **Capability scoping.** Each role has an explicit tool allowlist, and a tool
+   outside it is neither described to the model nor executable. Arguments are
+   validated against the tool's JSON Schema before the broker sees them, and the
+   broker re-resolves and re-checks the call independently. A denial is returned
+   to the model as a typed error, so it can adapt instead of silently retrying.
+3. **Approvals are bound to a fingerprint.** Approving a call approves the
+   normalized, resolved arguments (`sha256` over the tool name, resolved absolute
+   paths, final argv, and destination host). An approval for one payload cannot
+   execute a different one, and the audit record and the executed call cannot
+   diverge. A call can also be denied, which the worker receives as a typed error.
+4. **A run-scoped grant can only soften an "ask".** "Approve for this run" records
+   a grant so a tool stops re-prompting, and it can be revoked from the control
+   room. The permission matrix is evaluated first: a grant is consulted only when
+   the decision was already "ask", so deny rules — credentials, path escapes,
+   unparseable calls — still refuse. Both the grant and its revocation are events
+   in the audit log. Persistent "always allow" is refused rather than
+   approximated, because a standing exception needs a place to review it.
+4. **Arbitrary command execution happens only inside a container.** `shell.exec`
+   runs a fresh container per command: no network, read-only root filesystem with
+   only the workspace mounted writable, non-root user, all capabilities dropped,
+   `no-new-privileges`, resource limits, and a wall-clock timeout that stops and
+   removes the container. The argv is an array, so no shell interprets it on either
+   side. Because the container is the boundary, the command surface is open by
+   design — the isolation does the work, not an argument allowlist, which previous
+   rounds demonstrated was escapable. With no container engine reachable,
+   execution is disabled rather than falling back to the host, and WSL2 is not
+   used as a boundary because its interop layer can execute Windows binaries.
+5. **Egress is default-deny** and is the last line of defense. The `http.request`
+   tool refuses private, loopback, link-local, and multicast targets, validates
+   every redirect hop, and requires an explicit host allowlist.
+6. **Secrets are not readable by tools.** Known credential paths are refused at
+   the tool boundary, and tool output is scanned for credential shapes before it
+   reaches the model or the audit log.
+
+## Execution boundary
+
+Windows has no equivalent of macOS Seatbelt or Linux Landlock/bubblewrap, so
+there is no way to sandbox a child process in place. Command execution therefore
+runs inside a container: one per command, no network, read-only root filesystem
+with only the workspace writable, non-root user, dropped capabilities, resource
+limits, and a timeout.
+
+The image (`server/runner/Dockerfile`) also neutralizes the repository-controlled
+execution paths that made a host-side git allowlist unsafe: `GIT_CONFIG_GLOBAL`
+and `GIT_CONFIG_SYSTEM` point at nothing, system config is disabled, the pager is
+`cat`, external diff is unset, terminal prompts are off, and `core.hooksPath`
+points at an empty directory the runner cannot write to.
+
+Two deliberate limits:
+
+- **WSL2 is not the boundary.** A WSL distribution can execute Windows binaries
+  through its interop layer, so "inside WSL" would still mean "can run things on
+  Windows". WSL2 hosts the engine; the container is what contains the work.
+- **No engine means no execution.** The app reports `commands: disabled` and
+  refuses the tool rather than running anything on the host. `FULKRUM_CONTAINER_ENGINE`
+  selects the engine (`docker`, `docker-wsl`, `podman`) or leaves it to
+  auto-detection.
+
+## What the audit log does and does not cover
+
+Every broker-mediated action is recorded in an append-only, hash-chained event
+log. Each event commits to the hash of the event before it, so edits, deletions,
+and reordering are detectable. Run `npm run audit:verify` to check a database.
+
+It does **not** cover:
+
+- Anything that happens outside the broker. While execution runs on the host the
+  agents cannot spawn processes at all, so this gap is currently closed by
+  capability removal rather than by monitoring.
+- Model reasoning or the contents of prompts, which are not stored.
+- Side effects of the model provider itself (their logs, their retention).
+- Changes made by the user, or by other software, while a run is in progress.
+
+An incomplete audit trail is worse than a scoped one, so this scope is stated
+rather than implied. As capabilities are added, this section must be updated in
+the same change.
+
+## Local API hardening
+
+- The bridge binds `127.0.0.1` only. Do not change this.
+- Browser origins are allowlisted (`FULKRUM_ALLOWED_ORIGINS`). A page on any
+  other origin receives 403, which blocks drive-by requests from websites you
+  visit. Requests without an `Origin` header (curl, scripts, native clients) are
+  allowed by design; this control is CSRF protection, not authentication.
+- Request bodies are size-capped; a malformed body returns 400 instead of
+  terminating the process.
+
+## Supported versions
+
+The project is pre-1.0. Only the latest release is supported with fixes.
