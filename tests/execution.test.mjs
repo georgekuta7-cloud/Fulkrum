@@ -125,6 +125,42 @@ test('a configured uid wins over the derived one', () => {
   assert.equal(args[args.indexOf('--user') + 1], '4242:4242')
 })
 
+test('cancelling a run takes its container with it', async () => {
+  const calls = []
+  let releaseRun = () => {}
+  const runGate = new Promise((resolve) => { releaseRun = resolve })
+  const execFileImpl = async (_file, args) => {
+    calls.push(args)
+    if (args[0] === 'version') return { stdout: '29.8.0\n', stderr: '' }
+    if (args[0] === 'image') return { stdout: args.includes('{{json .RepoDigests}}') ? '[]\n' : 'sha256:abc\n', stderr: '' }
+    if (args[0] === 'run') {
+      await runGate
+      return { stdout: '', stderr: '' }
+    }
+    return { stdout: '', stderr: '' }
+  }
+
+  const runtime = createExecutionRuntime({ execFileImpl, workspaceRoot: process.cwd() })
+  const running = runtime.run(['sleep', '300'], { runId: 'run-cancel' })
+  while (!calls.some((args) => args[0] === 'run')) await new Promise((resolve) => setTimeout(resolve, 5))
+  assert.deepEqual(runtime.runningNow().map((entry) => entry.runId), ['run-cancel'], 'the run is tracked while its command runs')
+
+  const stopped = await runtime.kill('run-cancel')
+  assert.equal(stopped.stopped, true)
+  const removal = calls.find((args) => args[0] === 'rm')
+  assert.ok(removal, 'the container was removed')
+  assert.equal(removal[1], '--force')
+  assert.equal(removal[2], stopped.container, 'and it was the container that was running')
+  assert.deepEqual(runtime.runningNow(), [], 'nothing is left marked as running')
+
+  // Cancelling twice, or cancelling a run with nothing running, is not an error.
+  assert.deepEqual(await runtime.kill('run-cancel'), { stopped: false })
+  assert.deepEqual(await runtime.kill('run-that-never-ran'), { stopped: false })
+
+  releaseRun()
+  await running.catch(() => {})
+})
+
 test('paths are translated for an engine that lives inside WSL', () => {
   assert.equal(toEnginePath('D:\\projects\\fulkrum', { inWsl: true }), '/mnt/d/projects/fulkrum')
   assert.equal(toEnginePath('C:/Users/proga', { inWsl: true }), '/mnt/c/Users/proga')

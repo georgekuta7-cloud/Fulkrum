@@ -287,7 +287,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
     store.updateToolCall(toolCall.id, { status: 'running', attempt: toolCall.attempt + 1 })
     store.appendEvent({ runId, type: 'tool.started', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, name: toolCall.name, approved } })
     try {
-      const output = await toolBroker.execute(toolCall.name, input, resolved)
+      const output = await toolBroker.execute(toolCall.name, input, resolved, { runId })
       const safeOutput = toolBroker.redact(output)
       store.updateToolCall(toolCall.id, { status: 'completed', output: safeOutput })
       store.appendEvent({ runId, type: 'tool.completed', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, name: toolCall.name, ...store.summarizeOutput(safeOutput), approved } })
@@ -717,6 +717,14 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         const event = store.appendEvent({ runId, type: transition[1], payload: { source: 'user', previousStatus: run.status, ...(approvalPayload ?? {}) } })
         if (body.action === 'approve-plan' || body.action === 'resume') {
           orchestrator.start(runId, { routing })
+        }
+        if (body.action === 'cancel' && execution) {
+          // The run stops at its next checkpoint, but a command already in the
+          // container would keep working until its timeout. Cancelling stops both.
+          const stopped = await execution.kill(runId, { reason: 'the run was cancelled' })
+          if (stopped.stopped) {
+            store.appendEvent({ runId, type: 'run.command.stopped', payload: { container: stopped.container, reason: stopped.reason } })
+          }
         }
         sendJson(response, 200, { run: nextRun, event })
         return

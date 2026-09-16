@@ -157,7 +157,7 @@ export class FulkrumToolBroker {
    * and URLs come from the resolution the user approved, never from a fresh
    * parse of the request, so what runs is what was shown.
    */
-  async execute(name, input = {}, resolution = null) {
+  async execute(name, input = {}, resolution = null, { runId = null } = {}) {
     const outcome = resolution ?? this.resolve(name, input)
     if (!outcome?.ok) throw new Error(outcome?.error ?? `Could not resolve ${name}.`)
     // Refuse credentials here as well as in the policy table: the broker must be
@@ -212,8 +212,9 @@ export class FulkrumToolBroker {
       if (!this.execution) throw new Error('Execution is disabled: no execution runtime is configured. Commands never run on the host.')
       const relativeCwd = path.relative(this.workspaceRoot, resolved.cwd) || '.'
       // The argv goes to the container engine as an array: nothing here is
-      // interpreted by a shell on either side of the boundary.
-      const result = await this.execution.run(resolved.argv, { cwd: relativeCwd })
+      // interpreted by a shell on either side of the boundary. The run id lets a
+      // cancellation stop this command rather than wait for its timeout.
+      const result = await this.execution.run(resolved.argv, { cwd: relativeCwd, runId })
       return { argv: resolved.argv, cwd: relativeCwd, boundary: 'container', stdout: clipped(result.stdout), stderr: clipped(result.stderr) }
     }
 

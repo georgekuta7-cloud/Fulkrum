@@ -224,7 +224,7 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
     store.updateToolCall(toolCall.id, { status: 'running', attempt: toolCall.attempt + 1 })
     store.appendEvent({ runId, type: 'tool.started', agentId: task.agentId, payload: { toolCallId: toolCall.id, name: toolCall.name, approved } })
     try {
-      const output = await toolBroker.execute(toolCall.name, input, resolution ?? null)
+      const output = await toolBroker.execute(toolCall.name, input, resolution ?? null, { runId })
       const safeOutput = toolBroker.redact(output)
       store.updateToolCall(toolCall.id, { status: 'completed', output: safeOutput })
       store.appendEvent({ runId, type: 'tool.completed', agentId: task.agentId, payload: { toolCallId: toolCall.id, name: toolCall.name, ...store.summarizeOutput(safeOutput), approved } })

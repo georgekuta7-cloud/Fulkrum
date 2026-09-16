@@ -159,6 +159,14 @@ export function createExecutionRuntime({
   const requested = String(engine).trim()
   const explicitCli = String(cliPath).trim()
   let detected = null
+  /**
+   * Containers that are running right now, by run id.
+   *
+   * A cancelled run used to leave its command running to completion or to its
+   * timeout: the run stopped, the work did not. Keeping the handle lets a cancel
+   * mean the same thing on both sides.
+   */
+  const running = new Map()
 
   /** The configured uid, or the one that owns the workspace it has to write to. */
   const effectiveUser = () => String(runtimeUser).trim() || defaultUserForWorkspace(workspaceRoot)
@@ -251,7 +259,7 @@ export function createExecutionRuntime({
      * Run one command inside a fresh container. The argv is passed as an array:
      * nothing here is interpreted by a shell.
      */
-    async run(argv, { cwd = '.', timeoutMs = defaultTimeoutMs } = {}) {
+    async run(argv, { cwd = '.', timeoutMs = defaultTimeoutMs, runId = null } = {}) {
       const status = await runtime.detect()
       if (!status.available) throw new Error(`Execution is disabled. ${status.reason} ${status.hint}`)
       if (!Array.isArray(argv) || !argv.length || argv.some((part) => typeof part !== 'string' || part === '')) {
@@ -263,6 +271,7 @@ export function createExecutionRuntime({
       const name = `fulkrum-${randomUUID().slice(0, 8)}`
       const args = containerArgs({ argv, workspaceRoot, workdir: cwd, image, network: status.network, inWsl: status.viaWsl, name, memory, cpus, pidsLimit, runtimeUser: effectiveUser(), userNamespace, nofile })
       const timeout = Math.min(Math.max(Number(timeoutMs) || defaultTimeoutMs, 1_000), 600_000)
+      if (runId) running.set(runId, { name, candidate })
 
       try {
         const result = await invoke(candidate, args, { timeout, maxBuffer: maxOutputBytes, windowsHide: true, killSignal: 'SIGKILL' })
@@ -289,7 +298,33 @@ export function createExecutionRuntime({
           throw new Error(`The command exceeded ${timeout}ms and its container was stopped.${detail ? `\n${detail}` : ''}`)
         }
         throw new Error(`${detail || 'The command failed.'}${exitCode}${stdout ? `\n${stdout}` : ''}`)
+      } finally {
+        if (runId) running.delete(runId)
       }
+    },
+
+    /**
+     * Stop whatever this run is running, if anything.
+     *
+     * Called when a run is cancelled: the command is removed rather than left to
+     * finish work nobody is waiting for any more. The client's own `execFile` is
+     * killed as a side effect of the container disappearing.
+     */
+    async kill(runId, { reason = 'the run was cancelled' } = {}) {
+      const entry = running.get(runId)
+      if (!entry) return { stopped: false }
+      running.delete(runId)
+      try {
+        await invoke(entry.candidate, ['rm', '--force', entry.name], { timeout: 15_000, windowsHide: true })
+        return { stopped: true, container: entry.name, reason }
+      } catch (error) {
+        return { stopped: false, container: entry.name, error: error instanceof Error ? error.message : 'could not remove the container' }
+      }
+    },
+
+    /** What is running right now, for the status panel. */
+    runningNow() {
+      return [...running.entries()].map(([runId, entry]) => ({ runId, container: entry.name }))
     },
 
     /** Exposed for tests and documentation: the exact argv a run would use. */
