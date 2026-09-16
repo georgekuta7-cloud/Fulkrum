@@ -426,10 +426,46 @@ select {
 
 .project-item {
   gap: 9px;
-  padding: 9px 8px;
+  padding: 0 4px 0 0;
   margin-bottom: 3px;
   color: #a9b5ab;
   border-radius: 7px;
+}
+
+.project-select {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 9px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-select span {
+  min-width: 0;
+}
+
+.project-select strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-delete {
+  flex: none;
+  opacity: 0;
+}
+
+.project-item:hover .project-delete,
+.project-item:focus-within .project-delete {
+  opacity: 1;
 }
 
 .project-item:hover,

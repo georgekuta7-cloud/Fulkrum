@@ -434,6 +434,7 @@ function App() {
   const [panelTab, setPanelTab] = useState<'feed' | 'artifacts'>('feed')
   const [projectName, setProjectName] = useState('')
   const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([])
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
   const [providerTests, setProviderTests] = useState<Record<string, ProviderTest>>({})
   const [execution, setExecution] = useState<ExecutionStatus | null>(null)
   const eventCursor = useRef(0)
@@ -469,6 +470,18 @@ function App() {
     let cancelled = false
 
     const bootstrap = async () => {
+      // Everything below belongs to one project, so switching projects resets the
+      // view instead of leaving another project's runs on screen.
+      setMessages([])
+      setActivity([])
+      setPlan(null)
+      setArtifacts([])
+      setGrants([])
+      setTasks([])
+      setSpend(null)
+      setRunId(null)
+      eventCursor.current = 0
+
       // Non-fatal: a health probe failure must not stop the rest of the interface
       // from loading.
       const health = await fetch('/api/health')
@@ -490,15 +503,18 @@ function App() {
         }
       }
 
-      const defaultProjectResponse = await fetch('/api/projects/default')
-      if (!defaultProjectResponse.ok) return
-      const defaultProjectPayload = await defaultProjectResponse.json() as { project?: WorkspaceProject; runs?: WorkspaceRun[] }
-      const initialProject = defaultProjectPayload.project ? { ...defaultProjectPayload.project, runs: defaultProjectPayload.runs ?? [] } : undefined
+      const projectDetailResponse = activeProjectId
+        ? await fetch(`/api/projects/${encodeURIComponent(activeProjectId)}`)
+        : await fetch('/api/projects/default')
+      if (!projectDetailResponse.ok) {
+        // The selected project is gone (or never existed); fall back to the default.
+        if (activeProjectId) setActiveProjectId(null)
+        return
+      }
+      const payload = (await projectDetailResponse.json()) as { project?: WorkspaceProject; runs?: WorkspaceRun[] }
+      const project = payload.project ? { ...payload.project, runs: payload.runs ?? [] } : undefined
+      if (!project || cancelled) return
 
-      if (!initialProject || cancelled) return
-      const projectDetailResponse = await fetch(`/api/projects/${encodeURIComponent(initialProject.id)}`)
-      const projectDetail = projectDetailResponse.ok ? await projectDetailResponse.json() as { project?: WorkspaceProject; runs?: WorkspaceRun[] } : {}
-      const project = projectDetail.project ? { ...projectDetail.project, runs: projectDetail.runs ?? [] } : initialProject
       if (project.settings?.routing) {
         setRouting((current) => ({ ...current, ...project.settings?.routing }))
       }
@@ -566,7 +582,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [activeProjectId])
 
   useEffect(() => {
     if (!projectId) return
@@ -705,6 +721,35 @@ function App() {
       cancelled = true
     }
   }, [runId, panelTab])
+
+  /** Projects are real objects now, so they can be created, switched, and removed. */
+  const createProject = async () => {
+    const name = window.prompt('Name for the new project', 'New project')
+    if (!name?.trim()) return
+    try {
+      const response = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name.trim() }) })
+      const payload = (await response.json().catch(() => ({}))) as { project?: { id: string }; error?: string }
+      if (!response.ok || !payload.project) throw new Error(payload.error ?? 'Could not create the project.')
+      addActivity({ kind: 'system', title: `Created ${name.trim()}`, detail: 'Switching to it now.', tag: 'PROJECT' })
+      setActiveProjectId(payload.project.id)
+    } catch (error) {
+      addActivity({ kind: 'system', title: 'Could not create the project', detail: error instanceof Error ? error.message : 'Create failed.', tag: 'API ERROR' })
+    }
+  }
+
+  const deleteProject = async (project: { id: string; name: string }) => {
+    if (!window.confirm(`Delete "${project.name}" and everything in it? This cannot be undone.`)) return
+    try {
+      const response = await fetch(`/api/projects/${encodeURIComponent(project.id)}`, { method: 'DELETE' })
+      const payload = (await response.json().catch(() => ({}))) as { projects?: Array<{ id: string; name: string }>; error?: string }
+      if (!response.ok) throw new Error(payload.error ?? 'Could not delete the project.')
+      setProjects(payload.projects ?? [])
+      if (project.id === projectId) setActiveProjectId(null)
+      addActivity({ kind: 'system', title: `Deleted ${project.name}`, detail: 'Its runs, events, and artifacts were removed with it.', tag: 'PROJECT' })
+    } catch (error) {
+      addActivity({ kind: 'system', title: 'Could not delete the project', detail: error instanceof Error ? error.message : 'Delete failed.', tag: 'API ERROR' })
+    }
+  }
 
   // Draft (or reload) the plan whenever a run is waiting for approval. The server
   // reuses the stored plan unless regeneration is asked for, so this is safe to
@@ -1044,7 +1089,7 @@ function App() {
         <div className="brand-lockup"><div className="brand-mark"><Sparkles size={17} strokeWidth={2.5} /></div><span>fulkrum</span></div>
 <div className="workspace-picker"><span className="workspace-avatar">{(projectName || 'F').slice(0, 1).toUpperCase()}</span><span className="workspace-copy"><strong>{projectName || 'Loading workspace...'}</strong><small>Local workspace · single user</small></span></div>
         <nav className="primary-nav" aria-label="Primary navigation"><p className="nav-label">Workspace</p><button className="nav-item active" type="button"><LayoutGrid size={17} /><span>Command center</span></button><button className={`nav-item ${panelTab === 'artifacts' ? 'active' : ''}`} type="button" onClick={() => setPanelTab('artifacts')}><FileText size={17} /><span>Artifacts</span>{artifacts.length ? <span className="nav-count">{artifacts.length}</span> : null}</button></nav>
-        <div className="project-section"><div className="section-label-row"><p className="nav-label">Projects</p></div>{projects.length ? projects.map((item, index) => <div className={`project-item ${item.id === projectId ? 'active' : ''}`} key={item.id}><span className={`project-dot ${index % 2 ? 'teal' : 'coral'}`}></span><span><strong>{item.name}</strong><small>{item.id === projectId ? 'showing now' : 'idle'}</small></span></div>) : <p className="sidebar-empty">No projects yet.</p>}</div>
+        <div className="project-section"><div className="section-label-row"><p className="nav-label">Projects</p><button className="icon-button subtle" type="button" title="New project" onClick={() => void createProject()}><Plus size={15} /></button></div>{projects.length ? projects.map((item, index) => <div className={`project-item ${item.id === projectId ? 'active' : ''}`} key={item.id}><button className="project-select" type="button" title={`Show ${item.name}`} onClick={() => setActiveProjectId(item.id)}><span className={`project-dot ${index % 2 ? 'teal' : 'coral'}`}></span><span><strong>{item.name}</strong><small>{item.id === projectId ? 'showing now' : 'open'}</small></span></button><button className="icon-button subtle project-delete" type="button" title={`Delete ${item.name}`} onClick={() => void deleteProject(item)}><Trash2 size={14} /></button></div>) : <p className="sidebar-empty">No projects yet.</p>}</div>
         <div className="sidebar-bottom"><div className="sidebar-note"><ShieldCheck size={16} /><span>Keys stay server-side</span></div><div className="sidebar-note"><GitBranch size={16} /><span>Runs and events are stored locally</span></div></div>
       </aside>
 

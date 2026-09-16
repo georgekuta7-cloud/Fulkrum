@@ -178,6 +178,57 @@ test('an interrupted run can be resumed, and a completed task is not repeated', 
   })
 })
 
+test('a project can be deleted with everything it owns', async () => {
+  await withServer(async ({ request, store }) => {
+    // The store starts empty, and the last project is kept, so make a keeper first.
+    await request('POST', '/api/projects', { name: 'keeper' })
+    const project = await request('POST', '/api/projects', { name: 'doomed' })
+    const projectId = project.payload.project.id
+    const run = await request('POST', '/api/runs', { projectId, permissionMode: 'selective' })
+    store.appendEvent({ runId: run.payload.run.id, type: 'noise', payload: {} })
+    store.createToolCall({ runId: run.payload.run.id, name: 'workspace.read', kind: 'read', input: {} })
+    assert.equal(store.getProject(projectId).runs.length, 1)
+
+    const removed = await request('DELETE', `/api/projects/${projectId}`)
+    assert.equal(removed.status, 200)
+    assert.equal(removed.payload.removed, projectId)
+    assert.equal(store.getProject(projectId), null)
+    assert.equal(removed.payload.projects.some((item) => item.id === projectId), false)
+
+    // The cascade took the runs, events, and tool calls with it.
+    assert.equal(store.database.prepare('SELECT COUNT(*) AS count FROM runs WHERE project_id = ?').get(projectId).count, 0)
+    assert.equal(store.database.prepare('SELECT COUNT(*) AS count FROM run_events WHERE run_id = ?').get(run.payload.run.id).count, 0)
+    assert.equal(store.database.prepare('SELECT COUNT(*) AS count FROM tool_calls WHERE run_id = ?').get(run.payload.run.id).count, 0)
+
+    assert.equal((await request('DELETE', `/api/projects/${projectId}`)).status, 404)
+  })
+})
+
+test('a project with a run in flight cannot be deleted', async () => {
+  await withServer(async ({ request, store }) => {
+    await request('POST', '/api/projects', { name: 'keeper' })
+    const project = await request('POST', '/api/projects', { name: 'busy' })
+    const projectId = project.payload.project.id
+    const run = await request('POST', '/api/runs', { projectId, permissionMode: 'selective' })
+    store.updateRun(run.payload.run.id, { status: 'executing' })
+
+    const refused = await request('DELETE', `/api/projects/${projectId}`)
+    assert.equal(refused.status, 409)
+    assert.match(String(refused.payload.error), /Stop the active run/)
+    assert.notEqual(store.getProject(projectId), null, 'the project is untouched')
+  })
+})
+
+test('the last project cannot be deleted', async () => {
+  await withServer(async ({ request, store }) => {
+    const only = await request('POST', '/api/projects', { name: 'only one' })
+    assert.equal(store.listProjects().length, 1)
+    const refused = await request('DELETE', `/api/projects/${only.payload.project.id}`)
+    assert.equal(refused.status, 409)
+    assert.match(String(refused.payload.error), /last project/)
+  })
+})
+
 test('the demo run reaches review without ever requesting an approval', async () => {
   await withServer(async ({ request, store }) => {
     const { runId } = await makeRun(request)

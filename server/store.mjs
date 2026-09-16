@@ -188,6 +188,12 @@ export class FulkrumStore {
     return existing?.project ?? this.createProject({ id: 'project-default', name: 'Launch plan' })
   }
 
+  /** Remove a project and everything it owns. Foreign keys cascade. */
+  deleteProject(projectId) {
+    const result = this.database.prepare('DELETE FROM projects WHERE id = ?').run(projectId)
+    return Number(result.changes) > 0
+  }
+
   createRun({ projectId, id = `run-${randomUUID()}`, mode = 'plan', permissionMode = 'selective', ownerId = null }) {
     if (!this.getProject(projectId)) throw new Error(`Project not found: ${projectId}`)
     const now = Date.now()

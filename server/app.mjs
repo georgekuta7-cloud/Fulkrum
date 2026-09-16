@@ -315,6 +315,29 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         return
       }
 
+      if (request.method === 'DELETE' && projectMatch) {
+        const projectId = decodeURIComponent(projectMatch[1])
+        const detail = store.getProject(projectId)
+        if (!detail) {
+          sendJson(response, 404, { error: 'Project not found.' })
+          return
+        }
+        // A project with a run in flight cannot be deleted: the orchestrator would
+        // be working against rows that no longer exist.
+        const activeRun = detail.runs.find((run) => ['executing', 'paused'].includes(run.status))
+        if (activeRun) {
+          sendJson(response, 409, { error: `Stop the active run in this project first (${activeRun.status}).` })
+          return
+        }
+        if (store.listProjects().length <= 1) {
+          sendJson(response, 409, { error: 'The last project cannot be deleted.' })
+          return
+        }
+        store.deleteProject(projectId)
+        sendJson(response, 200, { removed: projectId, projects: store.listProjects() })
+        return
+      }
+
       if (request.method === 'POST' && requestUrl.pathname === '/api/runs') {
         try {
           const body = await readJson(request)
