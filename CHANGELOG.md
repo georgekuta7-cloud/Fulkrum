@@ -5,6 +5,51 @@ All notable changes to Fulkrum are documented here. This project follows
 
 ## [Unreleased]
 
+### Security
+- **Outbound connections are pinned to the address that was validated, and bodies
+  are read with a byte cap.** Validation resolved a hostname and the request then
+  resolved it again, so a host could answer publicly for the check and with
+  `127.0.0.1` for the connection. The validated address is now what the socket
+  connects to, with SNI and the `Host` header still carrying the original name, and
+  every redirect hop is validated and pinned on its own. Response bodies are
+  streamed and abandoned at the cap rather than buffered whole — `await
+  response.text()` on a multi-gigabyte body ran the process out of memory before
+  anything clipped it.
+- **The private-address check is a CIDR table, and IPv4-mapped IPv6 is unwrapped
+  first.** `::ffff:127.0.0.1`, `::ffff:172.16.x`, and `::ffff:169.254.x` used to
+  pass as unremarkable IPv6; multicast, reserved, carrier-grade NAT, benchmarking,
+  and documentation ranges are covered now too, and an address that cannot be
+  parsed is refused rather than allowed.
+- **A request that carries a credential needs approval.** `Authorization`,
+  `Proxy-Authorization`, `Cookie`, `X-Api-Key`, and `Api-Key` make an outbound
+  request an approval question even in autopilot, unless the host is allowlisted.
+  The audit log records header names and a hash of each value, never the value.
+- **Redaction stops eating ordinary words and starts catching the prefixes it
+  missed.** `/key|token|secret/` redacted `monkey`, `keyboard`, and `sessionCount`;
+  key names are matched by segment now. Added `glpat-`, `npm_`, `github_pat_`,
+  `hf_`, `SG.`, `xai-`, `xapp-`, `dop_v1_`, and a narrow shape check for long
+  unlabelled tokens — while hashes stay readable, because redacting a sha256 digest
+  hides real information for no gain.
+- **Workspace search cannot walk out through a link.** Directory entries are checked
+  with `lstat`, so an NTFS junction — which a plain listing reports as an ordinary
+  directory — is skipped, containment is re-proved for every directory descended
+  into, and a `.fulkrumignore` in the workspace root extends the skip list.
+- **The runner image is verified rather than assumed.** The base is pinned by
+  digest; the image must be present or execution is disabled with an explanation;
+  the boot log reports the digest and image id it found and says plainly when the
+  image is only tagged; the uid is configurable, with `--userns=keep-id` for
+  rootless Podman and a descriptor limit. `HOME` moved to a tmpfs mounted with exec
+  allowed, because with a read-only root and a `noexec` `/tmp`, npm, pip, and cargo
+  failed in a way that looked like the command's fault. CI builds the image and
+  asserts the boundary against a live engine.
+- **Injection attempts are reported.** Tool output reaches the model inside a
+  labelled `<tool_result>` block, and output containing text aimed at the model is
+  recorded as `tool.output.suspicious`. Telemetry, not a control: the threat model
+  already assumes injection succeeds, and the permission matrix and the container
+  are what limit the damage.
+- **The local API's lack of authentication is stated at boot** instead of being
+  left to be discovered.
+
 ### Fixed
 - **Live chat answered 502 on every turn.** The success path shadowed the HTTP
   response with the provider result and handed that to the JSON writer, which

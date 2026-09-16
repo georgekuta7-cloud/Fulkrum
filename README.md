@@ -20,7 +20,7 @@ Node 22.13 or newer is required: the store uses the built-in `node:sqlite`, whic
 ## Checks
 
 ```powershell
-npm test               # 94 tests: policy, persistence, execution boundary, providers, and the HTTP API
+npm test               # 110 tests: policy, persistence, execution boundary, providers, outbound HTTP, redaction, and the HTTP API
 npm run lint
 npm run typecheck      # the client, and the server and tests via checkJs
 npm run build
@@ -149,12 +149,22 @@ The container is created per command with:
 - no network (`--network none`)
 - a read-only root filesystem, with only the workspace mounted writable
 - a non-root user, all capabilities dropped, and `no-new-privileges`
-- a tmpfs `/tmp`, plus memory, CPU, and process-count limits
+- a tmpfs `/tmp` that cannot execute, plus memory, CPU, process, and descriptor limits
+- a tmpfs `HOME` that *can* execute, because npm, pip, and cargo install into it
+  and the root filesystem is read-only
 - a wall-clock timeout that stops the container and removes it
 
 The argv is passed as an array, so no shell interprets it on either side of the
 boundary. Because the boundary does the work, the command surface is open: the
 build worker can compile, run tests, and inspect a repository offline.
+
+The base image is pinned by digest and the boot log prints the digest and image id
+it found, so the boundary is not silently swapped by a moved tag. The uid is
+configurable (`FULKRUM_RUNNER_USER`, plus `FULKRUM_RUNNER_USERNS=keep-id` for
+rootless Podman), because it has to match whoever owns the mounted workspace.
+
+`node tests/container/assertBoundary.mjs` checks all of this against a live
+engine, and CI runs it after building the image.
 
 **WSL2 is where the engine runs, not what contains it.** A WSL distribution can
 execute Windows binaries through its interop layer, so "inside WSL" would still
@@ -171,7 +181,7 @@ sudo service docker start
 sudo usermod -aG docker "$USER"     # then re-open the shell
 
 # From the project root
-docker build -t fulkrum-runner:local server/runner
+npm run runner:build
 docker run --rm hello-world
 ```
 

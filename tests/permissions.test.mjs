@@ -135,6 +135,39 @@ test('the permission matrix allows reads, asks for writes, and denies secrets in
   })
 })
 
+test('an outbound request that carries a credential needs approval', async () => {
+  await withWorkspace(async (directory) => {
+    const broker = new FulkrumToolBroker({ workspaceRoot: directory, httpAllowlist: [] })
+    const httpTool = broker.get('http.request')
+
+    const withAuth = broker.authorize({
+      mode: 'autopilot',
+      tool: httpTool,
+      resolution: mode(directory, 'http.request', { url: 'https://example.com/api', headers: { Authorization: 'Bearer abc' } }),
+    })
+    assert.equal(withAuth.decision, 'ask', 'even autopilot pauses before handing a credential to a host')
+    assert.equal(withAuth.ruleId, 'ask.http-credential-headers')
+
+    // A header nobody thinks of as a credential is still a credential header.
+    for (const header of ['Cookie', 'X-Api-Key', 'Proxy-Authorization', 'api-key']) {
+      const decision = broker.authorize({ mode: 'autopilot', tool: httpTool, resolution: mode(directory, 'http.request', { url: 'https://example.com/api', headers: { [header]: 'v' } }) })
+      assert.equal(decision.ruleId, 'ask.http-credential-headers', `${header} should be treated as a credential`)
+    }
+
+    const plain = broker.authorize({ mode: 'autopilot', tool: httpTool, resolution: mode(directory, 'http.request', { url: 'https://example.com/api' }) })
+    assert.equal(plain.ruleId, 'ask.http-autopilot-without-allowlist', 'a request with no such header falls to the ordinary rule')
+
+    // An allowlisted host is the user saying they trust it with the credential.
+    const allowedHost = new FulkrumToolBroker({ workspaceRoot: directory, httpAllowlist: ['example.com'] })
+    const allowlisted = allowedHost.authorize({
+      mode: 'autopilot',
+      tool: httpTool,
+      resolution: mode(directory, 'http.request', { url: 'https://example.com/api', headers: { Authorization: 'Bearer abc' } }),
+    })
+    assert.equal(allowlisted.decision, 'allow')
+  })
+})
+
 test('deny rules are evaluated before ask and allow rules', () => {
   const decisions = permissionMatrix.map((rule) => rule.decision)
   const firstAsk = decisions.indexOf('ask')

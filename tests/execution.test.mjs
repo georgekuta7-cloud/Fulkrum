@@ -13,6 +13,9 @@ function stubEngine({ version = '27.3.1\n', fail = null, hang = false, commandEr
       if (fail) throw Object.assign(new Error(fail), { code: 1 })
       return { stdout: version, stderr: '' }
     }
+    // Detection inspects the image, so the stub has to answer that too: an engine
+    // that is present but missing its image disables execution by design.
+    if (args[0] === 'image') return { stdout: args.includes('{{json .RepoDigests}}') ? '[]\n' : 'sha256:stub-image\n', stderr: '' }
     if (hang) throw Object.assign(new Error('Command failed: timed out'), { killed: true, stdout: '', stderr: 'partial output' })
     if (commandError) throw commandError
     return { stdout: 'command output\n', stderr: '' }
@@ -48,6 +51,55 @@ test('the container argv carries every isolation flag', () => {
   assert.deepEqual(args.slice(imageIndex + 1), ['git', 'status', '--short'])
   assert.equal(args.includes('sh'), false, 'nothing is wrapped in a shell')
   assert.equal(args.join(' ').includes(' -c '), false)
+})
+
+test('the container gets a writable home and bounded descriptors', () => {
+  const args = containerArgs({ argv: ['npm', 'install'], workspaceRoot: process.cwd(), name: 'shape' })
+  const firstTmpfs = args.indexOf('--tmpfs')
+  const secondTmpfs = args.indexOf('--tmpfs', firstTmpfs + 1)
+  assert.match(args[firstTmpfs + 1], /^\/tmp:/)
+  // HOME needs exec: the root filesystem is read-only and /tmp cannot execute, so
+  // npm and friends would fail installing into their home directory.
+  assert.match(args[secondTmpfs + 1], /^\/home\/fulkrum:.*\bexec\b/)
+  assert.equal(args[args.indexOf('--user') + 1], '1000:1000')
+  assert.equal(args[args.indexOf('--ulimit') + 1], 'nofile=1024:1024')
+  assert.equal(args.includes('--userns'), false, 'no user namespace remap by default')
+
+  // A rootless setup maps ids differently, so both are configurable.
+  const custom = containerArgs({ argv: ['ls'], workspaceRoot: process.cwd(), name: 'shape', runtimeUser: '1001:1001', userNamespace: 'keep-id', nofile: 512 })
+  assert.equal(custom[custom.indexOf('--user') + 1], '1001:1001')
+  assert.equal(custom[custom.indexOf('--userns') + 1], 'keep-id')
+  assert.equal(custom[custom.indexOf('--ulimit') + 1], 'nofile=512:512')
+})
+
+test('the image must exist, and its identity is reported', async () => {
+  const execFileImpl = async (_file, args) => {
+    if (args[0] === 'image' && args.includes('{{.Id}}')) return { stdout: 'sha256:abc123\n' }
+    if (args[0] === 'image') return { stdout: '["fulkrum-runner@sha256:deadbeef"]\n' }
+    return { stdout: '29.8.0\n' }
+  }
+
+  const runtime = createExecutionRuntime({ execFileImpl, image: 'fulkrum-runner:local', workspaceRoot: process.cwd() })
+  const status = await runtime.status()
+  assert.equal(status.available, true)
+  assert.equal(status.imageId, 'sha256:abc123')
+  assert.equal(status.imageDigest, 'fulkrum-runner@sha256:deadbeef')
+  assert.equal(status.imagePinned, false, 'a tag is not a pin')
+
+  // A missing image disables execution rather than failing at the first command.
+  const missing = createExecutionRuntime({
+    execFileImpl: async (_file, args) => {
+      // The engine answers, but the image is not there — whichever transport is
+      // tried, including the one that reaches Docker through WSL.
+      if (args.includes('image')) throw new Error('Error: No such image: fulkrum-runner:local')
+      return { stdout: '29.8.0\n' }
+    },
+    image: 'fulkrum-runner:local',
+    workspaceRoot: process.cwd(),
+  })
+  const absent = await missing.status()
+  assert.equal(absent.available, false)
+  assert.match(absent.reason, /runner image .* is not present/)
 })
 
 test('paths are translated for an engine that lives inside WSL', () => {

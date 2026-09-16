@@ -1,16 +1,43 @@
 import { createHash } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import { configuredHttpAllowlist, validateOutboundUrl } from './networkPolicy.mjs'
+import { configuredHttpAllowlist } from './networkPolicy.mjs'
+import { pinnedRequest } from './outboundHttp.mjs'
 import { decidePermission, fingerprintToolCall, isSensitivePath, resolveToolCall, resolveWorkspacePath } from './permissions.mjs'
-import { redact } from './redaction.mjs'
+import { hashHeaderValues, redact } from './redaction.mjs'
 
 const MAX_FILE_BYTES = 500_000
 const MAX_SNAPSHOT_BYTES = Number(process.env.FULKRUM_MAX_SNAPSHOT_BYTES ?? 64_000)
 const MAX_OUTPUT_BYTES = 100_000
 const MAX_SEARCH_FILES = 400
 const MAX_REDIRECTS = 3
+const MAX_IGNORE_RULES = 200
 const skippedDirectories = new Set(['.git', 'node_modules', 'dist', 'coverage', '.cache'])
+
+/**
+ * Extra patterns the workspace owner can add, one per line, `*` and `?` allowed.
+ * A deny list in code cannot know what a particular repository considers
+ * sensitive; this is how a user extends it without editing the code.
+ */
+async function readIgnoreRules(root) {
+  try {
+    const text = await fs.readFile(path.join(root, '.fulkrumignore'), 'utf8')
+    return text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('#'))
+      .slice(0, MAX_IGNORE_RULES)
+      .map((line) => new RegExp(`^${line.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`))
+  } catch {
+    return []
+  }
+}
+
+function isIgnored(relativePath, rules) {
+  if (!rules.length) return false
+  const segments = relativePath.split('/')
+  return rules.some((rule) => rule.test(relativePath) || segments.some((segment) => rule.test(segment)))
+}
 
 const toolDefinitions = [
   { name: 'workspace.list', kind: 'read', description: 'List entries inside the approved workspace.' },
@@ -26,23 +53,38 @@ function clipped(value, maximum = MAX_OUTPUT_BYTES) {
   return text.length > maximum ? `${text.slice(0, maximum)}\n[output clipped]` : text
 }
 
-async function walkFiles(directory, root, results, query) {
+async function walkFiles(directory, root, results, query, rules) {
   if (results.length >= MAX_SEARCH_FILES) return
   const entries = await fs.readdir(directory, { withFileTypes: true })
   for (const entry of entries) {
     if (results.length >= MAX_SEARCH_FILES) return
     if (entry.isDirectory() && skippedDirectories.has(entry.name)) continue
-    if (!entry.isDirectory() && isSensitivePath(entry.name)) continue
     const absolute = path.join(directory, entry.name)
+    const relative = path.relative(root, absolute).replaceAll('\\', '/')
+    if (isIgnored(relative, rules)) continue
+    if (!entry.isDirectory() && isSensitivePath(entry.name)) continue
+
     if (entry.isDirectory()) {
-      await walkFiles(absolute, root, results, query)
+      // A junction or symlink is followed by readdir but resolves somewhere else
+      // entirely, and on Windows a junction is reported as an ordinary directory.
+      // lstat does not follow, and containment is re-proved for every directory
+      // the walk descends into rather than only for the root it started from.
+      const stats = await fs.lstat(absolute).catch(() => null)
+      if (!stats || stats.isSymbolicLink() || !stats.isDirectory()) continue
+      try {
+        resolveWorkspacePath(root, absolute)
+      } catch {
+        continue
+      }
+      await walkFiles(absolute, root, results, query, rules)
       continue
     }
+
     try {
       const content = await fs.readFile(absolute, 'utf8')
       if (content.toLowerCase().includes(query.toLowerCase())) {
         const line = content.split(/\r?\n/).findIndex((item) => item.toLowerCase().includes(query.toLowerCase())) + 1
-        results.push({ path: path.relative(root, absolute).replaceAll('\\', '/'), line })
+        results.push({ path: relative, line })
       }
     } catch {
       // Binary or unreadable files are skipped by the search tool.
@@ -146,7 +188,7 @@ export class FulkrumToolBroker {
       const query = String(resolved.query ?? '').trim()
       if (!query) throw new Error('Search query is required.')
       const results = []
-      await walkFiles(resolved.path, this.workspaceRoot, results, query)
+      await walkFiles(resolved.path, this.workspaceRoot, results, query, await readIgnoreRules(this.workspaceRoot))
       return { query, path: resolved.relative, results, clipped: results.length >= MAX_SEARCH_FILES }
     }
 
@@ -177,32 +219,28 @@ export class FulkrumToolBroker {
 
     if (name === 'http.request') {
       const method = String(resolved.method ?? 'GET').toUpperCase()
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), Math.min(Math.max(Number(process.env.FULKRUM_HTTP_TIMEOUT_MS) || 30_000, 1_000), 120_000))
-      try {
-        let currentUrl = resolved.url
-        let response
-        // Redirects are followed manually so every hop is re-checked. Following
-        // automatically would let an allowed host bounce the request to a private
-        // address that the first validation already refused.
-        for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-          await validateOutboundUrl(currentUrl, { allowedHosts: this.httpAllowlist })
-          response = await fetch(currentUrl, {
-            method,
-            headers: input?.headers && typeof input.headers === 'object' ? input.headers : {},
-            body: input?.body === undefined ? undefined : JSON.stringify(input.body),
-            redirect: 'manual',
-            signal: controller.signal,
-          })
-          const location = response.headers.get('location')
-          if (![301, 302, 303, 307, 308].includes(response.status) || !location) break
-          if (hop === MAX_REDIRECTS) throw new Error('Too many redirects.')
-          currentUrl = new URL(location, currentUrl).href
-        }
-        const text = await response.text()
-        return { status: response.status, ok: response.ok, url: currentUrl, headers: Object.fromEntries(response.headers.entries()), body: clipped(text) }
-      } finally {
-        clearTimeout(timeout)
+      const requestHeaders = input?.headers && typeof input.headers === 'object' ? input.headers : {}
+      const body = input?.body === undefined ? null : JSON.stringify(input.body)
+      let currentUrl = resolved.url
+      let response = null
+      // Redirects are followed manually so every hop is validated and pinned on
+      // its own. Following automatically would let an allowed host bounce the
+      // request to a private address the first check already refused.
+      for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+        response = await pinnedRequest(currentUrl, { method, headers: requestHeaders, body, allowedHosts: this.httpAllowlist })
+        const location = response.headers.location
+        if (![301, 302, 303, 307, 308].includes(response.status) || !location) break
+        if (hop === MAX_REDIRECTS) throw new Error('Too many redirects.')
+        currentUrl = new URL(location, currentUrl).href
+      }
+      return {
+        status: response.status,
+        ok: response.ok,
+        url: currentUrl,
+        bytes: response.bytes,
+        headers: response.headers,
+        body: clipped(response.text),
+        ...(response.truncated ? { truncated: true, note: 'The response was larger than the byte cap and was cut off rather than buffered.' } : {}),
       }
     }
 
@@ -211,5 +249,19 @@ export class FulkrumToolBroker {
 
   redact(value) {
     return redact(value)
+  }
+
+  /**
+   * The input as it may be stored or shown: values under sensitive-looking keys
+   * are replaced, and an HTTP request's header values become hashes. The log then
+   * records that a header was sent and what it hashed to, without keeping the
+   * value; the original arguments are stored separately so the call can still run.
+   */
+  sanitizeInput(name, input) {
+    const safe = redact(input)
+    if (name === 'http.request' && safe && typeof safe === 'object' && safe.headers && typeof safe.headers === 'object') {
+      return { ...safe, headers: hashHeaderValues(input.headers) }
+    }
+    return safe
   }
 }

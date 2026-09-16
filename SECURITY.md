@@ -56,11 +56,38 @@ act:
    execution is disabled rather than falling back to the host, and WSL2 is not
    used as a boundary because its interop layer can execute Windows binaries.
 6. **Egress is default-deny** and is the last line of defense. The `http.request`
-   tool refuses private, loopback, link-local, and multicast targets, validates
-   every redirect hop, and requires an explicit host allowlist.
-7. **Secrets are not readable by tools.** Known credential paths are refused at
+   tool refuses private, loopback, link-local, multicast, and reserved targets —
+   including their IPv4-mapped IPv6 forms, which is how `::ffff:127.0.0.1` used to
+   reach loopback — validates every redirect hop, and requires an explicit host
+   allowlist. The address is then **pinned**: the name is resolved once, the
+   validated address is what the socket connects to, and SNI and the `Host` header
+   still carry the original name. Checking a name and then letting the platform
+   resolve it again is a gap a rebinding host can walk through.
+7. **A request that carries a credential needs approval.** `Authorization`,
+   `Proxy-Authorization`, `Cookie`, `X-Api-Key`, and `Api-Key` make an outbound
+   request an approval question even in autopilot, unless the host is allowlisted —
+   the shape an injected instruction takes is "read a config file, then send it
+   somewhere". The audit log records header *names* and a hash of each value, never
+   the value.
+8. **Secrets are not readable by tools.** Known credential paths are refused at
    the tool boundary, and tool output is scanned for credential shapes before it
-   reaches the model or the audit log.
+   reaches the model or the audit log. Key names are matched by segment, so
+   `monkey`, `keyboard`, and `sessionCount` are no longer redacted as credentials,
+   and the value patterns cover the prefixes that were missing (`glpat-`, `npm_`,
+   `github_pat_`, `hf_`, `SG.`, `xai-`) plus a narrow shape check for long
+   unlabelled tokens. Hashes stay readable: redacting a sha256 digest would hide
+   real information for no gain.
+9. **Injection attempts are reported.** Tool output is delivered to the model
+   inside an explicit `<tool_result>` block labelled as data, and output containing
+   text aimed at the model ("ignore previous instructions", "do not tell the user")
+   is recorded as a `tool.output.suspicious` event. This is telemetry, not a
+   control: this document assumes injection succeeds, and what limits the damage is
+   the permission matrix and the container.
+10. **Workspace search cannot leave the workspace.** Directory entries are checked
+    with `lstat`, so a junction or symlink — reported as an ordinary directory by a
+    plain listing on Windows — is skipped rather than walked into, and containment
+    is re-proved for every directory the search descends into. A `.fulkrumignore`
+    file in the workspace root extends the skip list.
 
 ## Execution boundary
 
@@ -75,6 +102,18 @@ execution paths that made a host-side git allowlist unsafe: `GIT_CONFIG_GLOBAL`
 and `GIT_CONFIG_SYSTEM` point at nothing, system config is disabled, the pager is
 `cat`, external diff is unset, terminal prompts are off, and `core.hooksPath`
 points at an empty directory the runner cannot write to.
+
+The base image is pinned by digest, not by tag: a tag can be moved, and this image
+is part of the boundary. The boot log prints the digest and the image id it found,
+and says so plainly when the image is only tagged. `HOME` is a tmpfs mounted with
+exec allowed, because the root filesystem is read-only and `/tmp` cannot execute:
+npm, pip, and cargo install into the home directory, and without it they fail in a
+way that looks like the command's fault rather than the sandbox's.
+
+`npm run runner:build` builds the image, and `node tests/container/assertBoundary.mjs`
+checks it against a live engine — non-root, read-only root, writable workspace and
+home, `noexec` on `/tmp`, no network, hooks path neutralized, and a command that
+overruns its timeout is stopped with no container left behind. CI runs both.
 
 Two deliberate limits:
 

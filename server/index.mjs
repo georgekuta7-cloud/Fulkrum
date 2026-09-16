@@ -54,6 +54,11 @@ if (pruned > 0) console.log(`[fulkrum] pruned ${pruned} stored tool output(s) pa
 app.server.listen(port, '127.0.0.1', async () => {
   console.log(`Fulkrum API bridge listening on http://127.0.0.1:${port}`)
   console.log(`[fulkrum] schema version ${store.stats().schemaVersion}, owner ${ownerId}, prices ${pricing.version} (${pricing.known} models)`)
+  // Say this at boot rather than leaving it to be discovered: it is the one
+  // control this application deliberately does not have.
+  console.log('[fulkrum] note: the local API has no authentication. It binds loopback and refuses unapproved browser origins,')
+  console.log('[fulkrum]       so this is CSRF protection, not access control — any process on this machine can call it,')
+  console.log('[fulkrum]       including approving tool calls. Do not run untrusted code alongside it.')
   const runBudget = Number(process.env.FULKRUM_RUN_BUDGET_USD ?? 0)
   const dayBudget = Number(process.env.FULKRUM_DAILY_BUDGET_USD ?? 0)
   if (runBudget || dayBudget) console.log(`[fulkrum] budgets: per run $${runBudget || 'unset'}, per day $${dayBudget || 'unset'}`)
@@ -63,6 +68,11 @@ app.server.listen(port, '127.0.0.1', async () => {
   const boundary = await execution.status()
   if (boundary.available) {
     console.log(`[fulkrum] execution boundary: ${boundary.label} ${boundary.version}, image ${boundary.image}, network ${boundary.network}`)
+    if (boundary.imageDigest) console.log(`[fulkrum] runner image digest ${boundary.imageDigest}`)
+    if (!boundary.imagePinned) {
+      console.log('[fulkrum] note: the runner image is identified by tag. A tag can be moved, and this image is part of the')
+      console.log(`[fulkrum]       boundary — pin it with FULKRUM_RUNNER_IMAGE=${boundary.imageDigest ?? '<image>@sha256:<digest>'}`)
+    }
   } else {
     console.log('[fulkrum] execution is DISABLED: agent commands cannot run.')
     console.log(`[fulkrum]   ${boundary.reason}`)

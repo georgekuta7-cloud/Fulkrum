@@ -4,7 +4,11 @@
 # container is the security boundary: the agent gets no network, a read-only root
 # filesystem, no capabilities, a non-root user, and only the workspace mounted
 # writable. Nothing here is trusted to be safe on its own.
-FROM node:24-bookworm-slim
+#
+# The base is pinned by manifest digest, not by tag: a tag can be moved, and this
+# image is part of the boundary. To update it deliberately, read the current digest
+# with `docker buildx imagetools inspect node:24-bookworm-slim` and replace it here.
+FROM node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
 
 # git and a shell are the only real tools: enough to inspect and build a
 # repository offline. Network clients are deliberately absent, so an enabled
@@ -13,15 +17,17 @@ RUN apt-get update \
   && apt-get install --no-install-recommends --yes git ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-# The runtime passes --user 1000:1000, and the base image already owns that id as
-# the `node` user, so nothing is created here. HOME points at the tmpfs because the
-# rest of the filesystem is read-only.
-
 # A hooks directory that is empty and unwritable by the runner, so a repository
-# cannot install a hook that fires during an agent command.
-RUN mkdir -p /opt/fulkrum/empty-hooks && chmod 0555 /opt/fulkrum/empty-hooks
+# cannot install a hook that fires during an agent command. /home/fulkrum is the
+# mount point for the tmpfs HOME the runtime supplies.
+RUN mkdir -p /opt/fulkrum/empty-hooks /home/fulkrum && chmod 0555 /opt/fulkrum/empty-hooks
 
-ENV HOME=/tmp \
+# HOME lives on a tmpfs mounted with exec allowed, because the root filesystem is
+# read-only and /tmp cannot execute anything: npm, pip, and cargo all install into
+# the home directory and would otherwise fail in a way that looks like the
+# command's fault rather than the sandbox's. The runtime passes --user, and the
+# tmpfs is mode 1777, so that user can write to it.
+ENV HOME=/home/fulkrum \
     GIT_CONFIG_GLOBAL=/dev/null \
     GIT_CONFIG_SYSTEM=/dev/null \
     GIT_CONFIG_NOSYSTEM=1 \

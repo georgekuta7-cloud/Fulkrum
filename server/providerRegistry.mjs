@@ -1,4 +1,5 @@
 import { providerAuthHeaders } from './modelCall.mjs'
+import { pinnedRequest } from './outboundHttp.mjs'
 
 const builtInProviders = [
   { id: 'grok', label: 'Grok', protocol: 'openai-compatible', envKeys: ['XAI_API_KEY'], baseUrl: process.env.XAI_BASE_URL ?? 'https://api.x.ai/v1', defaultModel: process.env.FULKRUM_GROK_MODEL ?? 'grok-4' },
@@ -213,50 +214,52 @@ export function createProviderRegistry(store) {
 
     /**
      * Ask the provider whether it accepts our credentials. Only status, latency,
-     * and the model list are returned; never the key.
+     * and the model list are returned; never the key. The request is pinned to a
+     * validated address, so this cannot be pointed somewhere else by a name that
+     * resolves differently the second time.
      *
      * @param {any} provider
-     * @param {{ allowPrivate?: boolean, validateUrl?: (url: string, options?: Record<string, unknown>) => Promise<URL> | URL, timeoutMs?: number }} [options]
+     * @param {{ allowPrivate?: boolean, timeoutMs?: number }} [options]
      */
-    async testConnection(provider, { allowPrivate = false, validateUrl, timeoutMs = 10_000 } = {}) {
+    async testConnection(provider, { allowPrivate = false, timeoutMs = 10_000 } = {}) {
       const credentials = credentialsFor(provider, settingsFor(provider.id))
       if (!credentials.key && credentials.style !== 'none') {
         return { configured: false, reachable: false, error: `No key yet: enter one for ${provider.label}${provider.envKeys?.length ? ` or set ${provider.envKeys.join(' or ')}` : ''}.` }
       }
 
       const startedAt = Date.now()
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), timeoutMs)
       try {
-        const allowed = credentials.allowPrivate || allowPrivate
-        const base = validateUrl ? await validateUrl(provider.baseUrl, { allowPrivate: allowed }) : new URL(provider.baseUrl)
-        const baseUrl = base.toString().replace(/\/$/, '')
         const headers = providerAuthHeaders(provider.protocol, credentials)
+        let url = `${String(provider.baseUrl).replace(/\/$/, '')}/models`
 
-        let url
         if (provider.protocol === 'google' && credentials.style === 'auto') {
-          const googleUrl = new URL(`${baseUrl}/models`)
+          const googleUrl = new URL(url)
           if (credentials.key) googleUrl.searchParams.set('key', credentials.key)
           googleUrl.searchParams.set('pageSize', '20')
-          url = googleUrl
-        } else {
-          url = provider.protocol === 'anthropic' ? `${baseUrl}/models?limit=20` : `${baseUrl}/models`
+          url = googleUrl.toString()
+        } else if (provider.protocol === 'anthropic') {
+          url = `${url}?limit=20`
         }
 
-        const response = await fetch(url, { method: 'GET', headers, signal: controller.signal, redirect: 'manual' })
-        const responseText = await response.text()
+        const response = await pinnedRequest(url, {
+          method: 'GET',
+          headers,
+          allowPrivate: credentials.allowPrivate || allowPrivate,
+          timeoutMs,
+          maxBytes: 200_000,
+        })
         const latencyMs = Date.now() - startedAt
         if (!response.ok) {
           let detail = `Provider returned ${response.status}`
           try {
-            const payload = JSON.parse(responseText)
+            const payload = JSON.parse(response.text)
             detail = String(payload?.error?.message ?? payload?.message ?? payload?.error ?? detail)
           } catch {
             // A non-JSON error body keeps the status line.
           }
           return { configured: true, reachable: false, status: response.status, latencyMs, models: [], error: detail.slice(0, 300) }
         }
-        return { configured: true, reachable: true, status: response.status, latencyMs, models: extractModelIds(responseText) }
+        return { configured: true, reachable: true, status: response.status, latencyMs, models: extractModelIds(response.text) }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Provider connection failed.'
         const blocked = /private and local network/i.test(message)
@@ -268,8 +271,6 @@ export function createProviderRegistry(store) {
           blocked,
           error: blocked ? `This endpoint is on a private or loopback address. Turn on local-network access for ${provider.label} to allow it.` : message,
         }
-      } finally {
-        clearTimeout(timeout)
       }
     },
 

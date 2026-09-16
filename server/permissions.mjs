@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { canonicalJson } from './canonicalJson.mjs'
+import { hostMatches } from './networkPolicy.mjs'
 
 export const PERMISSION_MODES = ['guided', 'selective', 'autopilot']
 
@@ -189,6 +190,18 @@ export function fingerprintInput({ name, input, workspaceRoot }) {
 }
 
 /**
+ * Headers that carry a credential. An outbound request that sets one is asking to
+ * hand a secret to a host, which is exactly the shape an injected instruction
+ * takes: read a config file, then send its contents somewhere.
+ */
+const credentialHeaders = new Set(['authorization', 'proxy-authorization', 'cookie', 'x-api-key', 'api-key'])
+
+function carriesCredentialHeader(resolution) {
+  const names = resolution?.resolved?.headerNames
+  return Array.isArray(names) && names.some((name) => credentialHeaders.has(String(name).toLowerCase()))
+}
+
+/**
  * The single policy table. Order is the precedence: deny rules first, then ask,
  * then allow, and the first match wins. Specificity does not reorder it, so a
  * broad deny always beats a narrow allow.
@@ -220,6 +233,12 @@ export const permissionMatrix = [
     decision: 'ask',
     reason: ({ mode }) => `shell actions require approval in ${mode} mode.`,
     when: ({ tool, mode }) => tool?.kind === 'shell' && mode !== 'autopilot',
+  },
+  {
+    id: 'ask.http-credential-headers',
+    decision: 'ask',
+    reason: 'A request that carries a credential header needs approval unless the host is allowlisted.',
+    when: ({ tool, resolution, httpAllowlist }) => tool?.kind === 'http' && carriesCredentialHeader(resolution) && !hostMatches(resolution?.resolved?.host, httpAllowlist ?? []),
   },
   {
     id: 'ask.http-autopilot-without-allowlist',

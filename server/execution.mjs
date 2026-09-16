@@ -30,6 +30,11 @@ const engines = {
 const defaultImage = process.env.FULKRUM_RUNNER_IMAGE ?? 'fulkrum-runner:local'
 const containerWorkdir = '/workspace'
 const maxOutputBytes = 100_000
+// The uid the runtime uses inside the container. It has to match the owner of the
+// bind-mounted workspace for writes to land, which is why it is configurability
+// rather than a constant: a rootless Podman setup maps ids differently.
+const defaultRuntimeUser = process.env.FULKRUM_RUNNER_USER ?? '1000:1000'
+const defaultNofile = Number(process.env.FULKRUM_RUNNER_NOFILE ?? 1024)
 
 /** Convert a Windows path to the path an engine running inside WSL sees. */
 export function toEnginePath(target, { inWsl = false } = {}) {
@@ -47,7 +52,7 @@ export function toEnginePath(target, { inWsl = false } = {}) {
  * The exact argv used for one agent command. Everything that makes the container
  * a boundary lives here, so a test can assert it rather than trust it.
  */
-export function containerArgs({ argv, workspaceRoot, workdir = '.', image = defaultImage, network = 'none', inWsl = false, name = 'fulkrum-preview', memory = '2g', cpus = '2', pidsLimit = 256 }) {
+export function containerArgs({ argv, workspaceRoot, workdir = '.', image = defaultImage, network = 'none', inWsl = false, name = 'fulkrum-preview', memory = '2g', cpus = '2', pidsLimit = 256, runtimeUser = defaultRuntimeUser, userNamespace = '', nofile = defaultNofile }) {
   const containerDir = workdir.startsWith('/') ? workdir : `${containerWorkdir}/${workdir}`.replace(/\/+$/, '')
   return [
     'run',
@@ -59,14 +64,22 @@ export function containerArgs({ argv, workspaceRoot, workdir = '.', image = defa
     '--read-only',
     '--tmpfs',
     '/tmp:rw,noexec,nosuid,size=64m',
+    // HOME gets its own tmpfs with exec allowed. The root filesystem is read-only
+    // and /tmp cannot execute, so a tool that installs into its home directory —
+    // npm, pip, cargo — fails for a reason that looks like the command's fault.
+    '--tmpfs',
+    '/home/fulkrum:rw,exec,nosuid,size=256m,mode=1777',
     '--user',
-    '1000:1000',
+    runtimeUser,
+    ...(userNamespace ? ['--userns', userNamespace] : []),
     '--cap-drop',
     'ALL',
     '--security-opt',
     'no-new-privileges',
     '--pids-limit',
     String(pidsLimit),
+    '--ulimit',
+    `nofile=${nofile}:${nofile}`,
     '--memory',
     memory,
     '--cpus',
@@ -94,6 +107,9 @@ function clip(text, maximum = maxOutputBytes) {
  *   memory?: string,
  *   cpus?: string,
  *   pidsLimit?: number,
+ *   runtimeUser?: string,
+ *   userNamespace?: string,
+ *   nofile?: number,
  *   defaultTimeoutMs?: number,
  *   failureTtlMs?: number,
  *   execFileImpl?: (file: string, args: string[], options?: Record<string, unknown>) => Promise<{ stdout?: string, stderr?: string }>
@@ -110,6 +126,9 @@ export function createExecutionRuntime({
   memory = process.env.FULKRUM_CONTAINER_MEMORY ?? '2g',
   cpus = process.env.FULKRUM_CONTAINER_CPUS ?? '2',
   pidsLimit = Number(process.env.FULKRUM_CONTAINER_PIDS ?? 256),
+  runtimeUser = defaultRuntimeUser,
+  userNamespace = process.env.FULKRUM_RUNNER_USERNS ?? '',
+  nofile = defaultNofile,
   defaultTimeoutMs = Number(process.env.FULKRUM_EXEC_TIMEOUT_MS ?? 120_000),
   // A success is cached for the process lifetime; a failure is re-probed, so
   // installing an engine does not require restarting the bridge.
@@ -157,7 +176,30 @@ export function createExecutionRuntime({
             failures.push(`${label} reported no version`)
             continue
           }
-          detected = { available: true, engine: candidate.id, label, version, image, network: 'none', checkedAt: Date.now(), ...candidate }
+
+          // The image is part of the boundary, so its presence and identity are
+          // checked at detection time rather than discovered by the first command.
+          let imageId = null
+          try {
+            const inspected = await invoke(candidate, ['image', 'inspect', '--format', '{{.Id}}', image], { timeout: 8_000, windowsHide: true })
+            imageId = String(inspected.stdout ?? '').trim().split('\n')[0] || null
+          } catch {
+            failures.push(`${label}: the runner image "${image}" is not present (build it with \`npm run runner:build\`)`)
+            continue
+          }
+
+          // A locally built image has no repository digest until it is pushed, so
+          // this reports what is known instead of inventing an identifier.
+          let imageDigest = null
+          try {
+            const digests = await invoke(candidate, ['image', 'inspect', '--format', '{{json .RepoDigests}}', image], { timeout: 8_000, windowsHide: true })
+            const parsed = JSON.parse(String(digests.stdout ?? '[]').trim() || '[]')
+            if (Array.isArray(parsed) && parsed.length) imageDigest = String(parsed[0])
+          } catch {
+            imageDigest = null
+          }
+
+          detected = { available: true, engine: candidate.id, label, version, image, imageId, imageDigest, network: 'none', checkedAt: Date.now(), ...candidate }
           return detected
         } catch (error) {
           const detail = error instanceof Error ? error.message.split('\n')[0] : 'unreachable'
@@ -178,7 +220,7 @@ export function createExecutionRuntime({
     async status({ refresh = false } = {}) {
       const result = await runtime.detect({ refresh })
       if (!result.available) return { available: false, reason: result.reason, hint: result.hint }
-      return { available: true, engine: result.engine, label: result.label, version: result.version, image: result.image, network: result.network }
+      return { available: true, engine: result.engine, label: result.label, version: result.version, image: result.image, imageId: result.imageId, imageDigest: result.imageDigest, imagePinned: result.image.includes('@sha256:'), network: result.network }
     },
 
     /**
@@ -195,7 +237,7 @@ export function createExecutionRuntime({
 
       const candidate = { id: status.engine, viaWsl: status.viaWsl }
       const name = `fulkrum-${randomUUID().slice(0, 8)}`
-      const args = containerArgs({ argv, workspaceRoot, workdir: cwd, image, network: status.network, inWsl: status.viaWsl, name, memory, cpus, pidsLimit })
+      const args = containerArgs({ argv, workspaceRoot, workdir: cwd, image, network: status.network, inWsl: status.viaWsl, name, memory, cpus, pidsLimit, runtimeUser, userNamespace, nofile })
       const timeout = Math.min(Math.max(Number(timeoutMs) || defaultTimeoutMs, 1_000), 600_000)
 
       try {
@@ -228,7 +270,7 @@ export function createExecutionRuntime({
 
     /** Exposed for tests and documentation: the exact argv a run would use. */
     describeRun(argv, options = {}) {
-      return containerArgs({ argv, workspaceRoot, workdir: options.cwd ?? '.', image, network: 'none', inWsl: requested === 'docker-wsl', name: 'fulkrum-preview', memory, cpus, pidsLimit })
+      return containerArgs({ argv, workspaceRoot, workdir: options.cwd ?? '.', image, network: 'none', inWsl: requested === 'docker-wsl', name: 'fulkrum-preview', memory, cpus, pidsLimit, runtimeUser, userNamespace, nofile })
     },
   }
 

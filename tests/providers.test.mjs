@@ -1,28 +1,54 @@
 import assert from 'node:assert/strict'
+import http from 'node:http'
 import test from 'node:test'
 import { providerAuthHeaders } from '../server/modelCall.mjs'
 import { createProviderRegistry } from '../server/providerRegistry.mjs'
+import { isPrivateAddress } from '../server/networkPolicy.mjs'
 import { withServer, withStore } from './helpers.mjs'
 
 /**
- * Every provider test below stays off the network two ways: the base URL is an IP
- * literal (so nothing has to resolve a name) and `fetch` is replaced. Only the
- * provider's own hosts are intercepted — the test harness talks to the bridge
- * through the same global fetch, so everything else passes straight through.
+ * These tests point the application at a real HTTP server on loopback rather than
+ * stubbing `fetch`: the transport now pins the connection to a validated address,
+ * so the only honest way to check the request is to receive it.
+ *
+ * A loopback endpoint is refused by default, which is what the first test proves;
+ * the others turn local access on for that one provider, the way a user would.
  */
-function stubFetch(providerHosts, handler) {
-  const original = globalThis.fetch
-  const calls = /** @type {Array<{ url: string, method: string, headers: any, body: any }>} */ ([])
-  globalThis.fetch = async (url, options = {}) => {
-    const target = String(url)
-    if (!providerHosts.some((host) => target.includes(`//${host}`))) return original(url, options)
-    calls.push({ url: target, method: String(options.method ?? 'GET'), headers: options.headers ?? {}, body: options.body ? JSON.parse(String(options.body)) : null })
-    return handler(calls.length, url, options)
+async function withProviderServer(handler, callback) {
+  const requests = []
+  const server = http.createServer((request, response) => {
+    let body = ''
+    request.on('data', (chunk) => { body += chunk })
+    request.on('end', () => {
+      let parsed = null
+      try {
+        parsed = body ? JSON.parse(body) : null
+      } catch {
+        parsed = body
+      }
+      const record = { method: request.method, url: request.url, headers: request.headers, body: parsed }
+      requests.push(record)
+      // Assertions belong in the test body: one that throws inside this handler
+      // becomes an uncaught exception and takes the whole file's result with it.
+      handler(record, response, requests.length)
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(undefined)))
+  const address = server.address()
+  const port = address && typeof address === 'object' ? address.port : 0
+  try {
+    return await callback({ port, requests, baseUrl: `http://127.0.0.1:${port}/v1` })
+  } finally {
+    // Keep-alive sockets would otherwise hold the server open past the test.
+    server.closeAllConnections?.()
+    await new Promise((resolve) => server.close(resolve))
   }
-  return { calls, restore: () => { globalThis.fetch = original } }
 }
 
-const json = (payload, status = 200) => new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } })
+const json = (response, payload, status = 200) => {
+  response.writeHead(status, { 'content-type': 'application/json', connection: 'close' })
+  response.end(JSON.stringify(payload))
+}
 
 async function makeRun(request) {
   const project = await request('POST', '/api/projects', { name: 'provider fixture' })
@@ -48,6 +74,25 @@ test('auth headers follow the configured style, not only the protocol', () => {
   assert.equal(noDisplacement.Authorization, 'Bearer k', 'an extra header cannot displace the credential')
 })
 
+test('addresses that reach a private network are recognised in every notation', () => {
+  // IPv4-mapped IPv6 used to slip through: it was compared as IPv6 against IPv4
+  // prefixes, so ::ffff:127.0.0.1 reached loopback while looking unremarkable.
+  for (const address of ['127.0.0.1', '127.1.2.3', '0.0.0.0', '10.0.0.1', '172.16.0.1', '172.31.255.255', '192.168.1.1', '169.254.169.254', '100.64.0.1', '198.18.0.1', '224.0.0.1', '239.255.255.250', '240.0.0.1', '255.255.255.255']) {
+    assert.equal(isPrivateAddress(address), true, `${address} must be blocked`)
+  }
+  for (const address of ['::1', '::', 'fc00::1', 'fd12:3456::1', 'fe80::1', 'febf::1', 'ff02::1', '2001:db8::1', '2002::1', '::ffff:127.0.0.1', '::ffff:10.0.0.1', '::ffff:172.16.0.1', '::ffff:169.254.169.254', '::ffff:0.0.0.0', '::ffff:7f00:1', 'fe80::1%eth0']) {
+    assert.equal(isPrivateAddress(address), true, `${address} must be blocked`)
+  }
+  for (const address of ['8.8.8.8', '1.1.1.1', '93.184.216.34', '172.32.0.1', '172.15.255.255', '192.0.1.1', '198.20.0.1', '2001:4860:4860::8888', '2606:4700:4700::1111']) {
+    assert.equal(isPrivateAddress(address), false, `${address} must be allowed`)
+  }
+  // Anything unparseable is refused: a check that cannot classify an address
+  // cannot vouch for it.
+  for (const address of ['', 'not-an-address', '999.999.999.999', '127.0.0.1.5']) {
+    assert.equal(isPrivateAddress(address), true, `${JSON.stringify(address)} must be refused`)
+  }
+})
+
 test('sampling parameters follow the model, not one hardcoded default', async () => {
   await withStore(async (store) => {
     const registry = createProviderRegistry(store)
@@ -60,7 +105,6 @@ test('sampling parameters follow the model, not one hardcoded default', async ()
     assert.equal(registry.sampling(registry.resolve('Grok'), 'grok-4').temperature, 0.3)
     assert.equal(registry.sampling(registry.resolve('Anthropic'), 'claude-opus-4-1').temperature, undefined, 'the Claude builder never sent one')
 
-    // A number set by the user wins; "omit" means omit, whatever the model is.
     registry.updateSettings('openai', { temperature: '0.9' })
     assert.equal(registry.sampling(registry.resolve('OpenAI'), 'gpt-5').temperature, 0.9)
     registry.updateSettings('openai', { temperature: 'omit' })
@@ -84,7 +128,6 @@ test('a key entered in the UI is stored, used, and never handed back', async () 
     const listed = await request('GET', '/api/providers')
     assert.equal(JSON.stringify(listed.payload).includes('sk-my-secret-value'), false, 'the key is never serialized back')
 
-    // An environment variable still works, and is reported as its source.
     const previous = process.env.FULKRUM_TEST_PROVIDER_KEY
     process.env.FULKRUM_TEST_PROVIDER_KEY = 'sk-from-the-environment'
     try {
@@ -101,17 +144,19 @@ test('a key entered in the UI is stored, used, and never handed back', async () 
 })
 
 test('a loopback endpoint is refused until local access is enabled for it', async () => {
-  const stub = stubFetch(['127.0.0.1:1234'], () => json({ choices: [{ message: { content: 'hello from the local server' } }] }))
-  try {
+  await withProviderServer((_record, response) => {
+    json(response, { choices: [{ message: { content: 'hello from the local server' } }] })
+  }, async ({ baseUrl, requests }) => {
     await withServer(async ({ request }) => {
       const { projectId, runId } = await makeRun(request)
-      const created = await request('POST', '/api/providers', { label: 'Local box', baseUrl: 'http://127.0.0.1:1234/v1', model: 'local-1', authStyle: 'none' })
+      const created = await request('POST', '/api/providers', { label: 'Local box', baseUrl, model: 'local-1', authStyle: 'none' })
       assert.equal(created.status, 201, JSON.stringify(created.payload))
       assert.equal(created.payload.provider.configured, true, 'an endpoint that needs no key is still configured')
 
       const blocked = await request('POST', '/api/chat', { projectId, runId, routing: { head: 'Local box · local-1' }, message: 'hello', history: [] })
       assert.equal(blocked.status, 502)
       assert.match(String(blocked.payload.error), /Private and local network/)
+      assert.equal(requests.length, 0, 'the address was refused before any connection was made')
 
       const patched = await request('PATCH', `/api/providers/${created.payload.provider.id}`, { allowPrivate: true })
       assert.equal(patched.status, 200, JSON.stringify(patched.payload))
@@ -121,62 +166,61 @@ test('a loopback endpoint is refused until local access is enabled for it', asyn
       assert.equal(allowed.status, 200, JSON.stringify(allowed.payload))
       assert.equal(allowed.payload.reply, 'hello from the local server')
 
-      assert.equal(stub.calls[0].url, 'http://127.0.0.1:1234/v1/chat/completions')
-      assert.equal(stub.calls[0].body.model, 'local-1')
-      assert.equal(stub.calls[0].headers.Authorization, undefined, 'no credential header for an endpoint that takes none')
+      assert.equal(requests[0].url, '/v1/chat/completions')
+      assert.equal(requests[0].method, 'POST')
+      assert.equal(requests[0].body.model, 'local-1')
+      assert.equal(requests[0].headers.authorization, undefined, 'no credential header for an endpoint that takes none')
+      assert.equal(requests[0].headers.host, `127.0.0.1:${new URL(baseUrl).port}`, 'the Host header still names the endpoint')
     }, { realModelCall: true })
-  } finally {
-    stub.restore()
-  }
+  })
 })
 
 test('a rejected temperature is retried without it, then remembered', async () => {
-  const stub = stubFetch(['93.184.216.34'], (index) => index === 1
-    ? json({ error: { message: 'Unsupported value: temperature is not supported with this model' } }, 400)
-    : json({ choices: [{ message: { content: 'second attempt worked' } }] }))
-  try {
+  await withProviderServer((_record, response, count) => {
+    if (count === 1) json(response, { error: { message: 'Unsupported value: temperature is not supported with this model' } }, 400)
+    else json(response, { choices: [{ message: { content: 'second attempt worked' } }] })
+  }, async ({ baseUrl, requests }) => {
     await withServer(async ({ request }) => {
       const { projectId, runId } = await makeRun(request)
-      await request('POST', '/api/providers', { label: 'Picky', baseUrl: 'https://93.184.216.34/v1', model: 'mystery-2', apiKey: 'sk-picky' })
+      await request('POST', '/api/providers', { label: 'Picky', baseUrl, model: 'mystery-2', apiKey: 'sk-picky', allowPrivate: true })
 
       const first = await request('POST', '/api/chat', { projectId, runId, routing: { head: 'Picky · mystery-2' }, message: 'hello', history: [] })
       assert.equal(first.status, 200, JSON.stringify(first.payload))
       assert.equal(first.payload.reply, 'second attempt worked')
-      assert.equal(stub.calls.length, 2, 'one rejected call, then one retry')
-      assert.equal(stub.calls[0].body.temperature, 0.3)
-      assert.equal('temperature' in stub.calls[1].body, false, 'the retry omits temperature')
+      assert.equal(requests.length, 2, 'one rejected call, then one retry')
+      assert.equal(requests[0].body.temperature, 0.3)
+      assert.equal('temperature' in requests[1].body, false, 'the retry omits temperature')
+      assert.equal(requests[0].headers.authorization, 'Bearer sk-picky')
 
       const provider = (await request('GET', '/api/providers')).payload.providers.find((item) => item.label === 'Picky')
       assert.equal(provider.temperature, 'omit', 'the model is remembered, so the rejection costs one call ever')
     }, { realModelCall: true })
-  } finally {
-    stub.restore()
-  }
+  })
 })
 
 test('the provider probe reports what it found, and why it could not', async () => {
-  const stub = stubFetch(['93.184.216.34'], () => json({ data: [{ id: 'alpha' }, { id: 'beta' }] }))
-  try {
+  await withProviderServer((_record, response) => {
+    json(response, { data: [{ id: 'alpha' }, { id: 'beta' }] })
+  }, async ({ baseUrl, requests }) => {
     await withServer(async ({ request }) => {
-      const created = await request('POST', '/api/providers', { label: 'Probe me', baseUrl: 'https://93.184.216.34/v1', model: 'alpha', apiKey: 'sk-probe' })
+      const created = await request('POST', '/api/providers', { label: 'Probe me', baseUrl, model: 'alpha', apiKey: 'sk-probe', allowPrivate: true })
       const probed = await request('POST', `/api/providers/${created.payload.provider.id}/test`)
       assert.equal(probed.status, 200, JSON.stringify(probed.payload))
       assert.equal(probed.payload.result.reachable, true)
       assert.deepEqual(probed.payload.result.models, ['alpha', 'beta'])
-      assert.equal(stub.calls[0].headers.Authorization, 'Bearer sk-probe')
-      assert.equal(stub.calls[0].url, 'https://93.184.216.34/v1/models')
+      assert.equal(requests[0].url, '/v1/models')
+      assert.equal(requests[0].headers.authorization, 'Bearer sk-probe')
 
-      const local = await request('POST', '/api/providers', { label: 'Behind the firewall', baseUrl: 'http://127.0.0.1:1234/v1', model: 'x', authStyle: 'none' })
+      // Without local access the probe never connects, and says why.
+      const local = await request('POST', '/api/providers', { label: 'Behind the firewall', baseUrl, model: 'x', authStyle: 'none' })
       const blocked = await request('POST', `/api/providers/${local.payload.provider.id}/test`)
       assert.equal(blocked.payload.result.blocked, true)
       assert.match(String(blocked.payload.result.error), /local-network access/)
 
-      const keyless = await request('POST', '/api/providers', { label: 'Needs a key', baseUrl: 'https://93.184.216.34/v1', model: 'x' })
+      const keyless = await request('POST', '/api/providers', { label: 'Needs a key', baseUrl, model: 'x', allowPrivate: true })
       const unconfigured = await request('POST', `/api/providers/${keyless.payload.provider.id}/test`)
       assert.equal(unconfigured.payload.result.configured, false)
       assert.match(String(unconfigured.payload.result.error), /No key yet/)
     }, { realModelCall: true })
-  } finally {
-    stub.restore()
-  }
+  })
 })

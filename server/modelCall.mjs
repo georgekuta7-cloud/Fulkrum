@@ -1,4 +1,5 @@
-import { privateProviderUrlsAllowed, validateOutboundUrl } from './networkPolicy.mjs'
+import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
+import { pinnedRequest } from './outboundHttp.mjs'
 
 /**
  * One normalized conversation format over three provider protocols.
@@ -248,6 +249,7 @@ export function normalizeUsage(protocol, usage) {
 const retryableStatuses = new Set([408, 409, 425, 429, 500, 502, 503, 504])
 const maxAttempts = Number(process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS ?? 3)
 const requestTimeoutMs = Number(process.env.FULKRUM_PROVIDER_TIMEOUT_MS ?? 60_000)
+const maxResponseBytes = Number(process.env.FULKRUM_MAX_PROVIDER_BYTES ?? 8_000_000)
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -277,23 +279,36 @@ export class ProviderError extends Error {
 }
 
 export function createModelCaller({ providerRegistry, allowPrivate = privateProviderUrlsAllowed() }) {
-  const requestOnce = async (url, options) => {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), requestTimeoutMs)
+  /**
+   * One request, to an address that was validated and is then pinned: the name is
+   * resolved once, the socket goes to that address, and the response is read with
+   * a byte cap instead of being buffered whole. Redirects are not followed here —
+   * a provider that answers 3xx is an error, not a new destination.
+   */
+  const requestOnce = async (url, { method, headers, body, allowPrivate: allowRequest = allowPrivate }) => {
     let response
     try {
-      response = await fetch(url, { ...options, redirect: 'manual', signal: controller.signal })
+      response = await pinnedRequest(url, { method, headers, body, allowPrivate: allowRequest, maxBytes: maxResponseBytes, timeoutMs: requestTimeoutMs })
     } catch (error) {
-      const aborted = error instanceof Error && error.name === 'AbortError'
-      throw new ProviderError(aborted ? `Provider request timed out after ${requestTimeoutMs}ms.` : `Provider request failed: ${error instanceof Error ? error.message : 'unknown error'}`, { retryable: true })
-    } finally {
-      clearTimeout(timeout)
+      const name = error instanceof Error ? error.name : ''
+      const timedOut = name === 'AbortError' || name === 'TimeoutError'
+      throw new ProviderError(timedOut ? `Provider request timed out after ${requestTimeoutMs}ms.` : `Provider request failed: ${error instanceof Error ? error.message : 'unknown error'}`, { retryable: true })
     }
 
-    const payload = /** @type {any} */ (await response.json().catch(() => ({})))
+    if (response.truncated) {
+      throw new ProviderError(`The provider response exceeded ${maxResponseBytes} bytes and was cut off.`, { retryable: false })
+    }
+
+    let payload = /** @type {any} */ ({})
+    try {
+      payload = JSON.parse(response.text)
+    } catch {
+      payload = {}
+    }
+
     if (!response.ok) {
       const message = payload?.error?.message ?? payload?.error ?? `Provider returned ${response.status}`
-      throw new ProviderError(String(message).slice(0, 500), { status: response.status, retryable: retryableStatuses.has(response.status), retryAfter: response.headers.get('retry-after') })
+      throw new ProviderError(String(message).slice(0, 500), { status: response.status, retryable: retryableStatuses.has(response.status), retryAfter: response.headers['retry-after'] ?? null })
     }
     return payload
   }
@@ -320,15 +335,17 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
   const callModel = async (provider, model, messages, { tools = [], instructions } = {}) => {
     const credentials = providerRegistry.credentials(provider)
     // A provider marked as local is allowed to resolve to a private address; the
-    // global flag stays as the fallback for everyone else.
-    const base = await validateOutboundUrl(provider.baseUrl, { allowPrivate: credentials.allowPrivate || allowPrivate })
+    // global flag stays as the fallback for everyone else. The address is checked
+    // and pinned by the request itself, per hop and per attempt.
+    const allow = credentials.allowPrivate || allowPrivate
     const sampling = providerRegistry.sampling(provider, model)
-    const { url, body } = buildRequest(provider.protocol, { baseUrl: base.toString(), model, messages, tools, instructions, temperature: sampling.temperature })
+    const { url, body } = buildRequest(provider.protocol, { baseUrl: provider.baseUrl, model, messages, tools, instructions, temperature: sampling.temperature })
     const headers = { 'Content-Type': 'application/json', ...providerAuthHeaders(provider.protocol, credentials) }
+    const requestOptions = { method: 'POST', headers, body: JSON.stringify(body), allowPrivate: allow }
 
     let payload
     try {
-      payload = await requestWithRetry(0, url, { method: 'POST', headers, body: JSON.stringify(body) })
+      payload = await requestWithRetry(0, url, requestOptions)
     } catch (error) {
       // A model that fixes its own sampling settings answers 400 to any temperature
       // we send. Retry once without it and remember the answer, so a model this
@@ -337,7 +354,7 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
       if (!rejectedTemperature) throw error
       const retryBody = { ...body }
       delete retryBody.temperature
-      payload = await requestWithRetry(0, url, { method: 'POST', headers, body: JSON.stringify(retryBody) })
+      payload = await requestWithRetry(0, url, { ...requestOptions, body: JSON.stringify(retryBody) })
       providerRegistry.rememberTemperature?.(provider, 'omit')
     }
     return parseResponse(provider.protocol, payload)

@@ -1,8 +1,39 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 import { findSecrets, redact } from '../server/redaction.mjs'
 import { FulkrumToolBroker } from '../server/toolBroker.mjs'
 import { withWorkspace } from './helpers.mjs'
+
+test('search does not follow a link out of the workspace, and honours .fulkrumignore', async (t) => {
+  const outside = await mkdtemp(path.join(tmpdir(), 'fulkrum-outside-'))
+  const inside = await mkdtemp(path.join(tmpdir(), 'fulkrum-inside-'))
+  try {
+    await writeFile(path.join(outside, 'reachable.txt'), 'NEEDLE outside the workspace\n', 'utf8')
+    try {
+      // A junction works on Windows without elevation and is the common real-world
+      // case; elsewhere a plain directory symlink. readdir reports a junction as an
+      // ordinary directory, which is how the walk used to leave the workspace.
+      await symlink(outside, path.join(inside, 'linked'), process.platform === 'win32' ? 'junction' : 'dir')
+    } catch (error) {
+      t.skip(`cannot create a directory link here (${error.code})`)
+      return
+    }
+
+    await writeFile(path.join(inside, 'found.txt'), 'NEEDLE inside the workspace\n', 'utf8')
+    await writeFile(path.join(inside, 'ignored.txt'), 'NEEDLE in an ignored file\n', 'utf8')
+    await writeFile(path.join(inside, '.fulkrumignore'), 'ignored.txt\n', 'utf8')
+
+    const broker = new FulkrumToolBroker({ workspaceRoot: inside })
+    const search = await broker.execute('workspace.search', { path: '.', query: 'NEEDLE' })
+    assert.deepEqual(search.results.map((result) => result.path), ['found.txt'], 'the link is skipped and the ignore file is honoured')
+  } finally {
+    await rm(inside, { recursive: true, force: true })
+    await rm(outside, { recursive: true, force: true })
+  }
+})
 
 test('the broker refuses to read credentials', async () => {
   await withWorkspace(async (directory) => {

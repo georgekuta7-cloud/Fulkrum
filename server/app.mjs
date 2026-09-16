@@ -1,7 +1,8 @@
 import http from 'node:http'
 import { canonicalJson } from './canonicalJson.mjs'
 import { diffHunks } from './diff.mjs'
-import { privateProviderUrlsAllowed, validateOutboundUrl } from './networkPolicy.mjs'
+import { findInjectionAttempts } from './injection.mjs'
+import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
 import { fingerprintToolCall, permissionMatrix } from './permissions.mjs'
 import { agentRoles } from './roles.mjs'
 
@@ -186,6 +187,10 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       const safeOutput = toolBroker.redact(output)
       store.updateToolCall(toolCall.id, { status: 'completed', output: safeOutput })
       store.appendEvent({ runId, type: 'tool.completed', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, name: toolCall.name, output: safeOutput, approved } })
+      const injectionAttempts = findInjectionAttempts(safeOutput)
+      if (injectionAttempts.length) {
+        store.appendEvent({ runId, type: 'tool.output.suspicious', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, name: toolCall.name, patterns: injectionAttempts, note: 'Tool output contained text aimed at the model. It is data, and was treated as data.' } })
+      }
       return { ok: true, output: safeOutput }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Tool execution failed.'
@@ -272,7 +277,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           sendJson(response, 404, { error: error instanceof Error ? error.message : 'Unknown provider.' })
           return
         }
-        const result = await providerRegistry.testConnection(provider, { allowPrivate: privateProviderUrlsAllowed(), validateUrl: validateOutboundUrl })
+        const result = await providerRegistry.testConnection(provider, { allowPrivate: privateProviderUrlsAllowed() })
         sendJson(response, result.reachable || !result.configured ? 200 : 502, { provider: providerRegistry.list().find((item) => item.id === provider.id), result })
         return
       }
@@ -745,7 +750,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           agentId,
           name: body.name,
           kind: tool?.kind ?? 'unknown',
-          input: toolBroker.redact(body.input ?? {}),
+          input: toolBroker.sanitizeInput(body.name, body.input ?? {}),
           rawInput: body.input ?? {},
           resolved: resolution.ok ? resolution.resolved : null,
           fingerprint: resolution.ok ? fingerprintToolCall(resolution) : null,
