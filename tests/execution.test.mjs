@@ -127,6 +127,7 @@ test('a configured uid wins over the derived one', () => {
 
 test('cancelling a run takes its container with it', async () => {
   const calls = []
+  /** @type {(value?: unknown) => void} */
   let releaseRun = () => {}
   const runGate = new Promise((resolve) => { releaseRun = resolve })
   const execFileImpl = async (_file, args) => {
