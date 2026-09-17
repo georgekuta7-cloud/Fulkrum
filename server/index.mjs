@@ -49,8 +49,6 @@ const modelCaller = createModelCaller({ providerRegistry, allowPrivate: privateP
 const callProvider = (provider, model, messages, options = {}) => modelCaller.callModel(provider, model, messages, { tools: [], instructions: options.instructions ?? systemPrompt, onDelta: options.onDelta })
 const callModel = (provider, model, messages, options = {}) => modelCaller.callModel(provider, model, messages, { ...options, instructions: options.instructions ?? systemPrompt })
 
-const planService = createPlanService({ store, providerRegistry, pricing, callModel: (provider, model, messages, options) => modelCaller.callModel(provider, model, messages, options) })
-
 const orchestrator = createRunOrchestrator({
   store,
   providerRegistry,
@@ -59,6 +57,8 @@ const orchestrator = createRunOrchestrator({
   callModel,
   pricing,
 })
+
+const planService = createPlanService({ store, providerRegistry, pricing, callModel: (provider, model, messages, options) => modelCaller.callModel(provider, model, messages, options), checkBudget: async (runId) => { orchestrator.assertBudget(runId) } })
 
 const app = createApp({
   store,

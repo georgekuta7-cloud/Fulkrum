@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { findSecrets, redact } from '../server/redaction.mjs'
-import { FulkrumToolBroker } from '../server/toolBroker.mjs'
+import { FulkrumToolBroker, redirectHop } from '../server/toolBroker.mjs'
 import { withWorkspace } from './helpers.mjs'
 
 test('search does not follow a link out of the workspace, and honours .fulkrumignore', async (t) => {
@@ -140,6 +140,28 @@ test('a command returns a receipt of the files it changed', async () => {
     assert.deepEqual(result.changedFiles.modified, [])
     assert.deepEqual(result.changedFiles.removed, [])
   })
+})
+
+test('redirects keep credentials same-origin, and drop them across origins', () => {
+  const headers = { Authorization: 'Bearer secret', 'X-Api-Key': 'key', 'Content-Type': 'application/json', 'X-Custom': 'keep' }
+  const same = redirectHop({ method: 'GET', headers, body: null, currentUrl: 'https://a.test/x', status: 302, location: '/y' })
+  assert.deepEqual(same.headers, headers, 'same origin keeps everything')
+  assert.equal(same.url, 'https://a.test/y')
+
+  const crossed = redirectHop({ method: 'POST', headers, body: '{"a":1}', currentUrl: 'https://a.test/x', status: 302, location: 'https://b.test/y' })
+  assert.equal(crossed.headers.Authorization, undefined, 'authorization stays behind')
+  assert.equal(crossed.headers['X-Api-Key'], undefined, 'gateway keys stay behind too')
+  assert.equal(crossed.headers['Content-Type'], 'application/json', 'non-credential headers travel')
+  assert.equal(crossed.headers['X-Custom'], 'keep')
+  assert.equal(crossed.method, 'GET', 'a 302 POST becomes a GET')
+  assert.equal(crossed.body, null, 'and the body does not follow it')
+
+  const kept = redirectHop({ method: 'POST', headers, body: '{"a":1}', currentUrl: 'https://a.test/x', status: 307, location: 'https://b.test/y' })
+  assert.equal(kept.method, 'POST', '307 preserves the method')
+  assert.equal(kept.body, '{"a":1}', 'and the body')
+  assert.equal(kept.headers.Authorization, undefined, 'but still not the credentials')
+
+  assert.equal(redirectHop({ method: 'GET', headers, body: null, currentUrl: 'https://a.test/x', status: 200, location: null }), null, 'no redirect, no hop')
 })
 
 test('concurrent writes serialize instead of interleaving', async () => {

@@ -201,6 +201,26 @@ test('a cancelled run ends its parked approval instead of leaving it forever', a
   }
 })
 
+test('an approval racing a cancel loses: ended runs execute nothing', async () => {
+  await withServer(async ({ request, store }) => {
+    const runId = await makeRun(request)
+    const requested = await request('POST', `/api/runs/${runId}/tools`, { name: 'workspace.write', agentId: 'builder', input: { path: 'race.txt', content: 'x' } })
+    assert.equal(requested.status, 409)
+    const toolCallId = requested.payload.toolCall.id
+
+    // The interleaving a cancel leaves behind: the run died after the call
+    // parked but before anyone claimed it, so the claim succeeds and then the
+    // pre-execution check must still refuse.
+    store.updateRun(runId, { status: 'cancelled' })
+    const approved = await request('POST', `/api/runs/${runId}/tools/${toolCallId}/approve`, { fingerprint: requested.payload.toolCall.fingerprint })
+    assert.equal(approved.status, 409, JSON.stringify(approved.payload))
+    assert.match(String(approved.payload.error ?? approved.payload.detail ?? ''), /run ended/)
+    assert.equal(store.getToolCall(toolCallId).status, 'denied', 'the claimed call is denied, not left approved')
+    const denial = store.listEvents(runId).find((event) => event.type === 'tool.denied' && event.payload.rule === 'deny.run-ended')
+    assert.ok(denial, 'the audit names the reason')
+  })
+})
+
 test('approving twice executes the call once', async () => {
   await withServer(async ({ request, store, directory }) => {
     const runId = await makeRun(request)

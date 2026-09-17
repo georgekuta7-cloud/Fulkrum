@@ -1085,8 +1085,64 @@ test('a claimed artifact that is not on disk fails loudly instead of flowing on'
       assert.equal(task.status, 'failed')
       assert.match(String(task.result), /ghost\.txt/, 'the failure names what was missing')
       assert.equal(store.getTaskVerdict(task.id)?.overall, 'FAIL', 'the verdict is on record')
+      assert.ok(store.getLatestCheckpoint(runId), 'a crash stop anchors the chain too')
+      const runSpan = store.listSpans(runId).filter((span) => span.kind === 'run').at(-1)
+      // A synchronous fail records the status itself; a thrown crash records
+      // 'error' from the catch path. Either way it must be terminal.
+      assert.equal(runSpan?.status, 'failed', 'and the run span does not claim to be executing')
       assert.equal(verifierCalls, 0, 'a missing file needs no model to judge it')
       assert.match(store.listEvents(runId).map((event) => event.type).join(','), /task\.verified/, 'and the audit shows the check ran')
+    }, { model })
+  } finally {
+    if (previousXai === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousXai
+  }
+})
+
+test('an unexpected crash finalizes the run where the state is known', async () => {
+  const previousXai = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-crash'
+  const model = async ({ options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) {
+      return {
+        text: JSON.stringify({
+          objective: 'Prove crash finalization.',
+          tasks: [{ role: 'builder', title: 'Claim a ghost', instructions: 'Produce ghost.txt.', acceptanceCheck: 'ghost.txt exists.', dependsOn: [] }],
+        }),
+        toolCalls: [],
+        usage: null,
+      }
+    }
+    // The checkpoint itself explodes: the error escapes every layer of the
+    // run and must still leave a checkpoint, a corrected span, and an event.
+    if (instructions.includes('deciding the next step')) throw new Error('checkpoint exploded')
+    return {
+      text: 'Done, trust me.\n```evidence\n{"summary": "Ghost written.", "artifacts": [{"path": "ghost.txt"}]}\n```',
+      toolCalls: [],
+      usage: null,
+    }
+  }
+
+  try {
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'crash fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
+      const runId = run.payload.run.id
+      await request('POST', '/api/chat', { runId, message: 'Prove crash finalization.', history: [] })
+
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+
+      const deadline = Date.now() + 10_000
+      while (Date.now() < deadline && ['executing', 'planning'].includes(store.getRun(runId).status)) {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      assert.equal(store.getRun(runId).status, 'failed', `unexpected status ${store.getRun(runId).status}`)
+      assert.match(String(store.listEvents(runId).find((event) => event.type === 'run.failed')?.payload?.error ?? ''), /checkpoint exploded/)
+      assert.ok(store.getLatestCheckpoint(runId), 'the error path anchors instead of skipping')
+      const runSpan = store.listSpans(runId).filter((span) => span.kind === 'run').at(-1)
+      assert.equal(runSpan?.status, 'error', 'the span is corrected from the stale executing state')
     }, { model })
   } finally {
     if (previousXai === undefined) delete process.env.XAI_API_KEY

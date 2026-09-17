@@ -27,7 +27,10 @@ export function reconcileInterruptedRuns({ store, log = () => {}, abandonWaiters
       store.markRunInterrupted(run.id, reason)
 
       // A tool call mid-flight has an unknown outcome: it may or may not have
-      // happened. Record that honestly instead of guessing either way.
+      // happened. Record that honestly instead of guessing either way. An
+      // `approved` call is the worst case here — approval was claimed but the
+      // execution may never have started — so it is interrupted, never resumed
+      // as approved, and never left stranded where no endpoint can reach it.
       for (const call of store.listToolCalls(run.id)) {
         if (call.status === 'running' || call.status === 'intent') {
           store.updateToolCall(call.id, { status: 'interrupted', error: 'The bridge stopped while this call was in flight; its outcome is unknown.' })
@@ -35,6 +38,8 @@ export function reconcileInterruptedRuns({ store, log = () => {}, abandonWaiters
           // The worker waiting on this is gone, so the approval can never resume
           // it. The run has to restart the step and ask again.
           store.updateToolCall(call.id, { status: 'interrupted', error: 'The bridge stopped while this call awaited approval. Resume the run to ask again.' })
+        } else if (call.status === 'approved') {
+          store.updateToolCall(call.id, { status: 'interrupted', error: 'The bridge stopped after this call was approved but before its outcome was recorded; its outcome is unknown.' })
         }
       }
 

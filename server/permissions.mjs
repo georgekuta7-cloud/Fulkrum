@@ -3,6 +3,7 @@ import { realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { canonicalJson } from './canonicalJson.mjs'
 import { hostMatches } from './networkPolicy.mjs'
+import { findSecrets } from './redaction.mjs'
 
 export const PERMISSION_MODES = ['guided', 'selective', 'autopilot']
 
@@ -182,8 +183,9 @@ export function resolveToolCall({ name, input = {}, workspaceRoot }) {
         ok: true,
         // Header values and body contents are not stored: the audit record binds
         // to their hash so a changed payload invalidates the approval, without
-        // putting credentials into the log.
-        resolved: { tool: name, method, url: url.href, host: url.hostname.toLowerCase(), headerNames: headers, bodySha256: body === undefined ? null : createHash('sha256').update(body, 'utf8').digest('hex') },
+        // putting credentials into the log. Whether the body *looks* secret is
+        // stored as one boolean, so the policy can ask about it later.
+        resolved: { tool: name, method, url: url.href, host: url.hostname.toLowerCase(), headerNames: headers, bodySha256: body === undefined ? null : createHash('sha256').update(body, 'utf8').digest('hex'), bodyHasSecrets: body !== undefined && findSecrets(body).length > 0 },
         sensitive: false,
       }
     }
@@ -330,6 +332,16 @@ export const permissionMatrix = [
     decision: 'ask',
     reason: 'A request that carries a credential header needs approval unless the host is allowlisted.',
     when: ({ tool, resolution, httpAllowlist }) => tool?.kind === 'http' && carriesCredentialHeader(resolution) && !hostMatches(resolution?.resolved?.host, httpAllowlist ?? []),
+  },
+  {
+    id: 'ask.http-secret-body',
+    decision: 'ask',
+    // A warning alone does not stop autopilot from POSTing a file it just
+    // read to a host: reading .env is denied, but exfiltrating its contents
+    // through a body shaped like a secret is the same leak. An allowlisted
+    // host is pre-approved trust, so this only asks outside it.
+    reason: 'A request body shaped like a credential needs approval unless the host is allowlisted.',
+    when: ({ tool, resolution, httpAllowlist }) => tool?.kind === 'http' && resolution?.resolved?.bodyHasSecrets === true && !hostMatches(resolution?.resolved?.host, httpAllowlist ?? []),
   },
   {
     id: 'ask.http-autopilot-without-allowlist',

@@ -24,6 +24,23 @@ test('a question parks in every mode, including autopilot', async () => {
   })
 })
 
+test('a secret-shaped body asks outside the allowlist, like a credential header', async () => {
+  await withWorkspace(async (directory) => {
+    const secret = mode(directory, 'http.request', { url: 'https://api.test/submit', method: 'POST', body: { token: 'sk-abcdefghijklmnopqrstuvwxyz0123' } })
+    assert.equal(secret.ok, true)
+    assert.equal(secret.resolved.bodyHasSecrets, true, 'the resolution records the shape, not the secret')
+    const plain = mode(directory, 'http.request', { url: 'https://api.test/submit', method: 'POST', body: { note: 'hello' } })
+    assert.equal(plain.resolved.bodyHasSecrets, false)
+
+    const ask = decidePermission({ mode: 'autopilot', tool: { name: 'http.request', kind: 'http' }, resolution: secret, httpAllowlist: [] })
+    assert.equal(ask.requiresApproval, true, 'autopilot cannot quietly POST a secret elsewhere')
+    assert.equal(ask.ruleId, 'ask.http-secret-body')
+
+    const trusted = decidePermission({ mode: 'autopilot', tool: { name: 'http.request', kind: 'http' }, resolution: secret, httpAllowlist: ['api.test'] })
+    assert.equal(trusted.allowed, true, 'an allowlisted host is pre-approved trust')
+  })
+})
+
 test('paths cannot escape the workspace', async () => {
   await withWorkspace(async (directory) => {
     assert.throws(() => resolveWorkspacePath(directory, '../outside.txt'), /inside the Fulkrum workspace/)

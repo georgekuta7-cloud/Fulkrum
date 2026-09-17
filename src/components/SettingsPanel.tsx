@@ -127,7 +127,19 @@ export function SettingsPanel({ bridge, theme, setTheme, onClose }: { bridge: Br
                       {status?.providers.find((entry) => entry.id === provider.id)?.breaker?.open ? ' · skipped after failures' : ''}
                     </span>
                   </div>
-                  <button type="button" className="icon" title={`Test ${provider.label}`} onClick={async () => { setTests((current) => ({ ...current, [provider.id]: 'testing' })); const result = await testProvider(provider.id); const value = result.result; setTests((current) => ({ ...current, [provider.id]: value.reachable ? `ok · ${value.latencyMs}ms · ${value.models?.length ?? 0} models` : String(value.error ?? value.reason ?? 'failed') })) }}>
+                  <button type="button" className="icon" title={`Test ${provider.label}`} onClick={async () => {
+                    setTests((current) => ({ ...current, [provider.id]: 'testing' }))
+                    try {
+                      const result = await testProvider(provider.id)
+                      const value = result.result
+                      setTests((current) => ({ ...current, [provider.id]: value.reachable ? `ok · ${value.latencyMs}ms · ${value.models?.length ?? 0} models` : String(value.error ?? value.reason ?? 'failed') }))
+                    } catch (caught) {
+                      // A failed probe must land as text, not as a button stuck
+                      // on "testing": the request itself can throw (a 502 from
+                      // an unreachable endpoint), not just report unreachable.
+                      setTests((current) => ({ ...current, [provider.id]: String(caught instanceof Error ? caught.message : 'failed') }))
+                    }
+                  }}>
                     <Zap size={13} />
                   </button>
                   <button type="button" className="tiny-button" onClick={() => setEditing(editing === provider.id ? null : provider.id)}>{editing === provider.id ? 'close' : 'edit'}</button>

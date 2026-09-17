@@ -1,5 +1,14 @@
 import { providerAuthHeaders } from './modelCall.mjs'
 import { pinnedRequest } from './outboundHttp.mjs'
+import { isSensitiveKeyName } from './redaction.mjs'
+
+/**
+ * What a credential-shaped header value looks like once it has left the
+ * server: present, but unreadable. The editor round-trips it back verbatim,
+ * and the registry resolves it against the stored value — so masking never
+ * wipes a key, and a masked value with nothing stored is refused outright.
+ */
+export const MASKED_HEADER_VALUE = '••••••••'
 
 const builtInProviders = [
   { id: 'grok', label: 'Grok', protocol: 'openai-compatible', envKeys: ['XAI_API_KEY'], baseUrl: process.env.XAI_BASE_URL ?? 'https://api.x.ai/v1', defaultModel: process.env.FULKRUM_GROK_MODEL ?? 'grok-4' },
@@ -66,7 +75,12 @@ function publicProvider(provider, settings) {
     keySource: credentials.keySource,
     authStyle: credentials.style,
     authHeader: credentials.headerName,
-    headers: credentials.headers,
+    // Names travel; credential-shaped values do not. The editor shows the mask
+    // and sends it back unchanged, which updateSettings resolves below.
+    headers: Object.fromEntries(Object.entries(credentials.headers).map(([name, value]) => [
+      name,
+      isSensitiveKeyName(name) ? MASKED_HEADER_VALUE : value,
+    ])),
     allowPrivate: credentials.allowPrivate,
     temperature: credentials.temperature,
   }
@@ -278,6 +292,9 @@ export function createProviderRegistry(store) {
       const provider = validateCustomProvider(input)
       store.saveCustomProvider(provider)
       const patch = parseProviderSettings(input)
+      if (Object.values(patch.headers ?? {}).includes(MASKED_HEADER_VALUE)) {
+        throw new Error('A masked header value needs a stored value to keep: retype the header.')
+      }
       if (Object.keys(patch).length) store.saveProviderSettings(provider.id, patch)
       return provider
     },
@@ -289,6 +306,23 @@ export function createProviderRegistry(store) {
       const mergedStyle = patch.authStyle ?? settingsFor(provider.id)?.authStyle ?? 'auto'
       const mergedHeader = patch.authHeader ?? settingsFor(provider.id)?.authHeader ?? null
       if (mergedStyle === 'header' && !mergedHeader) throw new Error('A custom auth header needs a header name.')
+      if (patch.headers) {
+        // The editor sends masked values back for headers it never saw. Resolve
+        // each against what is stored: replace semantics are preserved (an
+        // omitted name is still deleted), and a mask with nothing behind it is
+        // refused rather than stored as a row of dots.
+        const stored = settingsFor(provider.id)?.headers ?? {}
+        const resolved = {}
+        for (const [name, value] of Object.entries(patch.headers)) {
+          if (value === MASKED_HEADER_VALUE) {
+            if (stored[name] === undefined) throw new Error(`Header "${name}" shows a masked value with nothing stored: retype it.`)
+            resolved[name] = stored[name]
+          } else {
+            resolved[name] = value
+          }
+        }
+        patch.headers = resolved
+      }
       store.saveProviderSettings(provider.id, patch)
       return this.list().find((item) => item.id === provider.id)
     },

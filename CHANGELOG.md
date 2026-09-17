@@ -54,6 +54,26 @@ All notable changes to Fulkrum are documented here. This project follows
 - **A gVisor runtime option** (`FULKRUM_CONTAINER_RUNTIME=runsc`) interposes a
   user-space kernel between commands and the host; one flag, the rest of the
   boundary unchanged.
+- **Redirects cannot smuggle credentials or bodies.** A cross-origin hop drops
+  credential headers, and 301/302/303 turn a body-carrying method into GET, so
+  an allowlisted host cannot forward your `Authorization` header or POST a body
+  somewhere nobody approved.
+- **Secret-shaped request bodies ask like credential headers do.** Warnings
+  alone never stopped autopilot from POSTing what it just read; outside the
+  allowlist it now parks for approval, inside it stays pre-approved trust.
+- **Budgets cover planning and chat.** Drafts and replies pass the same ceiling
+  and reservations as worker calls — chat answers 402 at the ceiling, planning
+  falls back with the reason recorded — and the daily ceiling counts calls in
+  flight across runs.
+- **Approvals survive crashes and cancel races.** A call claimed but never
+  executed is interrupted as outcome-unknown on restart instead of stranding as
+  approved, and an approval racing a cancel is refused once the run has ended.
+- **Terminal runs finalize where the state is known.** Budget stops and crashes
+  now anchor the chain, correct the run span, and export the trace from the
+  error path instead of a finalizer that ran too early.
+- **Stored provider headers are masked.** Credential-shaped values come back as
+  a sentinel the editor round-trips; the server keeps the stored value unless
+  retyped, and refuses a mask with nothing behind it.
 - **Replies stream, and the text arrives as it is written.** The request goes out with
   `stream: true` through the same pinned, byte-capped client as every other outbound
   call; three protocols stream three different ways and all three normalize into the

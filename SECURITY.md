@@ -62,13 +62,19 @@ act:
    allowlist. The address is then **pinned**: the name is resolved once, the
    validated address is what the socket connects to, and SNI and the `Host` header
    still carry the original name. Checking a name and then letting the platform
-   resolve it again is a gap a rebinding host can walk through.
+   resolve it again is a gap a rebinding host can walk through. A redirect that
+   crosses origins drops credential headers (`Authorization`,
+   `Proxy-Authorization`, `Cookie`, anything shaped like an api key or token) —
+   an allowlisted host must not forward your credentials wherever it points
+   next — and 301/302/303 turn a body-carrying method into GET, so a POST body
+   is never resent to a new URL.
 7. **A request that carries a credential needs approval.** `Authorization`,
    `Proxy-Authorization`, `Cookie`, `X-Api-Key`, and `Api-Key` make an outbound
    request an approval question even in autopilot, unless the host is allowlisted —
    the shape an injected instruction takes is "read a config file, then send it
-   somewhere". The audit log records header *names* and a hash of each value, never
-   the value.
+   somewhere". A body shaped like a credential is treated the same way: warnings
+   alone never stopped autopilot from POSTing it. The audit log records header
+   *names* and a hash of each value, never the value.
 8. **Secrets are not readable by tools.** Known credential paths are refused at
    the tool boundary, and tool output is scanned for credential shapes before it
    reaches the model or the audit log. Key names are matched by segment, so

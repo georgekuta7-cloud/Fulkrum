@@ -53,7 +53,7 @@ still verifies — as JSON, or as Markdown with `?format=md`.
 ## Checks
 
 ```powershell
-npm test               # 157 tests: policy, persistence, durability, execution boundary, providers, outbound HTTP, redaction, and the HTTP API
+npm test               # 195 tests: policy, persistence, durability, execution boundary, providers, outbound HTTP, redaction, collaboration, and the HTTP API
 npm run test:ui        # component tests: the approval dock, the run header, the plan editor, search
 npm run lint
 npm run typecheck      # the client, and the server and tests via checkJs
@@ -328,6 +328,6 @@ tamper-evident rather than tamper-proof.
 - **The audit chain is tamper-evident, not tamper-proof.** The head is anchored outside the database now, so deleting the events and the checkpoint row together is detectable rather than silent — but anyone who can write both files can still rewrite both. Signing the head with a key that stays off the machine is not built, and a key stored next to what it signs would add little.
 - **Budgets reserve an estimate, not the true cost.** A call is held against the ceiling at what the largest previous call cost (or a floor), because cost is only known after it returns. That stops parallel readers passing the same check together; it does not make the ceiling exact, and reported spend stays a lower bound while a model has no entry in the price table. The daily window is local midnight unless `FULKRUM_BUDGET_TIMEZONE=UTC`.
 - **A key entered in the settings drawer is stored unencrypted** in the local database, which is gitignored. An environment variable of the same name takes precedence.
-- **There is no production run mode.** `npm run dev` starts the UI and the bridge together; `npm run preview` serves the built assets without the bridge, so the app is not functional under it.
+- **Run it as one process.** `npm start` serves the built UI from the bridge itself — that is the production run mode. `npm run dev` starts the UI and the bridge together for development; `npm run preview` serves the built assets without the bridge, so the app is not functional under it.
 - **The local API has no authentication.** It binds to loopback and rejects unapproved browser origins, so this is CSRF protection, not access control: any local process can call it, including approving tool calls.
 - **Plan quality depends on the model.** Without a provider key the workers cannot run at all, and the plan falls back to a labelled template. When a model plan cannot be parsed, the fallback is recorded in the audit log rather than hidden.

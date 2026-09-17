@@ -178,6 +178,11 @@ test('a run stops when its budget is reached instead of overspending', async () 
 
       const types = store.listEvents(runId).map((event) => event.type)
       assert.equal(types.includes('run.budget.exceeded'), true)
+      // The terminal state is finalized where it is known, not in the
+      // finalizer that ran before it existed.
+      assert.ok(store.getLatestCheckpoint(runId), 'a budget stop anchors the chain')
+      const runSpan = store.listSpans(runId).filter((span) => span.kind === 'run').at(-1)
+      assert.equal(runSpan?.status, 'blocked', 'the run span says what stopped it')
 
       const tasks = store.listTasks(runId)
       assert.equal(tasks.some((task) => task.status === 'blocked'), true, 'the refused task is marked blocked, not failed')
@@ -305,6 +310,83 @@ test('an unpriced model is reported, so a budget cannot silently do nothing', as
   } finally {
     if (previousKey === undefined) delete process.env.XAI_API_KEY
     else process.env.XAI_API_KEY = previousKey
+  }
+})
+
+test('planning and chat respect the ceiling like worker calls do', async () => {
+  const previousKey = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-gates'
+  const pricing = createPricing({ table: { 'grok-4': { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } } })
+  const model = modelStub({ inputTokens: 1000, billableInputTokens: 1000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 })
+
+  try {
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'gates fixture' })
+      const projectId = project.payload.project.id
+      const run = await request('POST', '/api/runs', { projectId, permissionMode: 'selective' })
+      const runId = run.payload.run.id
+      // projectId is required: a runId alone only resolves inside its own
+      // project, and the default project is not this one.
+      const chat = await request('POST', '/api/chat', { projectId, runId, message: 'Spend something.', history: [] })
+      assert.equal(chat.status, 200)
+      assert.ok(store.spendForRun(runId).costUsd > 0, 'the chat call is on the ledger')
+
+      // Lower the ceiling under what is already spent: the next chat and the
+      // next plan draft both stop instead of spending past it.
+      await request('POST', `/api/runs/${runId}/control`, { action: 'set-budget', budgetUsd: 0.000001 })
+      const refused = await request('POST', '/api/chat', { projectId, runId, message: 'Spend more.', history: [] })
+      assert.equal(refused.status, 402, 'chat answers 402 at the ceiling, not 502')
+      assert.match(String(refused.payload.error ?? refused.payload.detail ?? ''), /budget/i)
+
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, { regenerate: true })
+      assert.equal(drafted.payload.plan.source, 'demo-fallback', 'planning falls back instead of spending')
+      assert.match(String(drafted.payload.fallbackReason ?? ''), /budget/i, 'and says the ceiling is why')
+      assert.ok(store.listEvents(runId).some((event) => event.type === 'plan.rejected'), 'the refusal is in the audit log')
+      // Chat goes through callProvider, not the worker model stub, so the priced
+      // usage is scripted here rather than above.
+    }, { model, pricing, callProvider: async () => ({ text: 'A priced reply.', usage: { inputTokens: 1000, billableInputTokens: 1000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 } }) })
+  } finally {
+    if (previousKey === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousKey
+  }
+})
+
+test('the daily ceiling counts calls in flight across runs, not just recorded spend', async () => {
+  const previousKey = process.env.XAI_API_KEY
+  const previousDaily = process.env.FULKRUM_DAILY_BUDGET_USD
+  process.env.XAI_API_KEY = 'sk-test-key-for-daily'
+  // Two reservations at the $0.02 floor exceed a $0.02 day: the second reader
+  // must stop even though nothing has been recorded yet.
+  process.env.FULKRUM_DAILY_BUDGET_USD = '0.02'
+  const pricing = createPricing({ table: { 'grok-4': { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } } })
+  const model = async ({ options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) return { text: twoReaderPlan, toolCalls: [], usage: usage() }
+    return { text: 'A summary of the work.', toolCalls: [], usage: usage() }
+  }
+
+  try {
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'daily fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'selective' })
+      const runId = run.payload.run.id
+      await request('POST', '/api/chat', { runId, message: 'Do two things.', history: [] })
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+
+      const deadline = Date.now() + 10_000
+      while (Date.now() < deadline && store.getRun(runId).status === 'executing') await new Promise((resolve) => setTimeout(resolve, 100))
+      assert.equal(store.getRun(runId).status, 'budget_exceeded', `unexpected status ${store.getRun(runId).status}`)
+      const exceeded = store.listEvents(runId).find((event) => event.type === 'run.budget.exceeded')
+      assert.equal(exceeded?.payload?.scope, 'day', 'the stop names the daily ceiling')
+      const statuses = store.listTasks(runId).map((task) => task.status).sort()
+      assert.deepEqual(statuses, ['blocked', 'completed'], 'one reader finished, the other saw the first in flight')
+    }, { model, pricing })
+  } finally {
+    if (previousKey === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousKey
+    if (previousDaily === undefined) delete process.env.FULKRUM_DAILY_BUDGET_USD
+    else process.env.FULKRUM_DAILY_BUDGET_USD = previousDaily
   }
 })
 

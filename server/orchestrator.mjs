@@ -22,7 +22,7 @@ const verifyMaxSteps = () => Math.max(Number(process.env.FULKRUM_VERIFY_MAX_STEP
 const taskMaxAttempts = () => Math.max(Number(process.env.FULKRUM_TASK_MAX_ATTEMPTS ?? 2) || 2, 1)
 
 /** Thrown when a run cannot afford another model call. */
-class BudgetExceededError extends Error {
+export class BudgetExceededError extends Error {
   constructor(message, { scope }) {
     super(message)
     this.scope = scope
@@ -157,6 +157,15 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
     return total
   }
 
+  // Every in-flight call in this process, whatever run it belongs to. The daily
+  // ceiling spans runs, so its check must span them too — otherwise two runs
+  // passing the same check together overshoot by two calls, not one.
+  const reservedTotal = () => {
+    let total = 0
+    for (const entry of reservations.values()) total += entry.costUsd
+    return total
+  }
+
   /**
    * What one call is assumed to cost: the largest call this run has already made,
    * or a floor. Cost is only known afterwards, so an estimate that is too low
@@ -202,7 +211,32 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
 
     if (dayCap) {
       const { costUsd } = store.spendSince(startOfToday())
-      if (costUsd >= dayCap) throw new BudgetExceededError(`Today's spend reached the $${dayCap.toFixed(2)} daily budget (spent $${costUsd.toFixed(4)}).`, { scope: 'day' })
+      const committed = costUsd + reservedTotal()
+      if (committed >= dayCap) throw new BudgetExceededError(`Today's spend reached the $${dayCap.toFixed(2)} daily budget (spent $${costUsd.toFixed(4)}${reservedTotal() > 0 ? `, plus $${reservedTotal().toFixed(4)} in flight` : ''}).`, { scope: 'day' })
+    }
+  }
+
+  /**
+   * The budget gate for model calls that do not go through the worker loop —
+   * planning drafts and chat replies. Same check the workers get; without it a
+   * ceiling would stop the team but not the planning that starts it.
+   */
+  const assertBudget = (runId) => {
+    assertWithinBudget(runId)
+  }
+
+  /**
+   * assertBudget plus a reservation held for the call, for callers whose work
+   * can overlap a running worker loop (chat mid-run). The reservation is what
+   * keeps two overlapping calls from passing the same check together.
+   */
+  const withBudget = async (runId, task) => {
+    assertWithinBudget(runId)
+    const reservationId = reserveBudget(runId)
+    try {
+      return await task()
+    } finally {
+      releaseBudget(reservationId)
     }
   }
 
@@ -1108,18 +1142,31 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
   const start = (runId, options = {}) => {
     if (activeRuns.has(runId)) return activeRuns.get(runId)
     const promise = executeRun(runId, options)
-      .catch((error) => {
+      .catch(async (error) => {
         const message = error instanceof Error ? error.message : 'Worker run failed.'
         try {
+          // The finally block above already ran, but the terminal status did
+          // not exist yet when it did: an error was still in flight. So the
+          // checkpoint, the span correction, and the export happen here, where
+          // the final state is known — otherwise budget stops and crashes
+          // would leave no checkpoint and a span stuck at "executing".
+          const finalizeTerminal = async (status, note, spanStatus) => {
+            store.recordAuditCheckpoint(runId, { source: 'run-complete', note })
+            const span = store.listSpans(runId).filter((entry) => entry.kind === 'run').at(-1)
+            if (span) store.endSpan(span.id, { status: spanStatus, attributes: { 'fulkrum.final_status': status } })
+            await maybeExportTrace({ store, runId })
+          }
           if (error instanceof BudgetExceededError) {
             store.updateRun(runId, { status: 'budget_exceeded', budgetExceededAt: Date.now() })
             store.appendEvent({ runId, type: 'run.budget.exceeded', agentId: 'head', payload: { scope: error.scope, error: message, spend: store.spendForRun(runId) } })
+            await finalizeTerminal('budget_exceeded', 'Run reached budget_exceeded.', 'blocked')
             return
           }
           store.updateRun(runId, { status: 'failed' })
           store.appendEvent({ runId, type: 'run.failed', agentId: 'head', payload: { error: message } })
-        } catch {
-          console.error(`[fulkrum] run ${runId} failed and could not be recorded: ${message}`)
+          await finalizeTerminal('failed', `Run failed: ${message.slice(0, 200)}`, 'error')
+        } catch (recordError) {
+          console.error(`[fulkrum] run ${runId} failed and could not be recorded: ${recordError instanceof Error ? recordError.message : message}`)
         }
       })
       .finally(() => activeRuns.delete(runId))
@@ -1184,5 +1231,5 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
     return abandoned
   }
 
-  return { start, activeRuns, approvalWaiters, approveToolCall, denyToolCall, answerToolCall, abandonWaiters, maxStepsPerTask, inFlightBudget: reservedFor }
+  return { start, activeRuns, approvalWaiters, approveToolCall, denyToolCall, answerToolCall, abandonWaiters, assertBudget, withBudget, maxStepsPerTask, inFlightBudget: reservedFor }
 }

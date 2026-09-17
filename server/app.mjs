@@ -11,6 +11,7 @@ import { diffHunks } from './diff.mjs'
 import { findInjectionAttempts } from './injection.mjs'
 import { formatSseFrame } from './sse.mjs'
 import { maybeExportTrace } from './otel.mjs'
+import { BudgetExceededError } from './orchestrator.mjs'
 import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
 import { PERMISSION_MODES, fingerprintToolCall, permissionMatrix, standingScopeFor, validateStandingScope } from './permissions.mjs'
 import { scanArguments } from './redaction.mjs'
@@ -265,11 +266,13 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
     try {
       // Chat streams too: the same sink the workers use, so a caller who reloads
-      // mid-reply sees what has arrived rather than an empty bubble.
+      // mid-reply sees what has arrived rather than an empty bubble. The call
+      // holds a budget reservation like a worker call: chat can overlap a
+      // running loop, and a ceiling must stop it the same way.
       const sink = store.partialSink(run.id, { role: 'head' })
       let completion
       try {
-        completion = await callProvider(provider, model, history, { onDelta: sink.push })
+        completion = await orchestrator.withBudget(run.id, () => callProvider(provider, model, history, { onDelta: sink.push }))
       } finally {
         sink.done()
       }
@@ -283,6 +286,10 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       store.appendEvent({ runId: run.id, type: 'message.assistant', agentId: 'head', payload: { content: cleanReply, demo: false, provider: provider.id, model } })
       sendJson(response, 200, { reply: cleanReply, demo: false, provider: provider.id, model, projectId: project.id, runId: run.id })
     } catch (error) {
+      if (error instanceof BudgetExceededError) {
+        sendJson(response, 402, { error: error.message })
+        return
+      }
       sendJson(response, 502, { error: `Provider request failed: ${error instanceof Error ? error.message : 'unknown error'}` })
     }
   }
@@ -1262,6 +1269,10 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
             sendJson(response, 403, { error: authorization.reason, rule: authorization.ruleId })
             return
           }
+          if (['cancelled', 'completed', 'failed', 'interrupted'].includes(store.getRun(runId)?.status ?? '')) {
+            sendJson(response, 409, { error: 'The run ended before this edit could run.' })
+            return
+          }
           store.updateToolCall(toolCall.id, { status: 'denied', error: 'Superseded by an edited approval.' })
           store.appendEvent({ runId, type: 'tool.denied', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, name: toolCall.name, reason: 'Superseded by an edited approval.', rule: 'deny.superseded', fingerprint: toolCall.fingerprint, resolved: toolCall.resolved } })
           orchestrator.denyToolCall(toolCall.id, 'Superseded by an edited approval: decide again on the new call if one parks.')
@@ -1315,6 +1326,17 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         const claim = store.claimToolCallForApproval(toolCall.id, scope)
         if (!claim.claimed) {
           sendJson(response, 409, { error: 'Tool call is no longer awaiting approval.' })
+          return
+        }
+        // A cancel racing this approval must win: no work starts for a run that
+        // already ended. Checked after the claim and immediately before anything
+        // executes, with no awaits between the check and the handoff below, so
+        // nothing can slip between them in a single-threaded bridge.
+        const liveRun = store.getRun(runId)
+        if (!liveRun || ['cancelled', 'completed', 'failed', 'interrupted'].includes(liveRun.status)) {
+          store.updateToolCall(toolCall.id, { status: 'denied', error: `The run ended (${liveRun?.status ?? 'gone'}) before this call executed.` })
+          store.appendEvent({ runId, type: 'tool.denied', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, name: toolCall.name, reason: 'The run ended before this call executed.', rule: 'deny.run-ended' } })
+          sendJson(response, 409, { error: 'The run ended before this call executed.' })
           return
         }
         store.transaction(() => {

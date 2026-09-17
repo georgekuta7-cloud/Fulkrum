@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
 import { FulkrumStore } from '../server/store.mjs'
+import { reconcileInterruptedRuns } from '../server/recovery.mjs'
 import { withStore, withTempDirectory } from './helpers.mjs'
 
 test('the audit chain records a hash of tool output, not the output itself', async () => {
@@ -374,6 +375,22 @@ test('pruning removes stale tool output but never touches run events', async () 
 
     assert.equal(store.listEvents(run.id).some((item) => item.eventId === event.eventId), true)
     assert.equal(store.verifyEventChain(run.id).ok, true)
+  })
+})
+
+test('a call claimed by approval is interrupted, never stranded as approved', async () => {
+  await withStore((store) => {
+    const project = store.createProject({ name: 'claimed' })
+    const run = store.createRun({ projectId: project.id })
+    store.updateRun(run.id, { status: 'executing' })
+    // Approved but never executed: the crash landed between the atomic claim
+    // and the execution it authorized.
+    const call = store.createToolCall({ runId: run.id, name: 'workspace.write', kind: 'write', input: {}, status: 'approved' })
+
+    const { interrupted } = reconcileInterruptedRuns({ store })
+    assert.equal(interrupted.length, 1)
+    assert.equal(store.getToolCall(call.id).status, 'interrupted', 'no endpoint can reach "approved", so it must not survive')
+    assert.match(String(store.getToolCall(call.id).error), /outcome is unknown/)
   })
 })
 

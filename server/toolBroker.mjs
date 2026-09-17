@@ -137,6 +137,52 @@ async function snapshotManifest(root, directory, results, rules, limit) {
   }
 }
 
+/**
+ * Credential headers, by name. Values are never inspected here — the name is
+ * enough to know a header must not cross an origin boundary.
+ */
+const credentialHeaderNames = new Set(['authorization', 'proxy-authorization', 'cookie', 'cookie2'])
+
+/** A header name shaped like it carries a secret: api keys, tokens, auth. */
+function isCredentialHeaderName(name) {
+  const normalized = String(name ?? '').toLowerCase()
+  if (credentialHeaderNames.has(normalized)) return true
+  return /(api[-_]?key|auth|token|secret|cookie|session)/.test(normalized)
+}
+
+/**
+ * The next request after a redirect response, or null when the chain ends.
+ *
+ * Each hop is decided from data, never trusted blindly: a cross-origin hop
+ * drops credential headers (an allowlisted host must not forward your
+ * Authorization header to wherever it points next), and 301/302/303 turn a
+ * body-carrying method into GET, the way browsers and fetch do — resending a
+ * POST body to a new URL is how credentials end up where nobody approved.
+ */
+export function redirectHop({ method, headers, body, currentUrl, status, location }) {
+  if (![301, 302, 303, 307, 308].includes(status) || !location) return null
+  const nextUrl = new URL(location, currentUrl).href
+  const crossedOrigin = new URL(nextUrl).origin !== new URL(currentUrl).origin
+  let nextHeaders = headers
+  if (crossedOrigin) {
+    nextHeaders = Object.fromEntries(
+      Object.entries(headers ?? {}).filter(([name]) => !isCredentialHeaderName(name)),
+    )
+  }
+  let nextMethod = method
+  let nextBody = body
+  // Fetch semantics: 303 always becomes GET (except HEAD), 301/302 convert
+  // POST to GET, 307/308 preserve everything. A dropped body takes its
+  // content headers with it below, at the call site.
+  const dropBody = (status === 303 && method !== 'GET' && method !== 'HEAD')
+    || ((status === 301 || status === 302) && method === 'POST')
+  if (dropBody) {
+    nextMethod = 'GET'
+    nextBody = null
+  }
+  return { method: nextMethod, headers: nextHeaders, body: nextBody, url: nextUrl }
+}
+
 /** Added, modified, and removed paths between two manifests, bounded. */
 function diffManifests(before, after) {
   const added = []
@@ -358,20 +404,23 @@ export class FulkrumToolBroker {
     }
 
     if (name === 'http.request') {
-      const method = String(resolved.method ?? 'GET').toUpperCase()
-      const requestHeaders = input?.headers && typeof input.headers === 'object' ? input.headers : {}
-      const body = input?.body === undefined ? null : JSON.stringify(input.body)
+      let method = String(resolved.method ?? 'GET').toUpperCase()
+      let requestHeaders = input?.headers && typeof input.headers === 'object' ? { ...input.headers } : {}
+      let body = input?.body === undefined ? null : JSON.stringify(input.body)
       let currentUrl = resolved.url
       let response = null
       // Redirects are followed manually so every hop is validated and pinned on
       // its own. Following automatically would let an allowed host bounce the
-      // request to a private address the first check already refused.
+      // request to a private address the first check already refused — and
+      // would forward credential headers and bodies wherever it points.
       for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
         response = await pinnedRequest(currentUrl, { method, headers: requestHeaders, body, allowedHosts: this.httpAllowlist })
-        const location = response.headers.location
-        if (![301, 302, 303, 307, 308].includes(response.status) || !location) break
-        if (hop === MAX_REDIRECTS) throw new Error('Too many redirects.')
-        currentUrl = new URL(location, currentUrl).href
+        if (hop === MAX_REDIRECTS && [301, 302, 303, 307, 308].includes(response.status) && response.headers.location) {
+          throw new Error('Too many redirects.')
+        }
+        const next = redirectHop({ method, headers: requestHeaders, body, currentUrl, status: response.status, location: response.headers.location })
+        if (!next) break
+        ;({ method, headers: requestHeaders, body, url: currentUrl } = next)
       }
       return {
         status: response.status,

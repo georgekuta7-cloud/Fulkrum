@@ -81,6 +81,7 @@ export async function withServer(callback, { workspaceRoot, callProvider, model,
     providerRegistry,
     pricing: activePricing,
     callModel: (provider, modelName, messages, options) => modelCall({ provider, model: modelName, messages, options }),
+    checkBudget: async (runId) => { orchestrator.assertBudget(runId) },
   })
   const app = createApp({
     store,

@@ -143,6 +143,34 @@ test('a key entered in the UI is stored, used, and never handed back', async () 
   })
 })
 
+test('credential-shaped headers are masked, kept, and never stored as dots', async () => {
+  await withServer(async ({ request, store }) => {
+    const created = await request('POST', '/api/providers', { label: 'Masked gateway', baseUrl: 'https://93.184.216.34/v1', model: 'm-1' })
+    assert.equal(created.status, 201, JSON.stringify(created.payload))
+    const id = created.payload.provider.id
+
+    const saved = await request('PATCH', `/api/providers/${id}`, { headers: { Authorization: 'Bearer s3cr3t-live-value', 'X-Tenant': 'acme' } })
+    assert.equal(saved.status, 200, JSON.stringify(saved.payload))
+    assert.equal(saved.payload.provider.headers.Authorization, '••••••••', 'the secret value never comes back')
+    assert.equal(saved.payload.provider.headers['X-Tenant'], 'acme', 'plain configuration still does')
+
+    const listed = await request('GET', '/api/providers')
+    assert.equal(JSON.stringify(listed.payload).includes('s3cr3t-live-value'), false, 'no endpoint serializes it back')
+
+    // Saving the masked form keeps the stored secret instead of wiping it.
+    const kept = await request('PATCH', `/api/providers/${id}`, { headers: { Authorization: '••••••••', 'X-Tenant': 'acme-2' } })
+    assert.equal(kept.status, 200, JSON.stringify(kept.payload))
+    assert.equal(store.getProviderSettings(id).headers.Authorization, 'Bearer s3cr3t-live-value', 'the stored value survived the round trip')
+    assert.equal(store.getProviderSettings(id).headers['X-Tenant'], 'acme-2')
+
+    // But a mask with nothing behind it is refused rather than stored.
+    const fresh = await request('POST', '/api/providers', { label: 'Fresh gateway', baseUrl: 'https://93.184.216.34/v1', model: 'm-2' })
+    const refused = await request('PATCH', `/api/providers/${fresh.payload.provider.id}`, { headers: { 'X-Token': '••••••••' } })
+    assert.equal(refused.status, 400, JSON.stringify(refused.payload))
+    assert.match(String(refused.payload.error ?? ''), /retype/)
+  })
+})
+
 test('a loopback endpoint is refused until local access is enabled for it', async () => {
   await withProviderServer((_record, response) => {
     json(response, { choices: [{ message: { content: 'hello from the local server' } }] })

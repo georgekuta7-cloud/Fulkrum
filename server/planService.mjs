@@ -8,7 +8,7 @@ import { demoPlan, extractPlanJson, planContentHash, planPrompt, validatePlan } 
  * says so in the audit log rather than leaving the run stuck or inventing tasks
  * the model never proposed.
  */
-export function createPlanService({ store, providerRegistry, callModel, pricing }) {
+export function createPlanService({ store, providerRegistry, callModel, pricing, checkBudget = async (_runId) => {} }) {
   const directionFor = (runId) => store.listMessages(runId).filter((message) => message.role === 'user').at(-1)?.content ?? ''
 
   const persist = ({ run, built, source }) => {
@@ -36,6 +36,11 @@ export function createPlanService({ store, providerRegistry, callModel, pricing 
     const messages = [{ role: 'user', content: planPrompt({ direction, workspaceRoot: 'the workspace root', maxTasks: 8 }) }]
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      // Planning drafts bill the same ledger as worker calls, so they pass
+      // the same ceiling first: a budget stops the planning that starts work,
+      // not only the work. A refusal lands in demo-fallback with its reason,
+      // the way provider failures already do.
+      await checkBudget(run.id)
       const startedAt = Date.now()
       const response = await callModel(provider, model, messages, { tools: [], instructions })
       // Planning costs money too, so it lands in the same ledger as worker calls.

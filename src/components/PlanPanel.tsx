@@ -47,7 +47,9 @@ export function PlanPanel({ bridge }: { bridge: Bridge }) {
   }
 
   const approved = plan.plan.status === 'approved'
-  const canApprove = ['planning', 'review', 'interrupted', 'paused'].includes(run?.status ?? '') && !approved
+  // Paused is deliberately absent: the bridge refuses approve-plan from a
+  // paused run, so offering the button would only produce a 409.
+  const canApprove = ['planning', 'review', 'interrupted'].includes(run?.status ?? '') && !approved
 
   const save = async () => {
     setBusy(true)
