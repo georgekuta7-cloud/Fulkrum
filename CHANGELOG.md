@@ -245,6 +245,14 @@ All notable changes to Fulkrum are documented here. This project follows
   left to be discovered.
 
 ### Fixed
+- **The production UI was a blank page.** ES-module scripts are always fetched in
+  CORS mode, so the served page requested its own bundle with an `Origin` header —
+  and the bridge refused its own origin (`FULKRUM_ALLOWED_ORIGINS` defaults to the
+  dev-server origins only), 403-ing the script with nothing mounted and no error
+  anywhere. When the bridge serves the UI, its own loopback origin (Origin equal to
+  the request's Host, on a loopback host) is now first-party; foreign origins are
+  still refused, and the loopback requirement keeps the DNS-rebinding posture.
+  Regression test added.
 - **Live chat answered 502 on every turn.** The success path shadowed the HTTP
   response with the provider result and handed that to the JSON writer, which
   called `writeHead` on a provider payload. Demo mode returned earlier, so a

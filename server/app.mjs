@@ -147,13 +147,29 @@ const controlTransitions = {
  * an unhandled rejection and use to terminate the process, orphaning every run.
  */
 export function createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, planService, pricing, execution = null, allowedOrigins = new Set(), ownerId = 'local', serveUi = false, distDir = 'dist', breaker = null, version = '0.0.0' }) {
-  const isAllowedOrigin = (origin) => !origin || allowedOrigins.has(origin)
+  const distRoot = serveUi ? path.resolve(distDir) : null
+  const uiIndex = distRoot ? path.join(distRoot, 'index.html') : null
+
+  // When the bridge serves the built UI, its own origin is first-party. Module
+  // scripts are always fetched in CORS mode, so the served page fetches its own
+  // assets with an `Origin` header — an origin that is not in
+  // FULKRUM_ALLOWED_ORIGINS (which defaults to the dev-server origins only),
+  // producing a 403 on the script and a blank page with no error anywhere.
+  // A page served by this bridge over HTTP has Origin exactly `http://<Host>`,
+  // so self-origin means: Host header matches Origin AND names a loopback host.
+  // The loopback requirement is what keeps the DNS-rebinding posture: a rebound
+  // Host (evil.example:8787 pointing at 127.0.0.1) is not a loopback literal,
+  // and a browser never lets a foreign page claim a loopback Origin.
+  const selfOriginHosts = new Set(['127.0.0.1', 'localhost', '[::1]'])
+  const isSelfOrigin = (origin, host) => {
+    if (!distRoot || !origin || !host) return false
+    const hostname = host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : host.split(':')[0]
+    return selfOriginHosts.has(hostname) && origin === `http://${host}`
+  }
+  const isAllowedOrigin = (origin, host) => !origin || allowedOrigins.has(origin) || isSelfOrigin(origin, host)
   let draining = null
   /** Open event streams, so draining can end them and let the server close. */
   const openStreams = new Set()
-
-  const distRoot = serveUi ? path.resolve(distDir) : null
-  const uiIndex = distRoot ? path.join(distRoot, 'index.html') : null
   const mimeTypes = {
     '.html': 'text/html; charset=utf-8',
     '.js': 'text/javascript; charset=utf-8',
@@ -418,7 +434,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       }
 
       const origin = request.headers.origin
-      if (!isAllowedOrigin(origin)) {
+      if (!isAllowedOrigin(origin, request.headers.host)) {
         sendJson(response, 403, { error: 'Origin is not allowed.' })
         return
       }
