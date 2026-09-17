@@ -107,3 +107,51 @@ test('reads are clipped to the file size limit', async () => {
     await assert.rejects(() => broker.execute('workspace.read', { path: 'src/large.txt' }), /500000-byte read limit/)
   })
 })
+
+test('unchanged reads come from memory, and any rewrite misses honestly', async () => {
+  await withWorkspace(async (directory) => {
+    const broker = new FulkrumToolBroker({ workspaceRoot: directory })
+    const first = await broker.execute('workspace.read', { path: 'src/notes.txt' })
+    assert.equal(first.cached, undefined, 'the first read does the work')
+    const second = await broker.execute('workspace.read', { path: 'src/notes.txt' })
+    assert.equal(second.cached, true, 'the unchanged file comes from memory')
+    assert.equal(second.content, first.content)
+
+    // A rewrite changes size, so the stale entry can never hit even if the
+    // clock did not visibly move.
+    await writeFile(path.join(directory, 'src', 'notes.txt'), 'changed content, longer than before\n', 'utf8')
+    const third = await broker.execute('workspace.read', { path: 'src/notes.txt' })
+    assert.equal(third.cached, undefined, 'a changed file misses the cache')
+    assert.match(third.content, /changed content/)
+  })
+})
+
+test('a command returns a receipt of the files it changed', async () => {
+  await withWorkspace(async (directory) => {
+    const execution = {
+      run: async () => {
+        await writeFile(path.join(directory, 'built.txt'), 'built\n', 'utf8')
+        return { stdout: 'ok\n', stderr: '' }
+      },
+    }
+    const broker = new FulkrumToolBroker({ workspaceRoot: directory, execution })
+    const result = await broker.execute('shell.exec', { command: 'node', args: ['build.js'], cwd: '.' })
+    assert.deepEqual(result.changedFiles.added, ['built.txt'], 'creations are named')
+    assert.deepEqual(result.changedFiles.modified, [])
+    assert.deepEqual(result.changedFiles.removed, [])
+  })
+})
+
+test('concurrent writes serialize instead of interleaving', async () => {
+  await withWorkspace(async (directory) => {
+    const broker = new FulkrumToolBroker({ workspaceRoot: directory })
+    const [first, second] = await Promise.all([
+      broker.execute('workspace.write', { path: 'race.txt', content: 'a'.repeat(1000) }),
+      broker.execute('workspace.write', { path: 'race.txt', content: 'b'.repeat(1000) }),
+    ])
+    // Serialization is observable: the second write snapshotted the first one's
+    // bytes, which is only possible if it started after the first finished.
+    assert.equal(first.previousContent ?? null, null, 'the first write created the file')
+    assert.equal(second.previousContent, 'a'.repeat(1000), 'the second write saw the first one')
+  })
+})

@@ -62,14 +62,41 @@ function DiffPreview({ preview }: { preview: any }) {
   )
 }
 
+/** The answer to a worker question. Keyed by call so a draft typed for one question can never leak into the next. */
+function AnswerBox({ onAnswer }: { onAnswer: (answer: string) => void }) {
+  const [answer, setAnswer] = useState('')
+  return (
+    <span className="deny-row">
+      <input autoFocus value={answer} placeholder="Answer — the worker continues on your words." onChange={(event) => setAnswer(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') onAnswer(answer) }} />
+      <button type="button" className="primary" disabled={!answer.trim()} onClick={() => onAnswer(answer)}><CornerDownLeft size={13} /> Send answer</button>
+    </span>
+  )
+}
+
+/** Edit-and-approve for a pending write. Keyed by call so an edit always starts from what was proposed. */
+function WriteEditor({ initial, path, onApprove }: { initial: string; path: string; onApprove: (input: { path: string; content: string }) => void }) {
+  const [editing, setEditing] = useState(false)
+  const [content, setContent] = useState(initial)
+  if (!editing) return <button type="button" onClick={() => setEditing(true)}>Edit &amp; approve</button>
+  return (
+    <span className="deny-row">
+      <textarea rows={4} value={content} onChange={(event) => setContent(event.target.value)} />
+      <button type="button" className="primary" onClick={() => onApprove({ path, content })}><Check size={13} /> Approve edits</button>
+      <button type="button" onClick={() => setEditing(false)}><X size={13} /></button>
+    </span>
+  )
+}
+
 export function ApprovalDock({ bridge }: { bridge: Bridge }) {
-  const { approval, approveCall, denyCall } = bridge
+  const { approval, approveCall, denyCall, answerCall } = bridge
   const [reason, setReason] = useState('')
   const [showDeny, setShowDeny] = useState(false)
 
+  const isQuestion = approval?.toolCall.kind === 'ask' || approval?.toolCall.name === 'run.ask'
+
   // Keyboard-first: this is the one surface where a decision is waiting on a person.
   useEffect(() => {
-    if (!approval) return
+    if (!approval || isQuestion) return
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
       if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
@@ -80,7 +107,7 @@ export function ApprovalDock({ bridge }: { bridge: Bridge }) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [approval, approveCall])
+  }, [approval, approveCall, isQuestion])
 
   if (!approval) return null
   const { toolCall, rule, warnings, preview } = approval
@@ -99,8 +126,17 @@ export function ApprovalDock({ bridge }: { bridge: Bridge }) {
       </header>
 
       <div className="approval-body">
-        <ResolvedArguments resolved={toolCall.resolved} name={toolCall.name} />
-        <DiffPreview preview={preview} />
+        {isQuestion ? (
+          <div className="question">
+            <p className="question-text">{String(toolCall.resolved?.question ?? 'The worker has a question.')}</p>
+            {toolCall.resolved?.context ? <p className="muted">{String(toolCall.resolved.context)}</p> : null}
+          </div>
+        ) : (
+          <>
+            <ResolvedArguments resolved={toolCall.resolved} name={toolCall.name} />
+            <DiffPreview preview={preview} />
+          </>
+        )}
         {warnings.length ? (
           <p className="warning">
             <AlertTriangle size={13} /> The arguments contain something shaped like a credential ({warnings.map((warning) => warning.kinds.join(', ')).join('; ')} in {warnings.map((warning) => warning.field).join(', ')}). It is stored redacted.
@@ -110,11 +146,20 @@ export function ApprovalDock({ bridge }: { bridge: Bridge }) {
       </div>
 
       <div className="approval-actions">
-        <button type="button" className="primary" onClick={() => void approveCall('once')}><Check size={14} /> Approve once <kbd>a</kbd></button>
-        <button type="button" onClick={() => void approveCall('run')}>For this run <kbd>r</kbd></button>
-        <button type="button" title={standing ? `Creates a standing grant: ${standing}` : 'This call cannot be made standing'} onClick={() => void approveCall('always')} disabled={!standing}>
-          Always{standing ? ` (${standing.split(' under ')[1] ?? toolCall.resolved?.host ?? ''})` : ''}
-        </button>
+        {isQuestion ? (
+          <AnswerBox key={toolCall.id} onAnswer={(text) => void answerCall(text)} />
+        ) : (
+          <>
+            <button type="button" className="primary" onClick={() => void approveCall('once')}><Check size={14} /> Approve once <kbd>a</kbd></button>
+            <button type="button" onClick={() => void approveCall('run')}>For this run <kbd>r</kbd></button>
+            <button type="button" title={standing ? `Creates a standing grant: ${standing}` : 'This call cannot be made standing'} onClick={() => void approveCall('always')} disabled={!standing}>
+              Always{standing ? ` (${standing.split(' under ')[1] ?? toolCall.resolved?.host ?? ''})` : ''}
+            </button>
+            {toolCall.name === 'workspace.write' && typeof preview?.content === 'string' ? (
+              <WriteEditor key={toolCall.id} initial={preview.content} path={preview.path} onApprove={(input) => void approveCall('once', input)} />
+            ) : null}
+          </>
+        )}
         {showDeny ? (
           <span className="deny-row">
             <input autoFocus value={reason} placeholder="Why not? The worker reads this." onChange={(event) => setReason(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void denyCall(reason || 'Denied by the user.') }} />
@@ -122,7 +167,7 @@ export function ApprovalDock({ bridge }: { bridge: Bridge }) {
             <button type="button" onClick={() => setShowDeny(false)}><X size={13} /></button>
           </span>
         ) : (
-          <button type="button" className="danger" onClick={() => setShowDeny(true)}>Deny <kbd>d</kbd></button>
+          <button type="button" className="danger" onClick={() => setShowDeny(true)}>{isQuestion ? 'Decline' : 'Deny'} <kbd>d</kbd></button>
         )}
       </div>
     </section>

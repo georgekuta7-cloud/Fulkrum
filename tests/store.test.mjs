@@ -322,6 +322,37 @@ test('tool calls record a fingerprint and can be found by idempotency key', asyn
   })
 })
 
+test('file history matches literal % and _ in paths, not LIKE wildcards', async () => {
+  await withStore((store) => {
+    const project = store.createProject({ name: 'wildcards' })
+    const run = store.createRun({ projectId: project.id })
+    const target = store.createToolCall({
+      runId: run.id,
+      name: 'workspace.read',
+      kind: 'read',
+      input: {},
+      resolved: { tool: 'workspace.read', path: '/ws/100%_exact.txt', relative: '100%_exact.txt' },
+    })
+    store.createToolCall({
+      runId: run.id,
+      name: 'workspace.read',
+      kind: 'read',
+      input: {},
+      resolved: { tool: 'workspace.read', path: '/ws/100ANYTHING_exact.txt', relative: '100ANYTHING_exact.txt' },
+    })
+    store.createToolCall({
+      runId: run.id,
+      name: 'workspace.read',
+      kind: 'read',
+      input: {},
+      resolved: { tool: 'workspace.read', path: '/ws/100%Xexact.txt', relative: '100%Xexact.txt' },
+    })
+
+    const found = store.listToolCallsForPath('100%_exact.txt')
+    assert.deepEqual(found.map((call) => call.id), [target.id], 'wildcards in the path must not match other files')
+  })
+})
+
 test('pruning removes stale tool output but never touches run events', async () => {
   await withStore((store) => {
     const project = store.createProject({ name: 'retention' })

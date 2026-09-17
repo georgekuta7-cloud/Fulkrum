@@ -181,7 +181,11 @@ test('a run stops when its budget is reached instead of overspending', async () 
 
       const tasks = store.listTasks(runId)
       assert.equal(tasks.some((task) => task.status === 'blocked'), true, 'the refused task is marked blocked, not failed')
-      assert.equal(tasks.some((task) => task.status === 'completed'), true, 'work done before the ceiling is kept')
+      // Verification calls cost budget like any other call: the ceiling stops the
+      // research task at its verification step, and work that never started stays
+      // queued rather than being invented.
+      assert.equal(tasks.find((task) => task.agentId === 'research').status, 'blocked', 'the ceiling stopped the verification call after the first worker call')
+      assert.equal(tasks.find((task) => task.agentId === 'builder').status, 'queued', 'work that never started stays queued')
 
       // Two calls were paid for: the planning call and the first worker call.
       const spend = store.spendForRun(runId)
@@ -293,6 +297,7 @@ test('an unpriced model is reported, so a budget cannot silently do nothing', as
       assert.equal(spend.unpricedCalls > 0, true)
       const types = store.listEvents(runId).map((event) => event.type)
       assert.equal(types.includes('run.budget.unmeasurable'), true, 'the run says its spend is a lower bound')
+      assert.equal(types.filter((type) => type === 'run.budget.unmeasurable').length, 1, 'several unpriced calls still produce one lower-bound note')
 
       const trace = await request('GET', `/api/runs/${runId}/trace`)
       assert.equal(trace.payload.calls.some((call) => call.priced === false && call.costUsd === null), true)

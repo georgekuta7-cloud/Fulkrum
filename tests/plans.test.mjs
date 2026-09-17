@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { demoPlan, extractPlanJson, planContentHash, planLayers, splitLayerForConcurrency, validatePlan } from '../server/plans.mjs'
+import { compactTaskMessages } from '../server/orchestrator.mjs'
 import { agentRoles } from '../server/roles.mjs'
 
 const validPlan = {
@@ -94,4 +95,19 @@ test('the demo plan is valid and uses the direction', () => {
   assert.match(plan.objective, /Ship the smallest billing change\./)
   assert.equal(plan.tasks[0].role, 'research')
   assert.deepEqual(plan.tasks[1].dependsOn, [0], 'the build task must wait for research by default')
+})
+
+test('old tool results compact into citations past the token budget', () => {
+  const messages = [
+    { role: 'user', content: 'Your task: do it' },
+    { role: 'assistant', content: 'reading', toolCalls: [] },
+    { role: 'tool', results: [{ id: 'a', name: 'workspace.read', content: 'x'.repeat(4000) }] },
+  ]
+  const { compacted } = compactTaskMessages(messages, 100)
+  assert.equal(compacted, 1)
+  assert.match(messages[2].results[0].content, /^\[compacted: \d+ bytes omitted, sha256 [0-9a-f]{16}/)
+  assert.equal(messages[0].content, 'Your task: do it', 'the assignment is never compacted')
+
+  const quiet = compactTaskMessages([{ role: 'user', content: 'hi' }], 100)
+  assert.equal(quiet.compacted, 0, 'small contexts pass through untouched')
 })

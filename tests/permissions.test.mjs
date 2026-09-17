@@ -10,6 +10,20 @@ import { withWorkspace } from './helpers.mjs'
 
 const mode = (workspaceRoot, name, input) => resolveToolCall({ name, input, workspaceRoot })
 
+test('a question parks in every mode, including autopilot', async () => {
+  await withWorkspace(async (directory) => {
+    const resolution = mode(directory, 'run.ask', { question: 'Which color?' })
+    assert.equal(resolution.ok, true)
+    assert.equal(resolution.resolved.question, 'Which color?')
+    for (const permissionMode of ['guided', 'selective', 'autopilot']) {
+      const decision = decidePermission({ mode: permissionMode, tool: { name: 'run.ask', kind: 'ask' }, resolution, httpAllowlist: [] })
+      assert.equal(decision.requiresApproval, true, `${permissionMode} still parks a question`)
+      assert.equal(decision.ruleId, 'ask.question')
+    }
+    assert.equal(mode(directory, 'run.ask', {}).ok, false, 'a question without a question is unresolvable')
+  })
+})
+
 test('paths cannot escape the workspace', async () => {
   await withWorkspace(async (directory) => {
     assert.throws(() => resolveWorkspacePath(directory, '../outside.txt'), /inside the Fulkrum workspace/)

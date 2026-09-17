@@ -21,6 +21,10 @@ test('each role only sees its own tools', () => {
   assert.equal(isToolAllowedForRole(agentRoles.research, 'workspace.read'), true)
   assert.equal(isToolAllowedForRole(agentRoles.research, 'workspace.write'), false)
   assert.equal(isToolAllowedForRole(agentRoles.research, 'shell.exec'), false)
+  assert.equal(isToolAllowedForRole(agentRoles.research, 'run.ask'), true, 'both roles may ask a human')
+  assert.equal(isToolAllowedForRole(agentRoles.builder, 'run.ask'), true)
+  assert.equal(validateToolArguments('run.ask', { question: 'Which color?' }).ok, true)
+  assert.equal(validateToolArguments('run.ask', {}).ok, false, 'a question is required')
   assert.equal(agentRoles.research.readOnly, true)
   assert.equal(agentRoles.builder.readOnly, false, 'writes must be serialized by the scheduler')
 

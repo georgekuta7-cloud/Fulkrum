@@ -6,6 +6,54 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **Tasks hand off evidence, not transcripts.** A worker ends its summary with a
+  fenced evidence block — findings with paths, artifacts with hashes, test
+  receipts, open questions — validated like a plan and stored in a ledger.
+  Dependents receive a bounded digest of summary plus evidence and artifact
+  pointers, and the review reads the same digests.
+- **A fresh verifier checks every task.** Deterministic checks run first — a
+  claimed artifact either exists on disk or it does not — then a separate
+  read-only session judges the frozen acceptance criteria and records a
+  PASS/FAIL/UNKNOWN verdict. A failed claim stops loudly with the missing item
+  named; the Head review reads with tools instead of judging blind summaries.
+- **Failed work gets a checkpoint, not a silent end.** A failed prerequisite
+  skips its dependents with the cause named; then Head decides repair (bounded
+  retries inside the approved plan), replan (a new version that still needs
+  approval), or stop. Failed runs resume and retry instead of starting over.
+- **File history matches literal `%` and `_`**, not LIKE wildcards.
+- **Tasks shed bulk past a token budget.** Old tool results compact into cited
+  stubs in the live context — bytes omitted plus hash — while the stored turns
+  keep everything for audit and resume. The assignment itself is never compacted.
+- **Unchanged reads come from memory.** The broker caches reads by path, size,
+  and mtime, so parallel researchers share one disk read; any rewrite misses.
+- **Commands return a receipt.** Every `shell.exec` reports which workspace
+  files it added, modified, or removed, so shell work is visible to verifiers
+  and reviewers instead of only to the model that ran it.
+- **Writes serialize across runs.** Mutating calls take a process-wide write
+  lock, extending the within-run writer serialization to concurrent runs;
+  readers never wait.
+- **Workers can ask questions.** The `run.ask` tool parks in every permission
+  mode until a human answers from the dock or declines; the answer becomes the
+  tool result the worker continues on. Approving a question is refused — there
+  is nothing to execute.
+- **Approvals can carry edits.** Approving with changed arguments submits them
+  as a new call through the full policy path: the original is denied as
+  superseded, the worker is released, and an edit that still asks parks again.
+- **Backups keep happening, and restores are a command.** The bridge re-checks
+  backup freshness hourly instead of only at boot; `npm run db:restore`
+  refuses live databases, restores the database plus anchors, and verifies the
+  chains before you boot on them.
+- **Chain verification is cached by head**, so a busy run stops paying O(events)
+  hashing per snapshot poll; any new event invalidates it.
+- **Finished traces export as OTLP/HTTP JSON** when `FULKRUM_OTLP_ENDPOINT` is
+  set — the recorded GenAI attributes translate directly — plus an on-demand
+  maintenance endpoint. Export never fails a run.
+- **A read-only MCP server** (`npm run mcp`) exposes workspace list/read/search
+  plus run reports over stdio, through the same resolve-and-authorize path the
+  agents use. Writes, commands, and HTTP stay behind the approval dock.
+- **A gVisor runtime option** (`FULKRUM_CONTAINER_RUNTIME=runsc`) interposes a
+  user-space kernel between commands and the host; one flag, the rest of the
+  boundary unchanged.
 - **Replies stream, and the text arrives as it is written.** The request goes out with
   `stream: true` through the same pinned, byte-capped client as every other outbound
   call; three protocols stream three different ways and all three normalize into the

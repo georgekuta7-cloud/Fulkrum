@@ -131,8 +131,39 @@ function taskFromRow(row) {
     result: row.result,
     planTaskId: row.plan_task_id ?? null,
     stepCount: Number(row.step_count ?? 0),
+    attempt: Number(row.attempt ?? 1),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
+  }
+}
+
+export const evidenceKinds = ['finding', 'artifact', 'test', 'question', 'decision']
+
+function evidenceFromRow(row) {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    taskId: row.task_id,
+    kind: row.kind,
+    summary: row.summary ?? '',
+    path: row.path ?? null,
+    startLine: row.start_line === null || row.start_line === undefined ? null : Number(row.start_line),
+    endLine: row.end_line === null || row.end_line === undefined ? null : Number(row.end_line),
+    sha256: row.sha256 ?? null,
+    toolCallId: row.tool_call_id ?? null,
+    createdAt: Number(row.created_at),
+  }
+}
+
+function verdictFromRow(row) {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    taskId: row.task_id,
+    overall: row.overall,
+    results: parseJson(row.results_json, []),
+    checkedBy: row.checked_by ?? null,
+    createdAt: Number(row.created_at),
   }
 }
 
@@ -208,6 +239,15 @@ export class FulkrumStore {
     this.eventListeners = new Map()
     this.ephemeralListeners = new Map()
     this.partials = new Map()
+    // Verified chain results by run. The snapshot endpoint re-verifies on every
+    // poll; without this a busy run pays O(events) hashing per refresh, O(n²)
+    // over its life. The key is file stamps plus the head and checkpoint it
+    // was computed from: any committed write lands in the WAL or the main
+    // file and moves them, so edits, deletions, and rewrites recompute. It is
+    // a performance key, not a security proof — same-millisecond identical-size
+    // file surgery would alias it — which is why fresh processes always walk
+    // the chain and the anchor file remains the tamper defense.
+    this.chainCache = new Map()
     // Set while a transaction is open, so nested calls join it instead of
     // committing early, and listeners fire after the commit rather than before.
     this.transactionDepth = 0
@@ -268,6 +308,17 @@ export class FulkrumStore {
     let committed = false
     try {
       const result = fn()
+      // An async function would commit before its writes land and reject into
+      // the void later. Transactions here are synchronous by contract: refuse
+      // loudly instead of committing half a unit.
+      if (result && typeof result.then === 'function') {
+        try {
+          this.database.exec('ROLLBACK')
+        } catch {
+          // The transaction is already gone; the contract error is what matters.
+        }
+        throw new Error('store.transaction() takes a synchronous function: its writes must land before COMMIT.')
+      }
       this.database.exec('COMMIT')
       committed = true
       return result
@@ -399,8 +450,11 @@ export class FulkrumStore {
   listToolCallsForPath(relativePath, { limit = 50 } = {}) {
     // `resolved_json` holds the canonical resolution, so the relative path appears
     // in it verbatim; the LIKE is a coarse filter and the caller sees the rows.
-    const needle = `%"relative":"${String(relativePath).replaceAll('"', '')}"%`
-    return this.database.prepare('SELECT * FROM tool_calls WHERE resolved_json LIKE ? ORDER BY created_at DESC LIMIT ?').all(needle, limit).map(toolCallFromRow)
+    // Escape LIKE wildcards the same way message search does: a path containing
+    // `%` or `_` must match itself, not everything those wildcards would match.
+    const escapedPath = String(relativePath).replaceAll('"', '').replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
+    const needle = `%"relative":"${escapedPath}"%`
+    return this.database.prepare('SELECT * FROM tool_calls WHERE resolved_json LIKE ? ESCAPE \'\\\' ORDER BY created_at DESC LIMIT ?').all(needle, limit).map(toolCallFromRow)
   }
 
   /**
@@ -536,6 +590,8 @@ export class FulkrumStore {
     this.database.prepare('INSERT INTO run_events(event_id, run_id, sequence, type, agent_id, payload_json, prev_hash, hash, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(event.eventId, runId, sequence, type, agentId, JSON.stringify(payload), prevHash, hash, createdAt)
     this.database.prepare('UPDATE runs SET updated_at = ? WHERE id = ?').run(createdAt, runId)
+    // The head moved, so any cached verification for this run is stale.
+    this.chainCache.delete(runId)
     if (this.deferredEvents) this.deferredEvents.push(event)
     else this.notifyEvent(event)
     return event
@@ -554,7 +610,41 @@ export class FulkrumStore {
    * claiming a legacy event is intact would be as dishonest as claiming it was
    * altered.
    */
+  /** What a cached verification was computed from: cheap to read, moves on any change that matters. */
+  chainCacheKey(runId) {
+    // The database files themselves are the tripwire: any committed write —
+    // through this connection or another — lands in the WAL or the main file
+    // and moves their size or mtime. No row scans, no hashing, no JSON.
+    const stamp = (target) => {
+      try {
+        const stats = statSync(target)
+        return `${stats.mtimeMs}:${stats.size}`
+      } catch {
+        return 'none'
+      }
+    }
+    const head = this.database.prepare('SELECT sequence, hash FROM run_events WHERE run_id = ? ORDER BY sequence DESC LIMIT 1').get(runId)
+    const checkpoint = this.getLatestCheckpoint(runId)
+    return [
+      stamp(this.filePath),
+      stamp(`${this.filePath}-wal`),
+      stamp(`${this.filePath}-shm`),
+      `${Number(head?.sequence ?? 0)}:${head?.hash ?? ''}`,
+      `${checkpoint?.sequence ?? ''}:${checkpoint?.hash ?? ''}`,
+      this.anchorFile ? stamp(this.anchorFile) : 'off',
+    ].join('|')
+  }
+
   verifyEventChain(runId) {
+    const key = this.chainCacheKey(runId)
+    const cached = this.chainCache.get(runId)
+    if (cached && cached.key === key) return cached.result
+    const result = this.verifyEventChainUncached(runId)
+    this.chainCache.set(runId, { key, result })
+    return result
+  }
+
+  verifyEventChainUncached(runId) {
     const rows = this.database.prepare('SELECT * FROM run_events WHERE run_id = ? ORDER BY sequence ASC').all(runId)
     const checkpoint = this.getLatestCheckpoint(runId)
     const anchor = this.latestAnchor(runId)
@@ -821,7 +911,7 @@ export class FulkrumStore {
 
   createTask({ runId, agentId, title, instructions, planTaskId = null, id = `task-${randomUUID()}` }) {
     const now = Date.now()
-    this.database.prepare('INSERT INTO run_tasks(id, run_id, agent_id, title, instructions, status, plan_task_id, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, runId, agentId, title, instructions, 'queued', planTaskId, now, now)
+    this.database.prepare('INSERT INTO run_tasks(id, run_id, agent_id, title, instructions, status, plan_task_id, attempt, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, runId, agentId, title, instructions, 'queued', planTaskId, 1, now, now)
     return this.getTask(id)
   }
 
@@ -837,8 +927,9 @@ export class FulkrumStore {
       status: patch.status ?? current.status,
       result: patch.result ?? current.result,
       stepCount: patch.stepCount ?? current.stepCount,
+      attempt: patch.attempt ?? current.attempt,
     }
-    this.database.prepare('UPDATE run_tasks SET status = ?, result = ?, step_count = ?, updated_at = ? WHERE id = ?').run(next.status, next.result, next.stepCount, Date.now(), taskId)
+    this.database.prepare('UPDATE run_tasks SET status = ?, result = ?, step_count = ?, attempt = ?, updated_at = ? WHERE id = ?').run(next.status, next.result, next.stepCount, next.attempt, Date.now(), taskId)
     return this.getTask(taskId)
   }
 
@@ -866,6 +957,45 @@ export class FulkrumStore {
 
   countTaskTurns(taskId) {
     return Number(this.database.prepare('SELECT COUNT(*) AS count FROM task_turns WHERE task_id = ?').get(taskId).count)
+  }
+
+  /**
+   * The machine half of a task completion: typed, citable records behind the
+   * summary prose. Handoffs reference these by id instead of pasting whole
+   * transcripts, so downstream context stays small and reviewable.
+   */
+  appendTaskEvidence({ runId, taskId, kind, summary, path = null, startLine = null, endLine = null, sha256 = null, toolCallId = null, id = `ev-${randomUUID()}` }) {
+    if (!evidenceKinds.includes(kind)) throw new Error(`Unknown evidence kind: ${kind}`)
+    const text = typeof summary === 'string' ? summary.trim() : ''
+    if (!text) throw new Error('Evidence needs a non-empty summary.')
+    const line = (value) => (value === null || value === undefined ? null : Number(value))
+    const now = Date.now()
+    this.database.prepare('INSERT INTO task_evidence(id, run_id, task_id, kind, summary, path, start_line, end_line, sha256, tool_call_id, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, runId, taskId, kind, text.slice(0, 2000), path, line(startLine), line(endLine), sha256, toolCallId, now)
+    const row = this.database.prepare('SELECT * FROM task_evidence WHERE id = ?').get(id)
+    return row ? evidenceFromRow(row) : null
+  }
+
+  listTaskEvidence(taskId) {
+    return this.database.prepare('SELECT * FROM task_evidence WHERE task_id = ? ORDER BY created_at ASC').all(taskId).map(evidenceFromRow)
+  }
+
+  /**
+   * The verdict a fresh verifier reached about one task. Recorded separately
+   * from the task row so verification can never be confused with the work it
+   * judges: the builder writes results, the verifier writes verdicts.
+   */
+  recordTaskVerdict({ runId, taskId, overall, results = [], checkedBy = null, id = `verdict-${randomUUID()}` }) {
+    if (!['PASS', 'FAIL', 'UNKNOWN'].includes(overall)) throw new Error(`Unknown verdict: ${overall}`)
+    this.database.prepare('INSERT INTO task_verdicts(id, run_id, task_id, overall, results_json, checked_by, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)')
+      .run(id, runId, taskId, overall, JSON.stringify(results ?? []), checkedBy, Date.now())
+    const row = this.database.prepare('SELECT * FROM task_verdicts WHERE id = ?').get(id)
+    return row ? verdictFromRow(row) : null
+  }
+
+  getTaskVerdict(taskId) {
+    const row = this.database.prepare('SELECT * FROM task_verdicts WHERE task_id = ? ORDER BY created_at DESC LIMIT 1').get(taskId)
+    return row ? verdictFromRow(row) : null
   }
 
   createToolCall({ runId, agentId = null, name, kind, input = {}, rawInput = null, resolved = null, fingerprint = null, idempotencyKey = null, status = 'requested', ruleId = null, warnings = [], id = `tool-${randomUUID()}` }) {
@@ -1446,6 +1576,7 @@ export class FulkrumStore {
     this.eventListeners.clear()
     this.ephemeralListeners.clear()
     this.partials.clear()
+    this.chainCache.clear()
     try {
       this.checkpoint()
     } catch {

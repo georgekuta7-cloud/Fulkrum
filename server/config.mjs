@@ -46,6 +46,12 @@ export const settings = [
   { name: 'FULKRUM_MAX_OUTPUT_TOKENS', group: 'limits', kind: 'int', default: 4096, min: 1, description: 'Upper bound on a single model reply, where the protocol takes one.' },
   { name: 'FULKRUM_MAX_SNAPSHOT_BYTES', group: 'limits', kind: 'int', default: 64_000, min: 0, description: "How much of a file's previous content is kept so its change can be reviewed." },
   { name: 'FULKRUM_MAX_DIFF_LINES', group: 'limits', kind: 'int', default: 2000, min: 0, description: 'Lines a stored artifact diff may contain.' },
+  { name: 'FULKRUM_HANDOFF_MAX_CHARS', group: 'limits', kind: 'int', default: 4000, min: 500, description: 'Characters a task handoff digest may carry into a dependent task.' },
+  { name: 'FULKRUM_EVIDENCE_MAX_ITEMS', group: 'limits', kind: 'int', default: 20, min: 1, description: 'Evidence records a single task completion may carry.' },
+  { name: 'FULKRUM_VERIFY_MAX_STEPS', group: 'limits', kind: 'int', default: 3, min: 1, description: 'Tool calls a verifier or reviewer may make before it must judge.' },
+  { name: 'FULKRUM_TASK_MAX_ATTEMPTS', group: 'limits', kind: 'int', default: 2, min: 1, description: 'Times a task may be attempted including repairs, before the run stops or replans.' },
+  { name: 'FULKRUM_TASK_TOKEN_BUDGET', group: 'limits', kind: 'int', default: 200_000, min: 1000, description: 'Approximate tokens a task may hold in context before old tool results compact into citations.' },
+  { name: 'FULKRUM_SHELL_MANIFEST_MAX_FILES', group: 'limits', kind: 'int', default: 2000, min: 0, description: 'Workspace files a shell receipt may name. 0 disables the before/after manifest.' },
   { name: 'FULKRUM_MAX_HTTP_BODY_BYTES', group: 'limits', kind: 'int', default: 1_000_000, min: 1024, description: 'Response body the http.request tool reads before cutting the connection.' },
   { name: 'FULKRUM_MAX_PROVIDER_BYTES', group: 'limits', kind: 'int', default: 8_000_000, min: 1024, description: 'Provider response size treated as an error rather than parsed.' },
 
@@ -71,6 +77,8 @@ export const settings = [
   // --- Execution boundary ---------------------------------------------------
   { name: 'FULKRUM_CONTAINER_ENGINE', group: 'execution', kind: 'enum', default: '', choices: ['', 'docker', 'docker-wsl', 'podman'], description: 'Container engine to use, or empty to detect one.' },
   { name: 'FULKRUM_CONTAINER_CLI', group: 'execution', kind: 'path', default: '', description: 'Absolute path to the engine CLI, for shells where it is not on PATH.' },
+  { name: 'FULKRUM_CONTAINER_RUNTIME', group: 'execution', kind: 'string', default: '', description: 'Container runtime for agent commands, e.g. runsc for a gVisor user-space kernel. Empty means the engine default.' },
+  { name: 'FULKRUM_OTLP_ENDPOINT', group: 'providers', kind: 'string', default: '', description: 'OTLP/HTTP endpoint receiving finished run traces. Empty disables export.' },
   { name: 'FULKRUM_RUNNER_IMAGE', group: 'execution', kind: 'string', default: 'fulkrum-runner:local', description: 'Runner image. Pin it by digest: the image is part of the boundary.' },
   { name: 'FULKRUM_RUNNER_USER', group: 'execution', kind: 'string', default: '', description: 'uid:gid a command runs as. Defaults to the owner of the workspace.' },
   { name: 'FULKRUM_RUNNER_USERNS', group: 'execution', kind: 'string', default: '', description: 'User-namespace mode, such as keep-id for rootless Podman.' },

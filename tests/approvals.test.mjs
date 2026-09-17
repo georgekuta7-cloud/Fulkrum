@@ -345,6 +345,149 @@ test('an approved write lands the original bytes, not the redacted copy', async 
   })
 })
 
+test('a worker question parks, and the answer resumes it with words it can use', async () => {
+  const previousKey = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-ask'
+  const askPlan = JSON.stringify({
+    objective: 'Ask one question.',
+    tasks: [{ role: 'builder', title: 'Ask first', instructions: 'Ask before doing anything.', dependsOn: [] }],
+  })
+  const model = async ({ messages, options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) return { text: askPlan, toolCalls: [], usage: null }
+    if (instructions.includes('Forge')) {
+      if (!messages.some((message) => message.role === 'tool')) {
+        return { text: 'Blocked on a decision.', toolCalls: [{ id: 'q0', name: 'run.ask', arguments: { question: 'Which color?', context: 'red or blue' } }], usage: null }
+      }
+      const transcript = JSON.stringify(messages)
+      // The answer arrives inside a tool result, so its quotes are escaped in
+      // the transcript JSON: match the escaped form, not the pretty one.
+      const answer = /\\"answer\\":\\"([^"\\]+)\\"/.exec(transcript)?.[1] ?? '(none)'
+      return { text: `Continuing with ${answer}.`, toolCalls: [], usage: null }
+    }
+    return { text: 'Scout summary.', toolCalls: [], usage: null }
+  }
+
+  try {
+    await withServer(async ({ request, store }) => {
+      const runId = await startRun(request)
+      const pending = await waitFor(store, () => store.listToolCalls(runId).find((call) => call.status === 'approval_required'))
+      assert.ok(pending, 'the question should be waiting for a human')
+      assert.equal(pending.name, 'run.ask')
+      assert.equal(pending.ruleId, 'ask.question', 'questions carry their own rule, in every mode')
+
+      const approved = await request('POST', `/api/runs/${runId}/tools/${pending.id}/approve`, { fingerprint: pending.fingerprint })
+      assert.equal(approved.status, 409, 'a question is answered, not approved')
+
+      const answered = await request('POST', `/api/runs/${runId}/tools/${pending.id}/answer`, { answer: 'blue' })
+      assert.equal(answered.status, 200)
+      assert.equal(answered.payload.answered, true)
+      assert.equal(answered.payload.toolCall.status, 'completed')
+
+      const finished = await waitFor(store, () => (store.getRun(runId).status === 'review' ? true : null))
+      assert.ok(finished, `run should finish on the answer, saw ${store.getRun(runId).status}`)
+      const task = store.listTasks(runId)[0]
+      assert.match(String(task.result), /Continuing with blue/, 'the worker continued on the human words')
+      const completed = store.listEvents(runId).find((event) => event.type === 'tool.completed' && event.payload.toolCallId === pending.id)
+      assert.equal(completed.payload.answered, true, 'the audit says this was an answer')
+      assert.equal(store.verifyEventChain(runId).ok, true)
+    }, { model })
+  } finally {
+    if (previousKey === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousKey
+  }
+})
+
+test('declining a question releases the worker with the reason', async () => {
+  const previousKey = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-decline'
+  const askPlan = JSON.stringify({
+    objective: 'Ask one question.',
+    tasks: [{ role: 'builder', title: 'Ask first', instructions: 'Ask before doing anything.', dependsOn: [] }],
+  })
+  const model = async ({ messages, options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) return { text: askPlan, toolCalls: [], usage: null }
+    if (instructions.includes('Forge')) {
+      // Ask once: after the denial the worker must finish on its own, or the
+      // run would park again on a question nobody will answer twice.
+      if (!messages.some((message) => message.role === 'tool')) {
+        return { text: 'Blocked.', toolCalls: [{ id: 'q0', name: 'run.ask', arguments: { question: 'Which color?' } }], usage: null }
+      }
+      return { text: 'Deciding alone, then.', toolCalls: [], usage: null }
+    }
+    return { text: 'Scout summary.', toolCalls: [], usage: null }
+  }
+
+  try {
+    await withServer(async ({ request, store }) => {
+      const runId = await startRun(request)
+      const pending = await waitFor(store, () => store.listToolCalls(runId).find((call) => call.status === 'approval_required'))
+      assert.ok(pending)
+      const denied = await request('POST', `/api/runs/${runId}/tools/${pending.id}/deny`, { reason: 'You decide.' })
+      assert.equal(denied.status, 200)
+      assert.equal(denied.payload.resumed, true, 'declining releases the parked worker')
+      const finished = await waitFor(store, () => (store.getRun(runId).status === 'review' ? true : null))
+      assert.ok(finished, `run should finish after a decline, saw ${store.getRun(runId).status}`)
+    }, { model })
+  } finally {
+    if (previousKey === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousKey
+  }
+})
+
+test('approving with edits runs the edited arguments as a new call', async () => {
+  await withServer(async ({ request, store, directory }) => {
+    const project = await request('POST', '/api/projects', { name: 'edit fixture' })
+    const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'selective' })
+    const runId = run.payload.run.id
+    const requested = await request('POST', `/api/runs/${runId}/tools`, { name: 'workspace.write', agentId: 'builder', input: { path: 'draft.txt', content: 'first version\n' } })
+    assert.equal(requested.status, 409)
+    const original = requested.payload.toolCall
+
+    const edited = await request('POST', `/api/runs/${runId}/tools/${original.id}/approve`, {
+      scope: 'once',
+      fingerprint: original.fingerprint,
+      editedInput: { path: 'draft.txt', content: 'second version\n' },
+    })
+    // Selective mode still asks about the edited write: an edit walks the
+    // policy path like any other call instead of inheriting the old approval.
+    assert.equal(edited.status, 409, JSON.stringify(edited.payload))
+    assert.equal(edited.payload.edited, true, 'the response says this was an edit, not the original')
+    assert.equal(edited.payload.superseded, original.id)
+    assert.equal(edited.payload.approvalRequired, true)
+
+    const parked = edited.payload.toolCall
+    const approved = await request('POST', `/api/runs/${runId}/tools/${parked.id}/approve`, { fingerprint: parked.fingerprint })
+    assert.equal(approved.status, 200, JSON.stringify(approved.payload))
+    assert.equal(await readFile(path.join(directory, 'draft.txt'), 'utf8'), 'second version\n', 'the edited bytes are what ran')
+    assert.equal(store.getToolCall(original.id).status, 'denied', 'the original is dead, not pending')
+    assert.match(String(store.getToolCall(original.id).error), /Superseded/)
+    const superseded = store.listEvents(runId).find((event) => event.type === 'tool.denied' && event.payload.rule === 'deny.superseded')
+    assert.ok(superseded, 'the audit shows the supersede')
+  })
+})
+
+test('an edit that still asks parks again instead of running', async () => {
+  await withServer(async ({ request }) => {
+    const project = await request('POST', '/api/projects', { name: 'edit parks fixture' })
+    const run = await request('POST', `/api/runs`, { projectId: project.payload.project.id, permissionMode: 'selective' })
+    const runId = run.payload.run.id
+    const requested = await request('POST', `/api/runs/${runId}/tools`, { name: 'workspace.write', agentId: 'builder', input: { path: 'a.txt', content: 'a\n' } })
+    assert.equal(requested.status, 409)
+
+    const edited = await request('POST', `/api/runs/${runId}/tools/${requested.payload.toolCall.id}/approve`, {
+      scope: 'once',
+      fingerprint: requested.payload.toolCall.fingerprint,
+      editedInput: { path: 'b.txt', content: 'b\n' },
+    })
+    assert.equal(edited.status, 409, 'the edited call asks on its own merits')
+    assert.equal(edited.payload.approvalRequired, true)
+    assert.ok(edited.payload.toolCall, 'and the new pending call is returned')
+    assert.notEqual(edited.payload.toolCall.id, requested.payload.toolCall.id, 'it is a new call, not the old one')
+  })
+})
+
 test('the head review runs on a provider that has a key, not a hardcoded route', async () => {
   const previousXai = process.env.XAI_API_KEY
   const previousOpenai = process.env.OPENAI_API_KEY

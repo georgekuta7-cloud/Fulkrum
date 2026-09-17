@@ -129,10 +129,10 @@ The audit log is append-only and hash-chained, and it records its own vocabulary
 
 | Group | Types |
 | --- | --- |
-| Run | `run.plan.loaded`, `run.plan.attached`, `run.paused`, `run.resumed`, `run.cancelled`, `run.interrupted`, `run.failed`, `run.review.ready`, `run.route.invalid`, `run.provider.fallback` |
+| Run | `run.plan.loaded`, `run.plan.attached`, `run.paused`, `run.resumed`, `run.cancelled`, `run.interrupted`, `run.failed`, `run.review.ready`, `run.route.invalid`, `run.provider.fallback`, `run.checkpoint` |
 | Budget | `run.budget.exceeded`, `run.budget.unmeasurable` |
 | Plan | `plan.drafted`, `plan.rejected`, `plan.approved`, `plan.approval.rejected` |
-| Task | `task.started`, `task.completed`, `task.cancelled`, `task.skipped`, `task.resumed`, `worker.handoff` |
+| Task | `task.started`, `task.completed`, `task.cancelled`, `task.skipped`, `task.resumed`, `task.retry`, `task.failed`, `task.verified`, `task.completion.invalid`, `task.context.compacted`, `worker.handoff` |
 | Tool | `tool.requested`, `tool.started`, `tool.completed`, `tool.failed`, `tool.denied`, `tool.output.suspicious` |
 | Approval | `approval.requested`, `approval.granted`, `approval.revoked` |
 | Message | `message.user`, `message.assistant` |

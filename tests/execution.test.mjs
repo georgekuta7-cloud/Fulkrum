@@ -56,6 +56,16 @@ test('the container argv carries every isolation flag', () => {
   assert.equal(args.join(' ').includes(' -c '), false)
 })
 
+test('a user-space runtime is one flag, and off means byte-identical argv', () => {
+  const plain = containerArgs({ argv: ['ls'], workspaceRoot: process.cwd(), name: 'shape' })
+  assert.equal(plain.includes('--runtime'), false, 'the default boundary is unchanged')
+  const gvisor = containerArgs({ argv: ['ls'], workspaceRoot: process.cwd(), name: 'shape', runtime: 'runsc' })
+  assert.equal(gvisor[0], 'run')
+  assert.equal(gvisor[1], '--runtime')
+  assert.equal(gvisor[2], 'runsc', 'gVisor interposes syscalls without moving anything else')
+  assert.deepEqual(gvisor.slice(3), plain.slice(1), 'everything after the runtime flag is identical')
+})
+
 test('the container gets a writable home and bounded descriptors', () => {
   const args = containerArgs({ argv: ['npm', 'install'], workspaceRoot: process.cwd(), name: 'shape' })
   const firstTmpfs = args.indexOf('--tmpfs')

@@ -10,6 +10,7 @@ import { buildRunReport, reportToMarkdown } from './runReport.mjs'
 import { diffHunks } from './diff.mjs'
 import { findInjectionAttempts } from './injection.mjs'
 import { formatSseFrame } from './sse.mjs'
+import { maybeExportTrace } from './otel.mjs'
 import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
 import { PERMISSION_MODES, fingerprintToolCall, permissionMatrix, standingScopeFor, validateStandingScope } from './permissions.mjs'
 import { scanArguments } from './redaction.mjs'
@@ -326,6 +327,10 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       created: before === null,
       bytes: Buffer.byteLength(after, 'utf8'),
       previousBytes: before === null ? null : Buffer.byteLength(before, 'utf8'),
+      // The exact bytes the approval is about, so an edit-and-approve starts
+      // from what was proposed rather than from memory. Same exposure as the
+      // diff lines below; fetched on demand, never broadcast.
+      content: after,
       ...diff,
     }
   }
@@ -491,6 +496,18 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         const copy = store.backup()
         const record = store.recordMaintenance({ kind: 'backup', ok: true, summary: `copy written to ${copy.path}`, payload: { path: copy.path, anchorPath: copy.anchorPath, rotated: copy.removed } })
         sendJson(response, 200, { copy, record })
+        return
+      }
+
+      if (request.method === 'POST' && requestUrl.pathname === '/api/maintenance/export-trace') {
+        const body = await readJson(request).catch(() => ({}))
+        const runId = typeof body.runId === 'string' ? body.runId : null
+        if (!runId || !store.getRun(runId)) {
+          sendJson(response, 404, { error: 'Run not found: pass its runId.' })
+          return
+        }
+        const exported = await maybeExportTrace({ store, runId })
+        sendJson(response, 200, exported ? { exported: true, result: exported } : { exported: false, reason: 'No OTLP endpoint is configured (FULKRUM_OTLP_ENDPOINT).' })
         return
       }
 
@@ -1083,9 +1100,11 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         const allowedFrom = {
           'approve-plan': ['planning', 'review', 'interrupted'],
           pause: ['planning', 'executing', 'budget_exceeded'],
-          // Interrupted is what resume exists for, and budget_exceeded resumes once
-          // the ceiling is raised.
-          resume: ['paused', 'interrupted', 'budget_exceeded'],
+          // Interrupted is what resume exists for, budget_exceeded resumes once
+          // the ceiling is raised, and failed resumes because failed tasks keep
+          // their turns: the retry continues the conversation instead of
+          // starting over.
+          resume: ['paused', 'interrupted', 'budget_exceeded', 'failed'],
           cancel: ['planning', 'executing', 'paused', 'review', 'interrupted', 'budget_exceeded'],
         }
         if (!allowedFrom[body.action].includes(run.status)) {
@@ -1203,12 +1222,51 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           return
         }
 
+        // A question is answered, not approved: approving it would execute
+        // nothing and strand the worker on a decision that never arrives.
+        if (toolCall.name === 'run.ask') {
+          sendJson(response, 409, { error: 'Questions are answered, not approved: reply through the answer endpoint or deny the call.' })
+          return
+        }
+
         // The body may confirm which fingerprint was approved. It can never
-        // supply the arguments: those come from the stored request, so an
-        // approval click cannot be redirected to a different payload.
+        // supply the arguments — unless it openly says it is editing them (see
+        // below): those come from the stored request, so an approval click
+        // cannot be redirected to a different payload.
         const body = await readJson(request)
         if (typeof body.fingerprint === 'string' && toolCall.fingerprint && body.fingerprint !== toolCall.fingerprint) {
           sendJson(response, 409, { error: 'The approved fingerprint does not match the recorded tool call.' })
+          return
+        }
+
+        // Approve-with-edits: the user changes the arguments before they run.
+        // This rides an explicit `editedInput` field — a bare `input` is still
+        // ignored, so an approval click cannot be redirected to a different
+        // payload. The edit is a new call, not a silent rewrite: the original
+        // is denied as superseded, the parked worker is released with that
+        // reason, and the edited arguments walk the whole
+        // resolve-authorize-fingerprint path, parking again if asked.
+        if (body.editedInput !== undefined && body.editedInput !== null) {
+          if (typeof body.editedInput !== 'object' || Array.isArray(body.editedInput)) {
+            sendJson(response, 400, { error: 'Edited arguments must be a JSON object.' })
+            return
+          }
+          const edited = toolBroker.resolve(toolCall.name, body.editedInput)
+          if (!edited.ok) {
+            sendJson(response, 409, { error: `The edited arguments cannot be resolved: ${edited.error}` })
+            return
+          }
+          const tool = toolBroker.get(toolCall.name)
+          const authorization = toolBroker.authorize({ mode: run.permissionMode, tool, resolution: edited })
+          if (!authorization.allowed && !authorization.requiresApproval) {
+            sendJson(response, 403, { error: authorization.reason, rule: authorization.ruleId })
+            return
+          }
+          store.updateToolCall(toolCall.id, { status: 'denied', error: 'Superseded by an edited approval.' })
+          store.appendEvent({ runId, type: 'tool.denied', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, name: toolCall.name, reason: 'Superseded by an edited approval.', rule: 'deny.superseded', fingerprint: toolCall.fingerprint, resolved: toolCall.resolved } })
+          orchestrator.denyToolCall(toolCall.id, 'Superseded by an edited approval: decide again on the new call if one parks.')
+          const outcome = await submitToolCall({ runId, run, name: toolCall.name, input: body.editedInput, agentId: toolCall.agentId ?? 'head' })
+          sendJson(response, outcome.status, { ...outcome.payload, edited: true, superseded: toolCall.id })
           return
         }
 
@@ -1307,6 +1365,37 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         // is information it can act on.
         const handled = orchestrator.denyToolCall(toolCallId, reason)
         sendJson(response, 200, { denied: true, resumed: handled.handled, toolCall: store.getToolCall(toolCallId) })
+        return
+      }
+
+      const toolAnswerMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/tools\/([^/]+)\/answer$/)
+      if (request.method === 'POST' && toolAnswerMatch) {
+        const runId = decodeURIComponent(toolAnswerMatch[1])
+        const toolCallId = decodeURIComponent(toolAnswerMatch[2])
+        const run = store.getRun(runId)
+        const toolCall = store.getToolCall(toolCallId)
+        if (!run || !toolCall || toolCall.runId !== runId || toolCall.status !== 'approval_required' || toolCall.name !== 'run.ask') {
+          sendJson(response, 409, { error: 'No question is awaiting an answer on this call.' })
+          return
+        }
+        const body = await readJson(request)
+        const answer = typeof body.answer === 'string' ? body.answer.trim() : ''
+        if (!answer) {
+          sendJson(response, 400, { error: 'An answer is required.' })
+          return
+        }
+        if (Buffer.byteLength(answer, 'utf8') > 5000) {
+          sendJson(response, 413, { error: 'The answer must be 5000 bytes or fewer.' })
+          return
+        }
+        // Answering executes nothing: the words become the tool result, and the
+        // parked worker continues on them the way it would on any tool output.
+        const answered = orchestrator.answerToolCall(toolCallId, answer)
+        if (!answered.handled) {
+          sendJson(response, 409, { error: 'No worker is waiting on this question anymore.' })
+          return
+        }
+        sendJson(response, 200, { answered: true, resumed: true, toolCall: store.getToolCall(toolCallId) })
         return
       }
 

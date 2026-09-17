@@ -3,6 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
 import { crc32, createZip } from '../server/zip.mjs'
+import { buildTaskHandoffDigest, extractFencedBlock, extractStructuredCompletion, summarizeVerdict, validateDecisionBlock, validateStructuredCompletion, validateVerdictBlock } from '../server/artifacts.mjs'
 import { withServer, withTempDirectory } from './helpers.mjs'
 
 test('a zip is readable by an unzip tool, not just by this code', async () => {
@@ -217,4 +218,73 @@ test('a run bundle holds the report, the events, the artifacts and the files', a
       assert.equal((await request('GET', '/api/runs/run-nope/bundle')).status, 404)
     }, { workspaceRoot: directory })
   })
+})
+
+test('evidence blocks are found, validated, and rejected with reasons', () => {
+  assert.deepEqual(extractStructuredCompletion('plain prose, no block'), { found: false })
+
+  const block = 'Summary text.\n```evidence\n{"summary": "Did the thing.", "findings": [{"claim": "The config exists.", "path": "config.json", "startLine": 2}]}\n```'
+  const extracted = extractStructuredCompletion(block)
+  assert.equal(extracted.found, true)
+  const validated = validateStructuredCompletion(extracted.value)
+  assert.equal(validated.ok, true, JSON.stringify(validated.problems))
+  assert.equal(validated.completion.summary, 'Did the thing.')
+  assert.deepEqual(validated.completion.findings[0], { kind: 'finding', summary: 'The config exists.', path: 'config.json', startLine: 2, endLine: null, sha256: null })
+
+  const broken = extractStructuredCompletion('```evidence\n{not json}\n```')
+  assert.equal(broken.found, true)
+  assert.equal(broken.invalidJson, true)
+
+  const missing = validateStructuredCompletion({ findings: [] })
+  assert.equal(missing.ok, false)
+  assert.match(missing.problems.join(' '), /summary/)
+
+  const badArtifact = validateStructuredCompletion({ summary: 'x', artifacts: [{ sha256: 'abc' }] })
+  assert.equal(badArtifact.ok, false)
+  assert.match(badArtifact.problems.join(' '), /artifacts\[0\]\.path/)
+})
+
+test('a handoff digest carries pointers, not transcripts, and stays bounded', () => {
+  const digest = buildTaskHandoffDigest({
+    summary: 'A very long summary. '.repeat(500),
+    evidence: [{ id: 'ev-0123456789abcdef', kind: 'finding', summary: 'The config sets port 2.', path: 'config.json', startLine: 2, endLine: null, sha256: null }],
+    artifacts: [{ path: 'proof.txt', bytes: 14, created: true, diff: { truncated: false, added: 1, removed: 0 } }],
+    maxChars: 600,
+  })
+  assert.equal(digest.length <= 600 + 100, true, `digest must stay bounded (was ${digest.length})`)
+  assert.match(digest, /\(#ev-01234567/, 'evidence travels by id')
+  assert.match(digest, /proof\.txt/, 'artifacts travel as pointers')
+
+  const clipped = buildTaskHandoffDigest({
+    summary: 'A very long summary. '.repeat(500),
+    evidence: [{ id: 'ev-0123456789abcdef', kind: 'finding', summary: 'The config sets port 2.', path: 'config.json', startLine: 2, endLine: null, sha256: null }],
+    artifacts: [],
+    maxChars: 120,
+  })
+  assert.match(clipped, /digest clipped/, 'truncation says so instead of silently dropping')
+})
+
+test('verdict blocks name one result per criterion, and the overall follows them', () => {
+  const extracted = extractFencedBlock('Some prose.\n```verdict\n{"results": [{"criterion": "proof.txt exists.", "status": "PASS", "evidence": ["ev-1"]}]}\n```', 'verdict')
+  assert.equal(extracted.found, true)
+  const validated = validateVerdictBlock(extracted.value)
+  assert.equal(validated.ok, true, JSON.stringify(validated.problems))
+  assert.equal(summarizeVerdict(validated.verdict.results), 'PASS')
+
+  assert.equal(validateVerdictBlock({}).ok, false, 'results are required')
+  assert.equal(validateVerdictBlock({ results: [] }).ok, false, 'an empty verdict judges nothing')
+  assert.equal(validateVerdictBlock({ results: [{ criterion: 'x', status: 'MAYBE' }] }).ok, false, 'statuses are closed')
+
+  assert.equal(summarizeVerdict([{ status: 'PASS' }, { status: 'FAIL' }]), 'FAIL', 'one failure fails')
+  assert.equal(summarizeVerdict([{ status: 'PASS' }, { status: 'UNKNOWN' }]), 'UNKNOWN', 'one unknown clouds')
+  assert.equal(summarizeVerdict([]), 'UNKNOWN', 'nothing checked is not a pass')
+})
+
+test('checkpoint decisions are closed, and proceed is refused while work failed', () => {
+  assert.deepEqual(validateDecisionBlock({ decision: 'repair', reason: 'fixable' }, { failures: 1 }).decision?.decision, 'repair')
+  assert.deepEqual(validateDecisionBlock({ decision: 'stop', reason: 'hopeless' }, { failures: 2 }).decision?.decision, 'stop')
+  assert.equal(validateDecisionBlock({ decision: 'proceed', reason: 'fine' }, { failures: 1 }).ok, false, 'proceed cannot wave through failure')
+  assert.equal(validateDecisionBlock({ decision: 'proceed' }, { failures: 0 }).ok, true, 'proceed is honest when nothing failed')
+  assert.equal(validateDecisionBlock({ decision: 'nap' }, { failures: 0 }).ok, false, 'decisions are closed')
+  assert.equal(validateDecisionBlock(null).ok, false)
 })

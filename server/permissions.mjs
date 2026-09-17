@@ -162,6 +162,17 @@ export function resolveToolCall({ name, input = {}, workspaceRoot }) {
       return { ok: true, resolved: { tool: name, argv: [command, ...args], cwd: target.resolved }, sensitive: false }
     }
 
+    if (name === 'run.ask') {
+      const question = String(raw.question ?? '').trim()
+      if (!question) throw new Error('A question is required.')
+      if (question.includes('\u0000')) throw new Error('A question contained a null byte.')
+      const context = raw.context === undefined || raw.context === null ? null : String(raw.context)
+      // The question text is the resolved call: answering binds to exactly
+      // what was asked, and an edited question parks again rather than
+      // answering something else.
+      return { ok: true, resolved: { tool: name, question: question.slice(0, 2000), context: context?.slice(0, 2000) ?? null }, sensitive: false }
+    }
+
     if (name === 'http.request') {
       const url = new URL(String(raw.url ?? ''))
       const method = String(raw.method ?? 'GET').toUpperCase()
@@ -301,6 +312,12 @@ export const permissionMatrix = [
     decision: 'deny',
     reason: 'Sensitive files are not available to agent tools.',
     when: ({ resolution }) => resolution?.sensitive === true,
+  },
+  {
+    id: 'ask.question',
+    decision: 'ask',
+    reason: 'A question needs a human answer in every mode, including autopilot: nothing else can answer it.',
+    when: ({ tool }) => tool?.kind === 'ask',
   },
   {
     id: 'ask.shell-outside-autopilot',

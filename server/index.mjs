@@ -14,6 +14,7 @@ import { createPricing } from './pricing.mjs'
 import { createExecutionRuntime } from './execution.mjs'
 import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
 import { reconcileInterruptedRuns } from './recovery.mjs'
+import { backupIfStale } from './backup.mjs'
 
 // Read once, validated, with any problems reported below.
 const { values: settings, problems: settingProblems } = resolveSettings()
@@ -95,18 +96,22 @@ if (pruned > 0) console.log(`[fulkrum] pruned ${pruned} stored tool output(s) pa
 
 // A daily copy, written from the live database with VACUUM INTO. A corrupted file
 // with no backup is the one failure this store cannot recover from on its own.
+// The timer below keeps that true for a bridge that runs for weeks, not just
+// for one that restarts daily.
 const backupIntervalHours = Number(settings.FULKRUM_BACKUP_INTERVAL_HOURS ?? 24)
-if (Number.isFinite(backupIntervalHours) && backupIntervalHours > 0) {
+try {
+  backupIfStale(store, { intervalHours: backupIntervalHours, log: (message) => console.log(message) })
+} catch (error) {
+  console.log(`[fulkrum] could not back up the database: ${error instanceof Error ? error.message : error}`)
+}
+const backupTimer = setInterval(() => {
   try {
-    const { newestAgeMs } = store.backupStatus()
-    if (newestAgeMs === null || newestAgeMs > backupIntervalHours * 3_600_000) {
-      const result = store.backup()
-      console.log(`[fulkrum] database backed up to ${result.path}`)
-    }
+    backupIfStale(store, { intervalHours: backupIntervalHours, log: (message) => console.log(message) })
   } catch (error) {
     console.log(`[fulkrum] could not back up the database: ${error instanceof Error ? error.message : error}`)
   }
-}
+}, 3_600_000)
+backupTimer.unref?.()
 
 app.server.listen(port, '127.0.0.1', async () => {
   console.log(`Fulkrum API bridge listening on http://127.0.0.1:${port}`)
@@ -126,7 +131,7 @@ app.server.listen(port, '127.0.0.1', async () => {
   // unavailable engine is a startup fact instead of a surprise mid-run.
   const boundary = await execution.status()
   if (boundary.available) {
-    console.log(`[fulkrum] execution boundary: ${boundary.label} ${boundary.version}, image ${boundary.image}, network ${boundary.network}`)
+    console.log(`[fulkrum] execution boundary: ${boundary.label} ${boundary.version}, image ${boundary.image}, network ${boundary.network}, runtime ${boundary.runtime ?? 'default'}`)
     if (boundary.imageDigest) console.log(`[fulkrum] runner image digest ${boundary.imageDigest}`)
     if (!boundary.imagePinned) {
       console.log('[fulkrum] note: the runner image is identified by tag. A tag can be moved, and this image is part of the')
@@ -144,6 +149,7 @@ let shuttingDown = false
 function shutdown(signal) {
   if (shuttingDown) return
   shuttingDown = true
+  clearInterval(backupTimer)
   console.log(`[fulkrum] received ${signal}; draining`)
   // Draining refuses new work and ends open event streams, so the server can
   // actually close instead of waiting on a stream that never ends.

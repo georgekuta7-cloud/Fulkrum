@@ -70,6 +70,44 @@ describe('the approval dock', () => {
     expect(denyCall).toHaveBeenCalledWith('Not that file.')
   })
 
+  it('answers a worker question instead of approving it', async () => {
+    const answerCall = vi.fn()
+    render(<ApprovalDock bridge={makeBridge({
+      approval: {
+        toolCall: { ...pendingCall, name: 'run.ask', kind: 'ask', resolved: { tool: 'run.ask', question: 'Which color?', context: 'red or blue' } } as any,
+        rule: 'ask.question', warnings: [], preview: null,
+      },
+      answerCall,
+    })} />)
+
+    expect(screen.getByText('Which color?')).toBeInTheDocument()
+    // Approve buttons make no sense for a question: there is nothing to run.
+    expect(screen.queryByRole('button', { name: /Approve once/ })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText(/Answer/), { target: { value: 'blue' } })
+    fireEvent.click(screen.getByRole('button', { name: /Send answer/ }))
+    expect(answerCall).toHaveBeenCalledWith('blue')
+  })
+
+  it('edits a pending write and approves the edited bytes', async () => {
+    const approveCall = vi.fn()
+    render(<ApprovalDock bridge={makeBridge({
+      approval: {
+        toolCall: pendingCall as any,
+        rule: 'ask.default',
+        warnings: [],
+        preview: { path: 'src/app.ts', created: false, bytes: 6, content: 'hello\n', hunks: [] },
+      },
+      approveCall,
+    })} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit/ }))
+    // The query is normalized but the value is not: search for the trimmed text.
+    const editor = await screen.findByDisplayValue('hello')
+    fireEvent.change(editor, { target: { value: 'hi\n' } })
+    fireEvent.click(screen.getByRole('button', { name: /Approve edits/ }))
+    expect(approveCall).toHaveBeenCalledWith('once', { path: 'src/app.ts', content: 'hi\n' })
+  })
+
   it('does not offer a standing grant for a command, because it has no scope', () => {
     render(<ApprovalDock bridge={makeBridge({
       approval: {

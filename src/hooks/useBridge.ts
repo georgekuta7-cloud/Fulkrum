@@ -324,15 +324,28 @@ export function useBridge() {
         return null
       }
     },
-    async approveCall(scope: 'once' | 'run' | 'always') {
+    async approveCall(scope: 'once' | 'run' | 'always', input?: Record<string, unknown>) {
       if (!runId || !approval) return
       try {
-        await api.post(`/api/runs/${encodeURIComponent(runId)}/tools/${encodeURIComponent(approval.toolCall.id)}/approve`, { scope, fingerprint: approval.toolCall.fingerprint })
+        await api.post(`/api/runs/${encodeURIComponent(runId)}/tools/${encodeURIComponent(approval.toolCall.id)}/approve`, { scope, fingerprint: approval.toolCall.fingerprint, ...(input === undefined ? {} : { editedInput: input }) })
         setApproval(null)
-        setNotice(scope === 'always' ? 'Approved, and allowed within that scope from now on.' : scope === 'run' ? 'Approved for the rest of this run.' : 'Approved.')
+        setNotice(input === undefined
+          ? scope === 'always' ? 'Approved, and allowed within that scope from now on.' : scope === 'run' ? 'Approved for the rest of this run.' : 'Approved.'
+          : 'Approved with your edits, as a new call.')
         await Promise.all([loadRun(runId), loadGrants(), loadArtifacts(runId)])
       } catch (caught) {
         report(caught, 'The call could not be approved.')
+      }
+    },
+    async answerCall(answer: string) {
+      if (!runId || !approval) return
+      try {
+        await api.post(`/api/runs/${encodeURIComponent(runId)}/tools/${encodeURIComponent(approval.toolCall.id)}/answer`, { answer })
+        setApproval(null)
+        setNotice('Answered, and the worker continues on it.')
+        await loadRun(runId)
+      } catch (caught) {
+        report(caught, 'The question could not be answered.')
       }
     },
     async denyCall(reason: string) {

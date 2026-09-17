@@ -57,6 +57,19 @@ export const toolSchemas = {
       additionalProperties: false,
     },
   },
+  'run.ask': {
+    kind: 'ask',
+    description: 'Ask the human a question and wait for the answer. Use it when you are blocked on a decision only a person can make, not for anything you could find out with another tool.',
+    parameters: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'The one question you need answered.' },
+        context: { type: 'string', description: 'What you already tried or decided, so the answer can be short.' },
+      },
+      required: ['question'],
+      additionalProperties: false,
+    },
+  },
   'shell.exec': {
     kind: 'shell',
     description: 'Run a command inside the sandboxed workspace container. The container has no network, a read-only filesystem outside the workspace, and a non-root user. Arguments are passed as an array, so no shell interprets them.',

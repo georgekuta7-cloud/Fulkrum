@@ -33,6 +33,52 @@ const planJson = JSON.stringify({
   ],
 })
 
+const contractPlanJson = JSON.stringify({
+  objective: 'Prove the approved plan reaches the worker.',
+  tasks: [
+    { role: 'research', title: 'Look first', instructions: 'Report what is there.', dependsOn: [] },
+    { role: 'builder', title: 'Write the contract proof', instructions: 'Write contract.txt exactly once.', acceptanceCheck: 'contract.txt exists with the approved content.', dependsOn: [0] },
+  ],
+})
+
+test('an approved plan reaches the worker as title, instructions, and acceptance check', async () => {
+  const previousKey = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-contract'
+  let builderContext = null
+  const model = async ({ messages, options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) return { text: contractPlanJson, toolCalls: [], usage: null }
+    if (instructions.includes('Forge')) {
+      builderContext = String(messages?.[0]?.content ?? '')
+      return { text: 'Forge finished the contract proof.', toolCalls: [], usage: null }
+    }
+    return { text: 'Scout summary.', toolCalls: [], usage: null }
+  }
+
+  try {
+    await withServer(async ({ request, store }) => {
+      const runId = await makeRun(request)
+      await request('POST', '/api/chat', { runId, message: 'Prove the contract path.', history: [] })
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      const approved = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+      assert.equal(approved.status, 200, JSON.stringify(approved.payload))
+
+      const deadline = Date.now() + 10_000
+      while (Date.now() < deadline && (!builderContext || store.getRun(runId).status === 'executing')) {
+        await new Promise((resolve) => setTimeout(resolve, 80))
+      }
+      assert.ok(builderContext, 'the builder was given its assignment')
+      assert.match(builderContext, /Write the contract proof/, 'the approved title reaches the worker')
+      assert.match(builderContext, /Write contract\.txt exactly once\./, 'the approved instructions reach the worker')
+      assert.match(builderContext, /contract\.txt exists with the approved content\./, 'the acceptance check reaches the worker')
+      assert.equal(store.getRun(runId).status, 'review', 'the contracted run still completes')
+    }, { model })
+  } finally {
+    if (previousKey === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousKey
+  }
+})
+
 test('planning → pause → resume cannot start a run nobody approved', async () => {
   await withServer(async ({ request, store }) => {
     const runId = await makeRun(request)

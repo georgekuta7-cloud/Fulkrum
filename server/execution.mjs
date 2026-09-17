@@ -73,10 +73,14 @@ export function toEnginePath(target, { inWsl = false } = {}) {
  * The exact argv used for one agent command. Everything that makes the container
  * a boundary lives here, so a test can assert it rather than trust it.
  */
-export function containerArgs({ argv, workspaceRoot, workdir = '.', image = defaultImage, network = 'none', inWsl = false, name = 'fulkrum-preview', memory = '2g', cpus = '2', pidsLimit = 256, runtimeUser = fallbackRuntimeUser, userNamespace = '', nofile = defaultNofile }) {
+export function containerArgs({ argv, workspaceRoot, workdir = '.', image = defaultImage, network = 'none', inWsl = false, name = 'fulkrum-preview', memory = '2g', cpus = '2', pidsLimit = 256, runtimeUser = fallbackRuntimeUser, userNamespace = '', nofile = defaultNofile, runtime = '' }) {
   const containerDir = workdir.startsWith('/') ? workdir : `${containerWorkdir}/${workdir}`.replace(/\/+$/, '')
   return [
     'run',
+    // A user-space kernel (gVisor's runsc) interposes syscalls between the
+    // container and the host: stronger than namespaces alone, cheaper than a
+    // microVM, and one flag because the rest of the boundary is unchanged.
+    ...(runtime ? ['--runtime', runtime] : []),
     '--rm',
     '--name',
     name,
@@ -131,6 +135,7 @@ function clip(text, maximum = maxOutputBytes) {
  *   runtimeUser?: string,
  *   userNamespace?: string,
  *   nofile?: number,
+ *   runtime?: string,
  *   defaultTimeoutMs?: number,
  *   failureTtlMs?: number,
  *   execFileImpl?: (file: string, args: string[], options?: Record<string, unknown>) => Promise<{ stdout?: string, stderr?: string }>
@@ -150,6 +155,7 @@ export function createExecutionRuntime({
   runtimeUser = configuredRuntimeUser,
   userNamespace = process.env.FULKRUM_RUNNER_USERNS ?? '',
   nofile = defaultNofile,
+  runtime: configuredRuntime = process.env.FULKRUM_CONTAINER_RUNTIME ?? '',
   defaultTimeoutMs = Number(process.env.FULKRUM_EXEC_TIMEOUT_MS ?? 120_000),
   // A success is cached for the process lifetime; a failure is re-probed, so
   // installing an engine does not require restarting the bridge.
@@ -158,6 +164,7 @@ export function createExecutionRuntime({
 } = {}) {
   const requested = String(engine).trim()
   const explicitCli = String(cliPath).trim()
+  const containerRuntime = String(configuredRuntime).trim()
   let detected = null
   /**
    * Containers that are running right now, by run id.
@@ -253,7 +260,7 @@ export function createExecutionRuntime({
     async status({ refresh = false } = {}) {
       const result = await runtime.detect({ refresh })
       if (!result.available) return { available: false, reason: result.reason, hint: result.hint }
-      return { available: true, engine: result.engine, label: result.label, version: result.version, image: result.image, imageId: result.imageId, imageDigest: result.imageDigest, imagePinned: result.image.includes('@sha256:'), network: result.network }
+      return { available: true, engine: result.engine, label: result.label, version: result.version, image: result.image, imageId: result.imageId, imageDigest: result.imageDigest, imagePinned: result.image.includes('@sha256:'), network: result.network, runtime: containerRuntime || 'default' }
     },
 
     /**
@@ -270,7 +277,7 @@ export function createExecutionRuntime({
 
       const candidate = { id: status.engine, viaWsl: status.viaWsl }
       const name = `fulkrum-${randomUUID().slice(0, 8)}`
-      const args = containerArgs({ argv, workspaceRoot, workdir: cwd, image, network: status.network, inWsl: status.viaWsl, name, memory, cpus, pidsLimit, runtimeUser: effectiveUser(), userNamespace, nofile })
+      const args = containerArgs({ argv, workspaceRoot, workdir: cwd, image, network: status.network, inWsl: status.viaWsl, name, memory, cpus, pidsLimit, runtimeUser: effectiveUser(), userNamespace, nofile, runtime: containerRuntime })
       const timeout = Math.min(Math.max(Number(timeoutMs) || defaultTimeoutMs, 1_000), 600_000)
       const handle = { name, candidate }
       if (runId) {
@@ -347,7 +354,7 @@ export function createExecutionRuntime({
 
     /** Exposed for tests and documentation: the exact argv a run would use. */
     describeRun(argv, options = {}) {
-      return containerArgs({ argv, workspaceRoot, workdir: options.cwd ?? '.', image, network: 'none', inWsl: requested === 'docker-wsl', name: 'fulkrum-preview', memory, cpus, pidsLimit, runtimeUser: effectiveUser(), userNamespace, nofile })
+      return containerArgs({ argv, workspaceRoot, workdir: options.cwd ?? '.', image, network: 'none', inWsl: requested === 'docker-wsl', name: 'fulkrum-preview', memory, cpus, pidsLimit, runtimeUser: effectiveUser(), userNamespace, nofile, runtime: containerRuntime })
     },
   }
 

@@ -159,6 +159,16 @@ above the artifact list with a revoke button, and both the grant and its
 revocation are events in the audit log. Persistent "always allow" is deliberately
 not offered — a standing exception needs somewhere to review it first.
 
+**Approvals can carry edits.** "Edit & approve" on a pending write submits the
+edited arguments as a new call: the original is denied as superseded, and the
+edit walks the whole policy path — including parking again if it still asks.
+What runs is always exactly what was last approved.
+
+**Workers can ask you things.** A worker blocked on a decision only a person can
+make asks one clear question with `run.ask` and stops. Answer from the dock and
+it continues on your words; decline and it decides alone. Questions park in
+every permission mode, including autopilot — nothing else can answer them.
+
 **You can see what changed.** The Artifacts tab lists every file a run wrote, with
 a real diff: the contents immediately before each write are snapshotted, so the
 diff is the actual change rather than a guess. Files written before snapshots

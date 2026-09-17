@@ -552,6 +552,8 @@ test('the documented routes are the routes the server serves', async () => {
       { method: 'POST', template: '/api/runs/{runId}/tools' },
       { method: 'POST', template: '/api/runs/{runId}/tools/{toolCallId}/approve' },
       { method: 'POST', template: '/api/runs/{runId}/tools/{toolCallId}/deny' },
+      { method: 'POST', template: '/api/runs/{runId}/tools/{toolCallId}/answer' },
+      { method: 'POST', template: '/api/maintenance/export-trace' },
       { method: 'GET', template: '/api/runs/{runId}/grants' },
       { method: 'DELETE', template: '/api/runs/{runId}/grants/{toolName}' },
       { method: 'GET', template: '/api/runs/{runId}/artifacts' },
@@ -873,6 +875,504 @@ test('the tool loop runs model-chosen tools, parks for approval, then resumes', 
       assert.equal(types.includes('worker.handoff'), true)
       assert.equal(types.includes('run.review.ready'), true)
       assert.equal(store.verifyEventChain(runId).ok, true)
+    }, { model })
+  } finally {
+    if (previousXai === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousXai
+  }
+})
+
+test('a dependent worker receives an evidence digest, not the whole transcript', async () => {
+  const previousXai = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-evidence'
+  let builderContext = null
+  const model = async ({ messages, options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) {
+      return {
+        text: JSON.stringify({
+          objective: 'Prove evidence handoffs.',
+          tasks: [
+            { role: 'research', title: 'Find the note', instructions: 'Locate the fixture note.', dependsOn: [] },
+            { role: 'builder', title: 'Use the note', instructions: 'Build on what research found.', dependsOn: [0] },
+          ],
+        }),
+        toolCalls: [],
+        usage: null,
+      }
+    }
+    if (instructions.includes('Forge')) {
+      builderContext = String(messages?.[0]?.content ?? '')
+      return { text: 'Built on the research.', toolCalls: [], usage: null }
+    }
+    return {
+      text: 'The fixture has a notes file.\n```evidence\n{"summary": "Notes file confirmed.", "findings": [{"claim": "src/notes.txt holds the fixture note.", "path": "src/notes.txt", "startLine": 1}]}\n```',
+      toolCalls: [],
+      usage: null,
+    }
+  }
+
+  try {
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'evidence fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'selective' })
+      const runId = run.payload.run.id
+      await request('POST', '/api/chat', { runId, message: 'Prove evidence handoffs.', history: [] })
+
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+
+      const deadline = Date.now() + 10_000
+      while (Date.now() < deadline && store.getRun(runId).status === 'executing') {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      assert.equal(store.getRun(runId).status, 'review', `unexpected status ${store.getRun(runId).status}`)
+
+      // The builder saw a digest: the claim and an evidence id, not a transcript.
+      assert.ok(builderContext, 'the builder was given a handoff')
+      assert.match(builderContext, /From research/, 'the handoff names its source')
+      assert.match(builderContext, /src\/notes\.txt holds the fixture note\./, 'the finding travels')
+      assert.match(builderContext, /\(#ev-[0-9a-f]{8}/, 'evidence travels by id')
+
+      const researchTask = store.listTasks(runId).find((task) => task.agentId === 'research')
+      const records = store.listTaskEvidence(researchTask.id)
+      assert.equal(records.length, 1, 'the finding is in the ledger')
+      assert.equal(records[0].kind, 'finding')
+      assert.equal(records[0].path, 'src/notes.txt')
+
+      const completed = store.listEvents(runId).find((event) => event.type === 'task.completed' && event.payload.taskId === researchTask.id)
+      assert.equal(completed.payload.structured, true, 'the completion is marked structured')
+
+      const handoff = store.listEvents(runId).find((event) => event.type === 'worker.handoff')
+      assert.match(String(handoff.payload.summary), /Evidence \(1\)/, 'the handoff event carries the digest')
+    }, { model })
+  } finally {
+    if (previousXai === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousXai
+  }
+})
+
+test('a fresh verifier checks the work, and the review reads the verdicts', async () => {
+  const previousXai = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-verify'
+  let builderContext = null
+  let reviewPrompt = null
+  const model = async ({ messages, options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) {
+      return {
+        text: JSON.stringify({
+          objective: 'Prove verification.',
+          tasks: [
+            { role: 'research', title: 'Find the note', instructions: 'Locate the fixture note.', acceptanceCheck: 'Findings name the fixture note.', dependsOn: [] },
+            { role: 'builder', title: 'Write the proof', instructions: 'Write proof.txt.', acceptanceCheck: 'proof.txt exists with the built content.', dependsOn: [0] },
+          ],
+        }),
+        toolCalls: [],
+        usage: null,
+      }
+    }
+    if (instructions.includes('verifying a worker task')) {
+      return { text: 'Checked against the workspace.\n```verdict\n{"results": [{"criterion": "The acceptance check holds.", "status": "PASS", "evidence": []}]}\n```', toolCalls: [], usage: null }
+    }
+    if (instructions.includes('reviewing worker outputs')) {
+      reviewPrompt = String(messages?.[0]?.content ?? '')
+      return { text: 'Reviewed: the proof is verified.', toolCalls: [], usage: null }
+    }
+    if (instructions.includes('Forge')) {
+      if (!messages.some((message) => message.role === 'tool')) {
+        builderContext = String(messages?.[0]?.content ?? '')
+        return { text: 'Writing the artifact now.', toolCalls: [{ id: 'v-forge-1', name: 'workspace.write', arguments: { path: 'proof.txt', content: 'verified content' } }], usage: null }
+      }
+      return { text: 'Wrote proof.txt.\n```evidence\n{"summary": "Proof written.", "artifacts": [{"path": "proof.txt"}]}\n```', toolCalls: [], usage: null }
+    }
+    return {
+      text: 'The fixture has a notes file.\n```evidence\n{"summary": "Notes file confirmed.", "findings": [{"claim": "src/notes.txt holds the fixture note.", "path": "src/notes.txt", "startLine": 1}]}\n```',
+      toolCalls: [],
+      usage: null,
+    }
+  }
+
+  try {
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'verify fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
+      const runId = run.payload.run.id
+      await request('POST', '/api/chat', { runId, message: 'Prove verification.', history: [] })
+
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+
+      const deadline = Date.now() + 15_000
+      while (Date.now() < deadline && store.getRun(runId).status === 'executing') {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      assert.equal(store.getRun(runId).status, 'review', `unexpected status ${store.getRun(runId).status}`)
+
+      // Both tasks were judged by a fresh session, not by their own words.
+      for (const task of store.listTasks(runId)) {
+        const verdict = store.getTaskVerdict(task.id)
+        assert.equal(verdict?.overall, 'PASS', `${task.title} should verify`)
+        assert.match(String(verdict?.checkedBy ?? ''), /head via/, 'the verdict names its checker')
+        const turns = JSON.stringify(store.listTaskTurns(task.id))
+        assert.equal(turns.includes('```verdict'), false, 'verdicts live outside the worker conversation')
+      }
+
+      // The claimed artifact is linked to the call that wrote it.
+      const builderTask = store.listTasks(runId).find((task) => task.agentId === 'builder')
+      const artifactRecord = store.listTaskEvidence(builderTask.id).find((record) => record.kind === 'artifact')
+      const writeCall = store.listToolCalls(runId).find((call) => call.name === 'workspace.write' && call.status === 'completed')
+      assert.equal(artifactRecord?.toolCallId, writeCall?.id, 'the artifact points at its write')
+
+      // The builder built on a verified handoff, and the review read the verdicts.
+      assert.match(String(builderContext), /Verified: PASS/, 'downstream sees the upstream verdict')
+      assert.match(String(reviewPrompt), /Verified: PASS/, 'the reviewer sees verdicts, not just claims')
+      assert.match(String(reviewPrompt), /proof\.txt/, 'and the artifact pointers behind them')
+
+      const report = await request('GET', `/api/runs/${runId}/report`)
+      assert.deepEqual(report.payload.tasks.map((task) => task.verification), ['PASS', 'PASS'], 'the report carries verdicts')
+    }, { model })
+  } finally {
+    if (previousXai === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousXai
+  }
+})
+
+test('a claimed artifact that is not on disk fails loudly instead of flowing on', async () => {
+  const previousXai = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-verify-fail'
+  let verifierCalls = 0
+  const model = async ({ options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) {
+      return {
+        text: JSON.stringify({
+          objective: 'Prove loud failure.',
+          tasks: [{ role: 'builder', title: 'Claim a ghost', instructions: 'Produce ghost.txt.', acceptanceCheck: 'ghost.txt exists.', dependsOn: [] }],
+        }),
+        toolCalls: [],
+        usage: null,
+      }
+    }
+    if (instructions.includes('verifying a worker task')) {
+      verifierCalls += 1
+      return { text: 'Looks fine.', toolCalls: [], usage: null }
+    }
+    return {
+      text: 'Done, trust me.\n```evidence\n{"summary": "Ghost written.", "artifacts": [{"path": "ghost.txt"}]}\n```',
+      toolCalls: [],
+      usage: null,
+    }
+  }
+
+  try {
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'ghost fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
+      const runId = run.payload.run.id
+      await request('POST', '/api/chat', { runId, message: 'Prove loud failure.', history: [] })
+
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+
+      const deadline = Date.now() + 10_000
+      while (Date.now() < deadline && ['executing', 'planning'].includes(store.getRun(runId).status)) {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      assert.equal(store.getRun(runId).status, 'failed', 'an unverified claim stops the run instead of flowing on')
+
+      const task = store.listTasks(runId)[0]
+      assert.equal(task.status, 'failed')
+      assert.match(String(task.result), /ghost\.txt/, 'the failure names what was missing')
+      assert.equal(store.getTaskVerdict(task.id)?.overall, 'FAIL', 'the verdict is on record')
+      assert.equal(verifierCalls, 0, 'a missing file needs no model to judge it')
+      assert.match(store.listEvents(runId).map((event) => event.type).join(','), /task\.verified/, 'and the audit shows the check ran')
+    }, { model })
+  } finally {
+    if (previousXai === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousXai
+  }
+})
+
+test('a failed task is repaired inside the approved plan instead of killing the run', async () => {
+  const previousXai = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-repair'
+  let reviewPrompt = null
+  const model = async ({ messages, options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) {
+      return {
+        text: JSON.stringify({
+          objective: 'Prove repair.',
+          tasks: [{ role: 'builder', title: 'Build the proof', instructions: 'Write real.txt.', acceptanceCheck: 'real.txt exists.', dependsOn: [] }],
+        }),
+        toolCalls: [],
+        usage: null,
+      }
+    }
+    if (instructions.includes('deciding the next step')) {
+      return { text: 'The claim was wrong but fixable.\n```decision\n{"decision": "repair", "reason": "The file was never written; write it."}\n```', toolCalls: [], usage: null }
+    }
+    if (instructions.includes('reviewing worker outputs')) {
+      reviewPrompt = String(messages?.[0]?.content ?? '')
+      return { text: 'Reviewed after repair.', toolCalls: [], usage: null }
+    }
+    if (instructions.includes('verifying a worker task')) {
+      return { text: 'Checked.\n```verdict\n{"results": [{"criterion": "real.txt exists.", "status": "PASS", "evidence": []}]}\n```', toolCalls: [], usage: null }
+    }
+    const transcript = JSON.stringify(messages ?? [])
+    if (transcript.includes('Attempt 2')) {
+      if (!messages.some((message) => message.role === 'tool')) {
+        return { text: 'Writing for real now.', toolCalls: [{ id: 'r-forge-1', name: 'workspace.write', arguments: { path: 'real.txt', content: 'repaired' } }], usage: null }
+      }
+      return { text: 'Wrote real.txt.\n```evidence\n{"summary": "Proof repaired.", "artifacts": [{"path": "real.txt"}]}\n```', toolCalls: [], usage: null }
+    }
+    return {
+      text: 'Done, trust me.\n```evidence\n{"summary": "Ghost written.", "artifacts": [{"path": "ghost.txt"}]}\n```',
+      toolCalls: [],
+      usage: null,
+    }
+  }
+
+  try {
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'repair fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
+      const runId = run.payload.run.id
+      await request('POST', '/api/chat', { runId, message: 'Prove repair.', history: [] })
+
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+
+      const deadline = Date.now() + 15_000
+      while (Date.now() < deadline && ['executing', 'planning'].includes(store.getRun(runId).status)) {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      assert.equal(store.getRun(runId).status, 'review', `unexpected status ${store.getRun(runId).status}`)
+
+      const task = store.listTasks(runId)[0]
+      assert.equal(task.status, 'completed')
+      assert.equal(task.attempt, 2, 'the retry is a counted second attempt, not a fresh allowance')
+      assert.equal(store.getTaskVerdict(task.id)?.overall, 'PASS')
+      assert.match(store.listEvents(runId).map((event) => event.type).join(','), /task\.retry/, 'the retry is on record')
+      assert.match(store.listEvents(runId).map((event) => event.type).join(','), /run\.checkpoint/, 'and so is the decision')
+      assert.match(String(reviewPrompt), /Repairs during this run/, 'the review knows a repair happened')
+    }, { model })
+  } finally {
+    if (previousXai === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousXai
+  }
+})
+
+test('a failed task skips its dependents, and stop ends the run with the reason', async () => {
+  const previousXai = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-stop'
+  const model = async ({ options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) {
+      return {
+        text: JSON.stringify({
+          objective: 'Prove skip and stop.',
+          tasks: [
+            { role: 'research', title: 'Look', instructions: 'Report.', dependsOn: [] },
+            { role: 'builder', title: 'Claim a ghost', instructions: 'Produce ghost.txt.', acceptanceCheck: 'ghost.txt exists.', dependsOn: [0] },
+            { role: 'builder', title: 'Build on the ghost', instructions: 'Use ghost.txt.', dependsOn: [1] },
+          ],
+        }),
+        toolCalls: [],
+        usage: null,
+      }
+    }
+    if (instructions.includes('deciding the next step')) {
+      return { text: 'Hopeless.\n```decision\n{"decision": "stop", "reason": "The ghost was never real."}\n```', toolCalls: [], usage: null }
+    }
+    if (instructions.includes('verifying a worker task')) {
+      return { text: 'Checked.\n```verdict\n{"results": [{"criterion": "ghost.txt exists.", "status": "PASS", "evidence": []}]}\n```', toolCalls: [], usage: null }
+    }
+    if (instructions.includes('Forge')) {
+      return {
+        text: 'Done, trust me.\n```evidence\n{"summary": "Ghost written.", "artifacts": [{"path": "ghost.txt"}]}\n```',
+        toolCalls: [],
+        usage: null,
+      }
+    }
+    return { text: 'Scout summary.', toolCalls: [], usage: null }
+  }
+
+  try {
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'stop fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
+      const runId = run.payload.run.id
+      await request('POST', '/api/chat', { runId, message: 'Prove skip and stop.', history: [] })
+
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+
+      const deadline = Date.now() + 15_000
+      while (Date.now() < deadline && ['executing', 'planning'].includes(store.getRun(runId).status)) {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      assert.equal(store.getRun(runId).status, 'failed', `unexpected status ${store.getRun(runId).status}`)
+
+      const byTitle = Object.fromEntries(store.listTasks(runId).map((task) => [task.title, task]))
+      assert.equal(byTitle['Look'].status, 'completed')
+      assert.equal(byTitle['Claim a ghost'].status, 'failed')
+      assert.equal(byTitle['Build on the ghost'].status, 'skipped', 'dependents are skipped, not queued forever')
+      assert.match(String(byTitle['Build on the ghost'].result), /Claim a ghost failed/, 'the skip names its cause')
+      const failed = store.listEvents(runId).find((event) => event.type === 'run.failed')
+      assert.match(String(failed?.payload?.error), /never real/, 'the run ends with the checkpoint reason')
+    }, { model })
+  } finally {
+    if (previousXai === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousXai
+  }
+})
+
+test('a failed run resumes and retries instead of starting over', async () => {
+  const previousXai = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-failed-resume'
+  const model = async ({ messages, options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) {
+      return {
+        text: JSON.stringify({
+          objective: 'Prove failed resume.',
+          tasks: [{ role: 'builder', title: 'Build the proof', instructions: 'Write real.txt.', acceptanceCheck: 'real.txt exists.', dependsOn: [] }],
+        }),
+        toolCalls: [],
+        usage: null,
+      }
+    }
+    if (instructions.includes('deciding the next step')) {
+      return { text: 'Stop here; the user will resume.\n```decision\n{"decision": "stop", "reason": "Stopping so resume can be tested."}\n```', toolCalls: [], usage: null }
+    }
+    if (instructions.includes('reviewing worker outputs')) {
+      return { text: 'Reviewed after resume.', toolCalls: [], usage: null }
+    }
+    if (instructions.includes('verifying a worker task')) {
+      return { text: 'Checked.\n```verdict\n{"results": [{"criterion": "real.txt exists.", "status": "PASS", "evidence": []}]}\n```', toolCalls: [], usage: null }
+    }
+    const transcript = JSON.stringify(messages ?? [])
+    if (transcript.includes('Attempt 2')) {
+      if (!messages.some((message) => message.role === 'tool')) {
+        return { text: 'Writing for real now.', toolCalls: [{ id: 'fr-forge-1', name: 'workspace.write', arguments: { path: 'real.txt', content: 'resumed' } }], usage: null }
+      }
+      return { text: 'Wrote real.txt.\n```evidence\n{"summary": "Proof resumed.", "artifacts": [{"path": "real.txt"}]}\n```', toolCalls: [], usage: null }
+    }
+    return {
+      text: 'Done, trust me.\n```evidence\n{"summary": "Ghost written.", "artifacts": [{"path": "ghost.txt"}]}\n```',
+      toolCalls: [],
+      usage: null,
+    }
+  }
+
+  try {
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'failed resume fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
+      const runId = run.payload.run.id
+      await request('POST', '/api/chat', { runId, message: 'Prove failed resume.', history: [] })
+
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+
+      const failDeadline = Date.now() + 15_000
+      while (Date.now() < failDeadline && ['executing', 'planning'].includes(store.getRun(runId).status)) {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      assert.equal(store.getRun(runId).status, 'failed', 'the first attempt ends failed')
+
+      const resumed = await request('POST', `/api/runs/${runId}/control`, { action: 'resume' })
+      assert.equal(resumed.status, 200, JSON.stringify(resumed.payload))
+
+      const doneDeadline = Date.now() + 15_000
+      while (Date.now() < doneDeadline && store.getRun(runId).status === 'executing') {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      assert.equal(store.getRun(runId).status, 'review', `unexpected status ${store.getRun(runId).status}`)
+
+      const task = store.listTasks(runId)[0]
+      assert.equal(task.status, 'completed')
+      assert.equal(task.attempt, 2, 'resume continues the same task as a second attempt')
+      assert.equal(store.getTaskVerdict(task.id)?.overall, 'PASS')
+    }, { model })
+  } finally {
+    if (previousXai === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousXai
+  }
+})
+
+test('a replan drafts a new version that still needs approval', async () => {
+  const previousXai = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-replan'
+  const model = async ({ messages, options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) {
+      return {
+        text: JSON.stringify({
+          objective: 'Prove replan.',
+          tasks: [{ role: 'builder', title: 'Claim a ghost', instructions: 'Produce ghost.txt.', acceptanceCheck: 'ghost.txt exists.', dependsOn: [] }],
+        }),
+        toolCalls: [],
+        usage: null,
+      }
+    }
+    if (instructions.includes('deciding the next step')) {
+      return {
+        text: 'The plan was wrong; write instead.\n```decision\n{"decision": "replan", "reason": "Ghosts cannot be built.", "plan": {"objective": "Write something real.", "tasks": [{"role": "builder", "title": "Write real.txt", "instructions": "Write real.txt.", "acceptanceCheck": "real.txt exists.", "dependsOn": []}]}}\n```',
+        toolCalls: [],
+        usage: null,
+      }
+    }
+    if (instructions.includes('reviewing worker outputs')) {
+      return { text: 'Reviewed the replan.', toolCalls: [], usage: null }
+    }
+    if (instructions.includes('verifying a worker task')) {
+      return { text: 'Checked.\n```verdict\n{"results": [{"criterion": "real.txt exists.", "status": "PASS", "evidence": []}]}\n```', toolCalls: [], usage: null }
+    }
+    if (instructions.includes('Forge') && JSON.stringify(messages ?? []).includes('Write real.txt.')) {
+      if (!messages.some((message) => message.role === 'tool')) {
+        return { text: 'Writing for real now.', toolCalls: [{ id: 'rp-forge-1', name: 'workspace.write', arguments: { path: 'real.txt', content: 'replanned' } }], usage: null }
+      }
+      return { text: 'Wrote real.txt.\n```evidence\n{"summary": "Proof replanned.", "artifacts": [{"path": "real.txt"}]}\n```', toolCalls: [], usage: null }
+    }
+    return {
+      text: 'Done, trust me.\n```evidence\n{"summary": "Ghost written.", "artifacts": [{"path": "ghost.txt"}]}\n```',
+      toolCalls: [],
+      usage: null,
+    }
+  }
+
+  try {
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'replan fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
+      const runId = run.payload.run.id
+      await request('POST', '/api/chat', { runId, message: 'Prove replan.', history: [] })
+
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+
+      const planDeadline = Date.now() + 15_000
+      while (Date.now() < planDeadline && store.getRun(runId).status === 'executing') {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      assert.equal(store.getRun(runId).status, 'planning', 'a replan parks for approval instead of executing')
+
+      const latest = store.getLatestPlanForRun(runId)
+      assert.equal(latest.plan.source, 'replan')
+      assert.equal(latest.plan.status, 'draft', 'the new version is a draft until approved')
+
+      const approved = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: latest.plan.id, planHash: latest.plan.contentHash, routing: {} })
+      assert.equal(approved.status, 200, JSON.stringify(approved.payload))
+
+      const doneDeadline = Date.now() + 15_000
+      while (Date.now() < doneDeadline && store.getRun(runId).status === 'executing') {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      assert.equal(store.getRun(runId).status, 'review', `unexpected status ${store.getRun(runId).status}`)
+      assert.equal(store.getRun(runId).planVersion, 2, 'the run executed the approved second version')
     }, { model })
   } finally {
     if (previousXai === undefined) delete process.env.XAI_API_KEY

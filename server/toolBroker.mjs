@@ -12,7 +12,14 @@ const MAX_OUTPUT_BYTES = 100_000
 const MAX_SEARCH_FILES = 400
 const MAX_REDIRECTS = 3
 const MAX_IGNORE_RULES = 200
+const MAX_READ_CACHE_ENTRIES = 200
+const MAX_MANIFEST_LIST = 50
 const skippedDirectories = new Set(['.git', 'node_modules', 'dist', 'coverage', '.cache'])
+
+// How many workspace files a shell manifest may name. A command's receipt is
+// names, sizes, and mtimes — never contents — so the cap bounds the walk, not
+// the honesty: over the cap the receipt says so.
+const manifestFileLimit = () => Math.max(Number(process.env.FULKRUM_SHELL_MANIFEST_MAX_FILES ?? 2000) || 0, 0)
 
 /**
  * Extra patterns the workspace owner can add, one per line, `*` and `?` allowed.
@@ -47,6 +54,7 @@ const toolDefinitions = [
   { name: 'workspace.read', kind: 'read', description: 'Read a UTF-8 text file inside the approved workspace.' },
   { name: 'workspace.search', kind: 'read', description: 'Search text files inside the approved workspace.' },
   { name: 'workspace.write', kind: 'write', description: 'Write a UTF-8 text file inside the approved workspace.' },
+  { name: 'run.ask', kind: 'ask', description: 'Ask the human a question and wait for the answer.' },
   { name: 'shell.exec', kind: 'shell', description: 'Run a command inside the sandboxed workspace container.' },
   { name: 'http.request', kind: 'http', description: 'Call an HTTP or HTTPS endpoint.' },
 ]
@@ -96,6 +104,62 @@ async function walkFiles(directory, root, results, query, rules) {
 }
 
 /**
+ * Names, sizes, and mtimes of the workspace as one command sees it.
+ *
+ * The same traversal rules as a search — skipped directories, ignored paths,
+ * credential files, links never followed — so the receipt cannot see a file
+ * the tools would refuse. Content is never read: the receipt proves *that*
+ * files changed, and the verifier reads the ones that matter.
+ */
+async function snapshotManifest(root, directory, results, rules, limit) {
+  if (results.size >= limit) return
+  const entries = await fs.readdir(directory, { withFileTypes: true })
+  for (const entry of entries) {
+    if (results.size >= limit) return
+    if (entry.isDirectory() && skippedDirectories.has(entry.name)) continue
+    const absolute = path.join(directory, entry.name)
+    const relative = path.relative(root, absolute).replaceAll('\\', '/')
+    if (isIgnored(relative, rules)) continue
+    if (entry.isDirectory()) {
+      const stats = await fs.lstat(absolute).catch(() => null)
+      if (!stats || stats.isSymbolicLink() || !stats.isDirectory()) continue
+      try {
+        resolveWorkspacePath(root, absolute)
+      } catch {
+        continue
+      }
+      await snapshotManifest(root, absolute, results, rules, limit)
+      continue
+    }
+    if (isSensitivePath(entry.name)) continue
+    const stats = await fs.stat(absolute).catch(() => null)
+    if (stats) results.set(relative, { size: stats.size, mtimeMs: stats.mtimeMs })
+  }
+}
+
+/** Added, modified, and removed paths between two manifests, bounded. */
+function diffManifests(before, after) {
+  const added = []
+  const modified = []
+  const removed = []
+  for (const [relative, next] of after) {
+    const previous = before.get(relative)
+    if (!previous) added.push(relative)
+    else if (previous.size !== next.size || previous.mtimeMs !== next.mtimeMs) modified.push(relative)
+  }
+  for (const relative of before.keys()) {
+    if (!after.has(relative)) removed.push(relative)
+  }
+  const truncated = added.length > MAX_MANIFEST_LIST || modified.length > MAX_MANIFEST_LIST || removed.length > MAX_MANIFEST_LIST
+  return {
+    added: added.slice(0, MAX_MANIFEST_LIST),
+    modified: modified.slice(0, MAX_MANIFEST_LIST),
+    removed: removed.slice(0, MAX_MANIFEST_LIST),
+    ...(truncated ? { truncated: true, note: 'More files changed than the receipt lists; the workspace holds the rest.' } : {}),
+  }
+}
+
+/**
  * Record a file's previous state before it is overwritten. The content is stored
  * so the change can be shown later; oversized files keep their size and hash but
  * not their bytes.
@@ -132,6 +196,32 @@ export class FulkrumToolBroker {
     this.workspaceRoot = resolveWorkspacePath(workspaceRoot, '.').resolved
     this.httpAllowlist = httpAllowlist
     this.execution = execution
+    // Reads are cached by path, size, and mtime: repeated reads across parallel
+    // workers cost one disk read, and any modification — by a worker, a shell
+    // command, or a human — changes the key and misses honestly.
+    this.readCache = new Map()
+    // Writes and shell commands serialize process-wide across runs. Readers
+    // never wait; two writers never interleave on the same workspace.
+    /** @type {Promise<unknown>} */
+    this.writeChain = Promise.resolve()
+  }
+
+  /**
+   * Run one mutating call after every earlier one finished.
+   *
+   * A promise chain, not a lock object: a rejection still hands the turn to
+   * the next waiter (via the second `then` branch) while the chain itself
+   * stays healthy through the caught copy. No nesting exists — execute never
+   * calls execute — so this cannot deadlock.
+   *
+   * @template T
+   * @param {() => Promise<T>} task
+   * @returns {Promise<T>}
+   */
+  withWriteLock(task) {
+    const next = this.writeChain.then(task, task)
+    this.writeChain = next.catch(() => {})
+    return next
   }
 
   list() {
@@ -159,8 +249,23 @@ export class FulkrumToolBroker {
    * Execute a call that has already been resolved and authorized. Paths, argv,
    * and URLs come from the resolution the user approved, never from a fresh
    * parse of the request, so what runs is what was shown.
+   *
+   * Mutations take the write lock: within a run writers are already serial,
+   * and this extends the same guarantee across concurrent runs.
+   *
+   * @returns {Promise<any>}
    */
-  async execute(name, input = {}, resolution = null, { runId = null } = {}) {
+  async execute(name, input = {}, resolution = null, options = {}) {
+    if (name === 'workspace.write' || name === 'shell.exec') {
+      return this.withWriteLock(() => this.executeUnclocked(name, input, resolution, options))
+    }
+    return this.executeUnclocked(name, input, resolution, options)
+  }
+
+  /**
+   * @returns {Promise<any>}
+   */
+  async executeUnclocked(name, input = {}, resolution = null, { runId = null } = {}) {
     const outcome = resolution ?? this.resolve(name, input)
     if (!outcome?.ok) throw new Error(outcome?.error ?? `Could not resolve ${name}.`)
     // Refuse credentials here as well as in the policy table: the broker must be
@@ -179,8 +284,17 @@ export class FulkrumToolBroker {
         const stats = await handle.stat()
         if (stats.isDirectory()) throw new Error('That path is a directory, not a file.')
         if (stats.size > MAX_FILE_BYTES) throw new Error(`File exceeds the ${MAX_FILE_BYTES}-byte read limit.`)
+        // Unchanged files come from memory: parallel researchers reading the
+        // same tree share one disk read, and any write changes the key.
+        const cacheKey = `${resolved.path}:${stats.size}:${stats.mtimeMs}`
+        const cached = this.readCache.get(cacheKey)
+        if (cached !== undefined) return { path: resolved.relative, content: cached, cached: true }
         const content = await handle.readFile({ encoding: 'utf8' })
         if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new Error(`File exceeds the ${MAX_FILE_BYTES}-byte read limit.`)
+        this.readCache.set(cacheKey, content)
+        if (this.readCache.size > MAX_READ_CACHE_ENTRIES) {
+          this.readCache.delete(this.readCache.keys().next().value)
+        }
         return { path: resolved.relative, content }
       } finally {
         await handle.close()
@@ -214,11 +328,33 @@ export class FulkrumToolBroker {
     if (name === 'shell.exec') {
       if (!this.execution) throw new Error('Execution is disabled: no execution runtime is configured. Commands never run on the host.')
       const relativeCwd = path.relative(this.workspaceRoot, resolved.cwd) || '.'
+      // A command's receipt: what the workspace looked like before and after.
+      // Shell work used to be invisible to everyone except the model that ran
+      // it — reviewers and verifiers can now see which paths a command touched
+      // and read the ones that matter.
+      const manifestLimit = manifestFileLimit()
+      const before = new Map()
+      if (manifestLimit > 0) {
+        await snapshotManifest(this.workspaceRoot, this.workspaceRoot, before, await readIgnoreRules(this.workspaceRoot), manifestLimit)
+      }
       // The argv goes to the container engine as an array: nothing here is
       // interpreted by a shell on either side of the boundary. The run id lets a
       // cancellation stop this command rather than wait for its timeout.
       const result = await this.execution.run(resolved.argv, { cwd: relativeCwd, runId })
-      return { argv: resolved.argv, cwd: relativeCwd, boundary: 'container', stdout: clipped(result.stdout), stderr: clipped(result.stderr) }
+      let changedFiles = null
+      if (manifestLimit > 0) {
+        const after = new Map()
+        await snapshotManifest(this.workspaceRoot, this.workspaceRoot, after, await readIgnoreRules(this.workspaceRoot), manifestLimit)
+        changedFiles = diffManifests(before, after)
+      }
+      return { argv: resolved.argv, cwd: relativeCwd, boundary: 'container', stdout: clipped(result.stdout), stderr: clipped(result.stderr), ...(changedFiles ? { changedFiles } : {}) }
+    }
+
+    if (name === 'run.ask') {
+      // Answered, never executed: the answer endpoint resolves the parked call
+      // directly. A run grant that somehow allowed this far still cannot run a
+      // question unattended, so it fails here with words the worker can read.
+      throw new Error('Questions need a human answer: they park for approval in every mode and cannot run unattended.')
     }
 
     if (name === 'http.request') {

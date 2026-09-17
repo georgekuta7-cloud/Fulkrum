@@ -40,7 +40,7 @@ export function buildRunReport({ store, runId }) {
     plan: plan
       ? { id: plan.plan.id, version: plan.plan.version, objective: plan.plan.objective, status: plan.plan.status, source: plan.plan.source, contentHash: plan.plan.contentHash, tasks: plan.tasks }
       : null,
-    tasks: tasks.map((task) => ({ id: task.id, agentId: task.agentId, title: task.title, status: task.status, steps: task.stepCount, result: task.result ?? null })),
+    tasks: tasks.map((task) => ({ id: task.id, agentId: task.agentId, title: task.title, status: task.status, steps: task.stepCount, attempt: task.attempt ?? 1, result: task.result ?? null, verification: store.getTaskVerdict(task.id)?.overall ?? null })),
     toolCalls: toolCalls.map((call) => ({ id: call.id, agentId: call.agentId, name: call.name, kind: call.kind, status: call.status, approvedAt: call.approvedAt, approvalScope: call.approvalScope, fingerprint: call.fingerprint, error: call.error ?? null, at: call.createdAt })),
     grants: grants.map((grant) => ({ toolName: grant.toolName, grantedAt: grant.grantedAt })),
     artifacts: artifacts.map((artifact) => ({ path: artifact.path, created: artifact.created, bytes: artifact.bytes, added: artifact.diff?.added ?? null, removed: artifact.diff?.removed ?? null, at: artifact.at })),
