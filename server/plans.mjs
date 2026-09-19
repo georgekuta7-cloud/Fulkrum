@@ -108,29 +108,6 @@ export function splitLayerForConcurrency(tasks, roles) {
   return { readers, writers }
 }
 
-export function demoPlan(direction) {
-  const goal = String(direction ?? '').trim() || 'Create a narrow proof-of-value for the project.'
-  return {
-    objective: `Prove the narrowest version of: ${goal}`,
-    tasks: [
-      {
-        role: 'research',
-        title: 'Validate assumptions',
-        instructions: 'Inspect the workspace and the direction, then report the assumptions, risks, and evidence that matter before any code is written.',
-        acceptanceCheck: 'Findings name at least one concrete risk and the evidence behind it.',
-        dependsOn: [],
-      },
-      {
-        role: 'builder',
-        title: 'Shape the proof',
-        instructions: 'Turn the direction and the research findings into a small proof-of-value: the first artifacts, the checks that prove it works, and the dependencies.',
-        acceptanceCheck: 'The plan names the first artifact and one observable success check.',
-        dependsOn: [0],
-      },
-    ],
-  }
-}
-
 /** Extract a JSON object from a model reply that may wrap it in prose or fences. */
 export function extractPlanJson(text) {
   if (typeof text !== 'string') return null

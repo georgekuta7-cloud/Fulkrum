@@ -12,6 +12,22 @@ async function makeRun(request, { permissionMode = 'selective' } = {}) {
   return { projectId: project.payload.project.id, runId: run.payload.run.id }
 }
 
+/** A scripted two-task plan: research first, the build waiting on it. */
+const narrowProofPlan = JSON.stringify({
+  objective: 'Ship a narrow proof.',
+  tasks: [
+    { role: 'research', title: 'Look around', instructions: 'Report what is in the workspace.', dependsOn: [] },
+    { role: 'builder', title: 'Write the proof', instructions: 'Write proof.txt.', dependsOn: [0] },
+  ],
+})
+
+/** A scripted model: planning gets the plan JSON, everything else a summary with no tool calls. */
+const planThenSummary = async ({ options }) => {
+  const instructions = String(options?.instructions ?? '')
+  if (instructions.includes('You plan work')) return { text: narrowProofPlan, toolCalls: [], usage: null }
+  return { text: 'Worker summary.', toolCalls: [], usage: null }
+}
+
 test('a malformed body is rejected without killing the bridge', async () => {
   await withTempDirectory(async (directory) => {
     await writeFile(path.join(directory, 'notes.txt'), 'hi', 'utf8')
@@ -543,6 +559,8 @@ test('the documented routes are the routes the server serves', async () => {
     const probes = [
       { method: 'GET', template: '/api/health' },
       { method: 'GET', template: '/api/config' },
+      { method: 'GET', template: '/api/settings' },
+      { method: 'PATCH', template: '/api/settings' },
       { method: 'GET', template: '/api/tools' },
       { method: 'GET', template: '/api/openapi.json' },
       { method: 'GET', template: '/api/providers' },
@@ -670,32 +688,42 @@ test('a run report summarises the run, and reads as Markdown', async () => {
 })
 
 test('an interrupted run can be resumed, and a completed task is not repeated', async () => {
-  await withServer(async ({ request, store }) => {
-    const { runId } = await makeRun(request)
-    // A run can only be interrupted from executing, and executing needs an approved
-    // plan — so the fixture drafts and approves one, the way a real interruption
-    // would find it.
-    await request('POST', '/api/chat', { runId, message: 'Ship a narrow proof.', history: [] })
-    const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
-    await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
-    // Re-run the interruption the way recovery does, now that the run is approved.
-    store.updateRun(runId, { status: 'interrupted', interruptedFrom: 'executing' })
-    store.markRunInterrupted(runId, 'bridge stopped')
+  const previousKey = process.env.XAI_API_KEY
+  // Drafting and executing need a configured provider; the model is scripted, so
+  // nothing leaves the machine.
+  process.env.XAI_API_KEY = 'sk-test-key-for-resume'
+  try {
+    await withServer(async ({ request, store }) => {
+      const { runId } = await makeRun(request)
+      // A run can only be interrupted from executing, and executing needs an approved
+      // plan — so the fixture drafts and approves one, the way a real interruption
+      // would find it.
+      await request('POST', '/api/chat', { runId, message: 'Ship a narrow proof.', history: [] })
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      assert.equal(drafted.status, 200, JSON.stringify(drafted.payload))
+      await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+      // Re-run the interruption the way recovery does, now that the run is approved.
+      store.updateRun(runId, { status: 'interrupted', interruptedFrom: 'executing' })
+      store.markRunInterrupted(runId, 'bridge stopped')
 
-    const resumed = await request('POST', `/api/runs/${runId}/control`, { action: 'resume' })
-    assert.equal(resumed.status, 200, JSON.stringify(resumed.payload))
-    const run = store.getRun(runId)
-    assert.equal(run.interruptedAt, null)
-    assert.equal(run.interruptionReason, null)
+      const resumed = await request('POST', `/api/runs/${runId}/control`, { action: 'resume' })
+      assert.equal(resumed.status, 200, JSON.stringify(resumed.payload))
+      const run = store.getRun(runId)
+      assert.equal(run.interruptedAt, null)
+      assert.equal(run.interruptionReason, null)
 
-    // Let the resumed worker finish inside the fixture, so nothing outlives the
-    // server the test is about to close.
-    const deadline = Date.now() + 8_000
-    while (Date.now() < deadline && store.getRun(runId).status === 'executing') {
-      await new Promise((resolve) => setTimeout(resolve, 100))
-    }
-    assert.equal(['review', 'failed'].includes(store.getRun(runId).status), true, `unexpected status ${store.getRun(runId).status}`)
-  })
+      // Let the resumed worker finish inside the fixture, so nothing outlives the
+      // server the test is about to close.
+      const deadline = Date.now() + 8_000
+      while (Date.now() < deadline && store.getRun(runId).status === 'executing') {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      assert.equal(['review', 'failed'].includes(store.getRun(runId).status), true, `unexpected status ${store.getRun(runId).status}`)
+    }, { model: planThenSummary })
+  } finally {
+    if (previousKey === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousKey
+  }
 })
 
 test('a project can be deleted with everything it owns', async () => {
@@ -749,73 +777,92 @@ test('the last project cannot be deleted', async () => {
   })
 })
 
-test('the demo run reaches review without ever requesting an approval', async () => {
-  await withServer(async ({ request, store }) => {
-    const { runId } = await makeRun(request)
-    await request('POST', '/api/chat', { runId, message: 'Ship a narrow proof.', history: [] })
-    await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', routing: {} })
+test('a run whose workers call no tools reaches review without ever requesting an approval', async () => {
+  const previousKey = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-quiet-run'
+  try {
+    await withServer(async ({ request, store }) => {
+      const { runId } = await makeRun(request)
+      await request('POST', '/api/chat', { runId, message: 'Ship a narrow proof.', history: [] })
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      assert.equal(drafted.status, 200, JSON.stringify(drafted.payload))
+      await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
 
-    const deadline = Date.now() + 8_000
-    while (Date.now() < deadline && store.getRun(runId).status === 'executing') {
-      await new Promise((resolve) => setTimeout(resolve, 100))
-    }
+      const deadline = Date.now() + 8_000
+      while (Date.now() < deadline && store.getRun(runId).status === 'executing') {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
 
-    assert.equal(store.getRun(runId).status, 'review')
-    const types = store.listEvents(runId).map((event) => event.type)
-    assert.equal(types.includes('worker.handoff'), true)
-    assert.equal(types.includes('run.review.ready'), true)
+      assert.equal(store.getRun(runId).status, 'review')
+      const types = store.listEvents(runId).map((event) => event.type)
+      assert.equal(types.includes('worker.handoff'), true)
+      assert.equal(types.includes('run.review.ready'), true)
 
-    // Both worker tools are reads, so the approval path stays dormant. This is
-    // the reachability fact that Phase 2 (model-chosen tools) has to change.
-    assert.equal(types.includes('approval.requested'), false)
-    assert.equal(store.getRun(runId).ownerId, null, 'the lease is released when the run finishes')
-    assert.equal(store.verifyEventChain(runId).ok, true)
-  })
+      // The scripted workers answer with prose and never ask for a write, so the
+      // approval path stays dormant. A tool call that needs one is what wakes it.
+      assert.equal(types.includes('approval.requested'), false)
+      assert.equal(store.getRun(runId).ownerId, null, 'the lease is released when the run finishes')
+      assert.equal(store.verifyEventChain(runId).ok, true)
+    }, { model: planThenSummary })
+  } finally {
+    if (previousKey === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousKey
+  }
 })
 
 test('a run gets a stored plan, and approval binds to its content hash', async () => {
-  await withServer(async ({ request, store }) => {
-    const project = await request('POST', '/api/projects', { name: 'plan fixture' })
-    const projectId = project.payload.project.id
-    const run = await request('POST', '/api/runs', { projectId, permissionMode: 'selective' })
-    const runId = run.payload.run.id
+  const previousKey = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-plan-store'
+  try {
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'plan fixture' })
+      const projectId = project.payload.project.id
+      const run = await request('POST', '/api/runs', { projectId, permissionMode: 'selective' })
+      const runId = run.payload.run.id
+      // A plan needs a direction to plan from; the message goes straight into the
+      // store because the chat reply is not what this test is about.
+      store.appendMessage({ projectId, runId, role: 'user', content: 'Ship a narrow proof.' })
 
-    const missing = await request('GET', `/api/runs/${runId}/plan`)
-    assert.equal(missing.status, 404, 'a fresh run has no plan until one is drafted')
+      const missing = await request('GET', `/api/runs/${runId}/plan`)
+      assert.equal(missing.status, 404, 'a fresh run has no plan until one is drafted')
 
-    const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
-    assert.equal(drafted.status, 200)
-    assert.equal(drafted.payload.tasks.length >= 2, true)
-    assert.equal(typeof drafted.payload.plan.contentHash, 'string')
-    assert.equal(drafted.payload.plan.contentHash.length, 64)
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      assert.equal(drafted.status, 200, JSON.stringify(drafted.payload))
+      assert.equal(drafted.payload.tasks.length >= 2, true)
+      assert.equal(typeof drafted.payload.plan.contentHash, 'string')
+      assert.equal(drafted.payload.plan.contentHash.length, 64)
 
-    // Drafting again reuses the existing draft rather than churning versions.
-    const second = await request('POST', `/api/runs/${runId}/plan`, {})
-    assert.equal(second.payload.plan.id, drafted.payload.plan.id)
+      // Drafting again reuses the existing draft rather than churning versions.
+      const second = await request('POST', `/api/runs/${runId}/plan`, {})
+      assert.equal(second.payload.plan.id, drafted.payload.plan.id)
 
-    // Regenerating supersedes the old draft and produces a new version.
-    const regenerated = await request('POST', `/api/runs/${runId}/plan`, { regenerate: true })
-    assert.equal(regenerated.payload.plan.version > drafted.payload.plan.version, true)
-    assert.equal(store.getPlan(drafted.payload.plan.id).plan.status, 'superseded')
+      // Regenerating supersedes the old draft and produces a new version.
+      const regenerated = await request('POST', `/api/runs/${runId}/plan`, { regenerate: true })
+      assert.equal(regenerated.payload.plan.version > drafted.payload.plan.version, true)
+      assert.equal(store.getPlan(drafted.payload.plan.id).plan.status, 'superseded')
 
-    const planId = regenerated.payload.plan.id
-    const planHash = regenerated.payload.plan.contentHash
+      const planId = regenerated.payload.plan.id
+      const planHash = regenerated.payload.plan.contentHash
 
-    // Approving a hash that is not what is stored must be refused.
-    const stale = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId, planHash: 'not-the-real-hash', routing: {} })
-    assert.equal(stale.status, 409)
-    assert.match(String(stale.payload.error), /changed since it was shown/)
-    assert.equal(store.getPlan(planId).plan.status, 'draft', 'a rejected approval must not approve the plan')
+      // Approving a hash that is not what is stored must be refused.
+      const stale = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId, planHash: 'not-the-real-hash', routing: {} })
+      assert.equal(stale.status, 409)
+      assert.match(String(stale.payload.error), /changed since it was shown/)
+      assert.equal(store.getPlan(planId).plan.status, 'draft', 'a rejected approval must not approve the plan')
 
-    const approved = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId, planHash, routing: {} })
-    assert.equal(approved.status, 200)
-    assert.equal(store.getPlan(planId).plan.status, 'approved')
-    assert.equal(store.getRun(runId).planId, planId)
+      const approved = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId, planHash, routing: {} })
+      assert.equal(approved.status, 200)
+      assert.equal(store.getPlan(planId).plan.status, 'approved')
+      assert.equal(store.getRun(runId).planId, planId)
 
-    const types = store.listEvents(runId).map((event) => event.type)
-    assert.equal(types.includes('plan.approved'), true)
-    assert.equal(store.verifyEventChain(runId).ok, true)
-  })
+      const types = store.listEvents(runId).map((event) => event.type)
+      assert.equal(types.includes('plan.approved'), true)
+      assert.equal(store.verifyEventChain(runId).ok, true)
+    }, { model: planThenSummary })
+  } finally {
+    if (previousKey === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousKey
+  }
 })
 
 test('the tool loop runs model-chosen tools, parks for approval, then resumes', async () => {

@@ -5,15 +5,17 @@ import { asToolResult, findInjectionAttempts } from './injection.mjs'
 import { maybeExportTrace } from './otel.mjs'
 import { scanArguments } from './redaction.mjs'
 import { fingerprintToolCall, resolveWorkspacePath } from './permissions.mjs'
-import { demoPlan, planContentHash, planLayers, splitLayerForConcurrency, validatePlan } from './plans.mjs'
+import { planContentHash, planLayers, splitLayerForConcurrency, validatePlan } from './plans.mjs'
 import { agentRoles, roleOrDefault } from './roles.mjs'
+import { resolveReasoning } from './reasoning.mjs'
 import { isToolAllowedForRole, toolsForRole, validateToolArguments } from './tools.mjs'
 
 const terminalStatuses = new Set(['cancelled', 'completed', 'failed', 'interrupted', 'budget_exceeded'])
-const maxStepsPerTask = Number(process.env.FULKRUM_MAX_TOOL_STEPS ?? 8)
+// Read at use time, not import time: values saved through the app apply live.
+const maxStepsPerTask = () => Number(process.env.FULKRUM_MAX_TOOL_STEPS ?? 8)
 // Read-only work overlaps; writers are serialized. Parallel writers conflict over
 // the same files, parallel readers do not.
-const maxParallelReaders = Math.max(Number(process.env.FULKRUM_MAX_PARALLEL_RESEARCHERS ?? 3), 1)
+const maxParallelReaders = () => Math.max(Number(process.env.FULKRUM_MAX_PARALLEL_RESEARCHERS ?? 3), 1)
 // Verify and review in a few read-only steps, not a full task budget: judging
 // should be cheaper than doing.
 const verifyMaxSteps = () => Math.max(Number(process.env.FULKRUM_VERIFY_MAX_STEPS ?? 3) || 3, 1)
@@ -242,6 +244,9 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
 
   const callModelWithFallback = async ({ runId, role, route, messages, tools = [], instructions, parentSpanId = null, taskId = null }) => {
     const attempts = [route ?? '', ...providerRegistry.fallbackRoutes()]
+    // How hard this role should think, read where the routing lives so a change
+    // in settings applies to the very next call without a restart.
+    const reasoning = resolveReasoning(store.getProject(store.getRun(runId)?.projectId)?.project?.settings, role)
     let lastError
     for (const [index, candidate] of attempts.entries()) {
       const provider = resolveRoute(runId, candidate, role)
@@ -266,7 +271,7 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
       // it returns: the finished reply is what gets recorded, not the fragments.
       const sink = store.partialSink(runId, { role })
       try {
-        const response = await callModel(provider, model, messages, { tools, instructions, onDelta: sink.push })
+        const response = await callModel(provider, model, messages, { tools, instructions, onDelta: sink.push, reasoning })
         const latencyMs = Date.now() - startedAt
         const cost = pricing ? pricing.costOf({ model, usage: response.usage }) : { costUsd: null, priced: false, version: null }
         store.recordModelCall({ runId, taskId, spanId: span.id, role, provider: provider.id, model, usage: response.usage, cost, latencyMs })
@@ -510,7 +515,7 @@ Rules:
     }
     let steps = previousTurns.length ? task.stepCount : 0
 
-    while (steps < maxStepsPerTask) {
+    while (steps < maxStepsPerTask()) {
       if (!await waitUntilRunnable(runId)) return { cancelled: true, steps, usedTools, text: '' }
 
       const response = await callModelWithFallback({ runId, role: role.agentId, route, messages, tools, instructions, parentSpanId, taskId: task.id })
@@ -594,16 +599,15 @@ Rules:
     })
 
     try {
-      // Without a provider key the loop cannot run, so the task reports plainly
-      // that it is a demo rather than inventing a result.
+      // A task without a configured provider fails plainly instead of inventing
+      // progress. Keys are settable in the app with no restart; a removed key
+      // fails the task, and the checkpoint decides repair or stop.
       const provider = resolveRoute(runId, route, role.agentId)
-      /** @type {any} */
-      let outcome
       if (!providerRegistry.isConfigured(provider)) {
-        outcome = { text: '', demo: true, steps: 0, usedTools: [] }
-      } else {
-        outcome = await runAgentTask({ runId, task, role, roleInstructions: role.instructions, goal, route, handoff, acceptanceCheck: planTask.acceptanceCheck, parentSpanId: span.id })
+        throw new Error(`No provider key is configured for ${provider.label}. Add one in Workspace settings and resume the run.`)
       }
+      /** @type {any} */
+      const outcome = await runAgentTask({ runId, task, role, roleInstructions: role.instructions, goal, route, handoff, acceptanceCheck: planTask.acceptanceCheck, parentSpanId: span.id })
 
       if (outcome.cancelled) {
         store.updateTask(task.id, { status: 'cancelled', result: 'Task cancelled by user.', stepCount: outcome.steps })
@@ -614,9 +618,7 @@ Rules:
 
       const cleanResult = typeof outcome.text === 'string' && outcome.text.trim()
         ? outcome.text.trim()
-        : outcome.demo
-          ? `Demo mode: no provider key is configured, so ${role.name} could not run. Add a key to .env.local to let this task investigate the workspace and report findings.`
-          : 'Worker returned no summary.'
+        : 'Worker returned no summary.'
 
       // The machine half of the completion: typed evidence behind the prose.
       // Absent is allowed (legacy prose); present but malformed is recorded and
@@ -662,7 +664,9 @@ Rules:
       // and the model judges the rest with read-only tools. The builder's
       // turns are never in the room, so it cannot verify its own work.
       let verification = null
-      if (!outcome.demo && providerRegistry.isConfigured(provider)) {
+      {
+        // The provider is configured — anything else threw above — so every
+        // completion is verified, no exceptions for would-be demo runs.
         const deterministic = []
         for (const artifact of completion?.artifacts ?? []) {
           if (!artifact.path) continue
@@ -693,6 +697,10 @@ Rules:
             instructions: 'You are Head AI verifying a worker task. Check each acceptance criterion against the workspace and the evidence, using the read tools when a claim needs confirming. Judge the work, not the worker. End with a fenced ```verdict block: {"results": [{"criterion": "...", "status": "PASS, FAIL, or UNKNOWN", "evidence": ["ev-..."]}]}.',
             messages: [{ role: 'user', content: `Task: ${task.title}\n${task.instructions}\nAcceptance check: ${planTask.acceptanceCheck || '(none stated)'}\nWorker summary and evidence:\n${digest}` }],
             maxSteps: verifyMaxSteps(),
+            // The task's own route, not the unrouted default: the guard above
+            // proved it configured, and a run that routes every role away from
+            // the default provider still gets its verification calls answered.
+            route: route ?? '',
             parentSpanId: span.id,
             taskId: task.id,
             pseudoId: `verify-${task.id}`,
@@ -738,7 +746,6 @@ Rules:
           taskId: task.id,
           title: task.title,
           summary: cleanResult,
-          demo: Boolean(outcome.demo),
           steps: outcome.steps,
           tools: outcome.usedTools,
           provider: outcome.provider ?? provider.id,
@@ -751,7 +758,7 @@ Rules:
       })
       store.endSpan(span.id, { status: 'ok', attributes: { 'fulkrum.steps': outcome.steps, 'fulkrum.tools': (outcome.usedTools ?? []).join(',') } })
 
-      return { task, result: cleanResult, demo: Boolean(outcome.demo), handoff: cleanResult }
+      return { task, result: cleanResult, handoff: cleanResult }
     } catch (error) {
       // A budget stop is a policy outcome, not a crash: it escapes immediately
       // so the run stops at the ceiling instead of spending through a repair.
@@ -771,19 +778,14 @@ Rules:
   }
 
   /**
-   * Load the plan a run executes. A run without an approved plan gets the demo
-   * plan, persisted like any other so the audit trail shows what actually ran.
+   * Load the plan a run executes. Approval always points the run at a stored,
+   * approved plan first, so reaching here without one is a broken invariant —
+   * refused loudly rather than papered over with an invented plan.
    */
-  const ensurePlan = (runId, run) => {
+  const ensurePlan = (run) => {
     const existing = run.planId ? store.getPlan(run.planId) : null
     if (existing) return existing
-
-    const direction = store.listMessages(runId).filter((message) => message.role === 'user').at(-1)?.content ?? ''
-    const built = demoPlan(direction)
-    const plan = store.createPlan({ projectId: run.projectId, runId, objective: built.objective, tasks: built.tasks, contentHash: planContentHash(built), source: 'demo' })
-    store.updateRun(runId, { planId: plan.plan.id, planVersion: plan.plan.version })
-    store.appendEvent({ runId, type: 'run.plan.attached', agentId: 'head', payload: { planId: plan.plan.id, version: plan.plan.version, source: 'demo', objective: plan.plan.objective } })
-    return plan
+    throw new Error('Cannot execute a run with no approved plan. Draft a plan and approve it first.')
   }
 
   const executeRun = async (/** @type {string} */ runId, /** @type {{ routing?: Record<string, string> }} */ { routing = {} } = {}) => {
@@ -807,7 +809,7 @@ Rules:
     })
 
     try {
-      const plan = ensurePlan(runId, run)
+      const plan = ensurePlan(run)
       const goal = store.listMessages(runId).filter((message) => message.role === 'user').at(-1)?.content ?? plan.plan.objective
       const runTasks = store.materializeRunTasks({ runId, plan })
       const existing = store.listTasks(runId)
@@ -989,8 +991,8 @@ Rules:
             if (!await waitUntilRunnable(runId)) return { cancelled: true, failed }
             const { readers, writers } = splitLayerForConcurrency(layer, agentRoles)
             const readerBatches = []
-            for (let index = 0; index < readers.length; index += maxParallelReaders) {
-              readerBatches.push(readers.slice(index, index + maxParallelReaders))
+            for (let index = 0; index < readers.length; index += maxParallelReaders()) {
+              readerBatches.push(readers.slice(index, index + maxParallelReaders()))
             }
             for (const batch of readerBatches) {
               if (!await waitUntilRunnable(runId)) return { cancelled: true, failed }
@@ -1099,7 +1101,9 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
         })
         review = verdict.cancelled ? '' : verdict.text
       } else {
-        review = 'Head demo review: no provider key is configured, so there is nothing substantive to review yet. Add a key to .env.local and re-run this plan to get real findings.'
+        // Unreachable through the UI — executing requires an approved model
+        // plan — but a removed key must fail loudly rather than invent a review.
+        throw new Error(`No provider key is configured for ${reviewProvider.label}. Add one in Workspace settings and resume the run.`)
       }
       const cleanReview = typeof review === 'string' && review.trim() ? review.trim() : 'Head AI did not return a review summary.'
 
@@ -1110,7 +1114,7 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
         runId,
         type: 'run.review.ready',
         agentId: 'head',
-        payload: { summary: cleanReview, provider: reviewProvider.id, model: reviewModel, demo: !providerRegistry.isConfigured(reviewProvider), planId: plan.plan.id },
+        payload: { summary: cleanReview, provider: reviewProvider.id, model: reviewModel, planId: plan.plan.id },
       })
     } finally {
       clearInterval(heartbeat)

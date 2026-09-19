@@ -380,9 +380,10 @@ export class FulkrumStore {
     return this.getProject(projectId).project
   }
 
-  ensureDefaultProject() {
-    const existing = this.getProject('project-default')
-    return existing?.project ?? this.createProject({ id: 'project-default', name: 'Launch plan' })
+  /** The most recently touched project, if any. Fresh installs start empty:
+   * there is no seed project to discover, rename, or work around. */
+  mostRecentProject() {
+    return this.listProjects()[0] ?? null
   }
 
   /** Remove a project and everything it owns. Foreign keys cascade. */
@@ -1467,6 +1468,28 @@ export class FulkrumStore {
       ON CONFLICT(provider_id) DO UPDATE SET api_key = excluded.api_key, auth_style = excluded.auth_style, auth_header = excluded.auth_header, headers_json = excluded.headers_json, allow_private = excluded.allow_private, temperature = excluded.temperature, updated_at = excluded.updated_at`)
       .run(providerId, next.apiKey, next.authStyle, next.authHeader, JSON.stringify(next.headers), next.allowPrivate ? 1 : 0, next.temperature, Date.now())
     return this.getProviderSettings(providerId)
+  }
+
+  getAppSetting(key) {
+    const row = this.database.prepare('SELECT * FROM app_settings WHERE key = ?').get(key)
+    return row ? { key: row.key, value: row.value, updatedAt: Number(row.updated_at) } : null
+  }
+
+  listAppSettings() {
+    return this.database.prepare('SELECT * FROM app_settings ORDER BY key ASC').all()
+      .map((row) => ({ key: row.key, value: row.value, updatedAt: Number(row.updated_at) }))
+  }
+
+  setAppSetting(key, value) {
+    this.database.prepare(`INSERT INTO app_settings(key, value, updated_at) VALUES(?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
+      .run(key, value, Date.now())
+    return this.getAppSetting(key)
+  }
+
+  deleteAppSetting(key) {
+    const result = this.database.prepare('DELETE FROM app_settings WHERE key = ?').run(key)
+    return Number(result.changes) > 0
   }
 
   removeProviderSettings(providerId) {

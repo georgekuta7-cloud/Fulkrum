@@ -103,7 +103,9 @@ test('a priced run records every call, and the trace endpoint reports the totals
       const project = await request('POST', '/api/projects', { name: 'cost fixture' })
       const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'selective' })
       const runId = run.payload.run.id
-      await request('POST', '/api/chat', { runId, message: 'Do the thing.', history: [] })
+      // The direction goes straight into the store: a chat call would land in the
+      // same ledger this test totals, and the reply is not what is being priced.
+      store.appendMessage({ projectId: project.payload.project.id, runId, role: 'user', content: 'Do the thing.' })
 
       const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
       assert.equal(drafted.payload.plan.source, 'model', 'planning should use the model here')
@@ -157,7 +159,9 @@ test('a run stops when its budget is reached instead of overspending', async () 
       const project = await request('POST', '/api/projects', { name: 'budget fixture' })
       const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'selective' })
       const runId = run.payload.run.id
-      await request('POST', '/api/chat', { runId, message: 'Do the thing.', history: [] })
+      // The direction goes straight into the store, so the ledger holds exactly
+      // the planning and worker calls this test counts.
+      store.appendMessage({ projectId: project.payload.project.id, runId, role: 'user', content: 'Do the thing.' })
 
       const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
       assert.equal(store.spendForRun(runId).costUsd, 1, 'the planning call is on the ledger')
@@ -339,9 +343,9 @@ test('planning and chat respect the ceiling like worker calls do', async () => {
       assert.match(String(refused.payload.error ?? refused.payload.detail ?? ''), /budget/i)
 
       const drafted = await request('POST', `/api/runs/${runId}/plan`, { regenerate: true })
-      assert.equal(drafted.payload.plan.source, 'demo-fallback', 'planning falls back instead of spending')
-      assert.match(String(drafted.payload.fallbackReason ?? ''), /budget/i, 'and says the ceiling is why')
-      assert.ok(store.listEvents(runId).some((event) => event.type === 'plan.rejected'), 'the refusal is in the audit log')
+      assert.equal(drafted.status, 402, 'planning answers 402 at the ceiling, exactly like chat does')
+      assert.match(String(drafted.payload.error ?? drafted.payload.detail ?? ''), /budget/i, 'and says the ceiling is why')
+      assert.equal(store.getLatestPlanForRun(runId), null, 'a refused draft invents no plan')
       // Chat goes through callProvider, not the worker model stub, so the priced
       // usage is scripted here rather than above.
     }, { model, pricing, callProvider: async () => ({ text: 'A priced reply.', usage: { inputTokens: 1000, billableInputTokens: 1000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 } }) })

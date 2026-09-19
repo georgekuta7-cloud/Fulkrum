@@ -46,46 +46,75 @@ test('a zip is readable by an unzip tool, not just by this code', async () => {
 })
 
 test('a plan can be edited, and the edit invalidates the old approval', async () => {
-  await withTempDirectory(async (directory) => {
-    await withServer(async ({ request, store }) => {
-      const project = await request('POST', '/api/projects', { name: 'edit fixture' })
-      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
-      const runId = run.payload.run.id
-      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
-      assert.equal(drafted.status, 200)
+  const previousKey = process.env.XAI_API_KEY
+  // Drafting needs a configured provider; the scripted model keeps it offline.
+  process.env.XAI_API_KEY = 'sk-test-key-for-edit'
+  const model = async ({ options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) {
+      return {
+        text: JSON.stringify({
+          objective: 'A draft objective.',
+          tasks: [
+            { role: 'research', title: 'Look', instructions: 'Look around.', dependsOn: [] },
+            { role: 'builder', title: 'Write', instructions: 'Write it down.', dependsOn: [0] },
+          ],
+        }),
+        toolCalls: [],
+        usage: null,
+      }
+    }
+    return { text: 'Worker summary.', toolCalls: [], usage: null }
+  }
+  try {
+    await withTempDirectory(async (directory) => {
+      await withServer(async ({ request, store }) => {
+        const project = await request('POST', '/api/projects', { name: 'edit fixture' })
+        const projectId = project.payload.project.id
+        const run = await request('POST', '/api/runs', { projectId, permissionMode: 'autopilot' })
+        const runId = run.payload.run.id
+        // A plan needs a direction; it goes straight into the store because the
+        // chat reply is not what this test is about.
+        store.appendMessage({ projectId, runId, role: 'user', content: 'Plan the edit fixture.' })
+        const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+        assert.equal(drafted.status, 200, JSON.stringify(drafted.payload))
 
-      const edited = await request('PATCH', `/api/runs/${runId}/plan`, {
-        objective: 'A sharper objective.',
-        tasks: [
-          { role: 'research', title: 'Look', instructions: 'Look properly.', dependsOn: [] },
-          { role: 'builder', title: 'Write', instructions: 'Write it down.', dependsOn: [0] },
-        ],
-      })
-      assert.equal(edited.status, 200, JSON.stringify(edited.payload))
-      assert.equal(edited.payload.plan.objective, 'A sharper objective.')
-      assert.equal(edited.payload.plan.version, drafted.payload.plan.version + 1, 'an edit is a new version')
-      assert.notEqual(edited.payload.plan.contentHash, drafted.payload.plan.contentHash, 'and a new hash')
-      assert.equal(edited.payload.replacedVersion, drafted.payload.plan.version)
+        const edited = await request('PATCH', `/api/runs/${runId}/plan`, {
+          objective: 'A sharper objective.',
+          tasks: [
+            { role: 'research', title: 'Look', instructions: 'Look properly.', dependsOn: [] },
+            { role: 'builder', title: 'Write', instructions: 'Write it down.', dependsOn: [0] },
+          ],
+        })
+        assert.equal(edited.status, 200, JSON.stringify(edited.payload))
+        assert.equal(edited.payload.plan.objective, 'A sharper objective.')
+        assert.equal(edited.payload.plan.version, drafted.payload.plan.version + 1, 'an edit is a new version')
+        assert.notEqual(edited.payload.plan.contentHash, drafted.payload.plan.contentHash, 'and a new hash')
+        assert.equal(edited.payload.replacedVersion, drafted.payload.plan.version)
 
-      // The old hash no longer approves anything.
-      const stale = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
-      assert.equal(stale.status, 409)
+        // The old hash no longer approves anything.
+        const stale = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+        assert.equal(stale.status, 409)
 
-      const approved = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: edited.payload.plan.id, planHash: edited.payload.plan.contentHash, routing: {} })
-      assert.equal(approved.status, 200, JSON.stringify(approved.payload))
+        const approved = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: edited.payload.plan.id, planHash: edited.payload.plan.contentHash, routing: {} })
+        assert.equal(approved.status, 200, JSON.stringify(approved.payload))
 
-      // An edit while the plan is in use is refused rather than racing the workers.
-      const during = await request('PATCH', `/api/runs/${runId}/plan`, { tasks: [{ role: 'research', title: 'Later', instructions: 'x', dependsOn: [] }] })
-      assert.equal(during.status === 409 || during.status === 200, true, 'a plan being executed either refuses the edit or is not in that state yet')
-      if (during.status === 409) assert.match(String(during.payload.error), /cannot be edited/)
+        // An edit while the plan is in use is refused rather than racing the workers.
+        const during = await request('PATCH', `/api/runs/${runId}/plan`, { tasks: [{ role: 'research', title: 'Later', instructions: 'x', dependsOn: [] }] })
+        assert.equal(during.status === 409 || during.status === 200, true, 'a plan being executed either refuses the edit or is not in that state yet')
+        if (during.status === 409) assert.match(String(during.payload.error), /cannot be edited/)
 
-      // Validation is the same as the model's own output gets.
-      const invalid = await request('PATCH', `/api/runs/${runId}/plan`, { tasks: [{ role: 'wizard', title: '', instructions: '', dependsOn: [5] }] })
-      assert.equal(invalid.status === 409 || invalid.status === 400, true)
-      assert.equal(store.listEvents(runId).some((event) => event.type === 'plan.edited'), true, 'the edit is in the audit log')
-      assert.equal(store.verifyEventChain(runId).ok, true)
-    }, { workspaceRoot: directory })
-  })
+        // Validation is the same as the model's own output gets.
+        const invalid = await request('PATCH', `/api/runs/${runId}/plan`, { tasks: [{ role: 'wizard', title: '', instructions: '', dependsOn: [5] }] })
+        assert.equal(invalid.status === 409 || invalid.status === 400, true)
+        assert.equal(store.listEvents(runId).some((event) => event.type === 'plan.edited'), true, 'the edit is in the audit log')
+        assert.equal(store.verifyEventChain(runId).ok, true)
+      }, { workspaceRoot: directory, model })
+    })
+  } finally {
+    if (previousKey === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousKey
+  }
 })
 
 test('cost is reported per task, over time, and estimated before a run', async () => {

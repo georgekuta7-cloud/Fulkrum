@@ -68,13 +68,13 @@ function twoWriteScript(files) {
   }
 }
 
-async function startRun(request) {
+async function startRun(request, routing = {}) {
   const project = await request('POST', '/api/projects', { name: 'approval fixture' })
   const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'selective' })
   const runId = run.payload.run.id
   await request('POST', '/api/chat', { runId, message: 'Write the files.', history: [] })
-  const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
-  await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+  const drafted = await request('POST', `/api/runs/${runId}/plan`, { routing })
+  await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing })
   return runId
 }
 
@@ -504,13 +504,14 @@ test('the head review runs on a provider that has a key, not a hardcoded route',
 
   try {
     await withServer(async ({ request, store }) => {
-      const runId = await startRun(request)
+      // Every role is routed at the provider that holds a key: workers resolve
+      // their own role route strictly, so `head` alone would leave them refused.
+      const runId = await startRun(request, { head: 'openai', research: 'openai', builder: 'openai' })
       const finished = await waitFor(store, () => (store.getRun(runId).status === 'review' ? true : null))
       assert.ok(finished, `run should reach review, saw ${store.getRun(runId).status}`)
 
       const review = store.listEvents(runId).find((event) => event.type === 'run.review.ready')
       assert.equal(review.payload.provider, 'openai', 'the review used the provider that holds a key')
-      assert.equal(review.payload.demo, false)
       assert.equal(review.payload.summary, 'Review from the configured provider.')
     }, { model })
   } finally {

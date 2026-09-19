@@ -10,7 +10,9 @@ import { isSensitiveKeyName } from './redaction.mjs'
  */
 export const MASKED_HEADER_VALUE = '••••••••'
 
-const builtInProviders = [
+// Built fresh on every read, not cached at import: endpoints and default models
+// saved through the app must apply without restarting the bridge.
+const builtInProviders = () => [
   { id: 'grok', label: 'Grok', protocol: 'openai-compatible', envKeys: ['XAI_API_KEY'], baseUrl: process.env.XAI_BASE_URL ?? 'https://api.x.ai/v1', defaultModel: process.env.FULKRUM_GROK_MODEL ?? 'grok-4' },
   { id: 'openai', label: 'OpenAI', protocol: 'openai-compatible', envKeys: ['OPENAI_API_KEY'], baseUrl: process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1', defaultModel: process.env.FULKRUM_OPENAI_MODEL ?? 'gpt-5' },
   { id: 'anthropic', label: 'Anthropic', protocol: 'anthropic', envKeys: ['ANTHROPIC_API_KEY'], baseUrl: process.env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com/v1', defaultModel: process.env.FULKRUM_ANTHROPIC_MODEL ?? 'claude-opus-4-1' },
@@ -161,7 +163,7 @@ function extractModelIds(text) {
 
 export function createProviderRegistry(store) {
   const settingsFor = (providerId) => store.getProviderSettings(providerId)
-  const all = () => [...builtInProviders, ...store.listCustomProviders().map((provider) => ({ ...provider, envKeys: provider.envKey ? [provider.envKey] : [] }))]
+  const all = () => [...builtInProviders(), ...store.listCustomProviders().map((provider) => ({ ...provider, envKeys: provider.envKey ? [provider.envKey] : [] }))]
 
   return {
     list() {
@@ -328,7 +330,7 @@ export function createProviderRegistry(store) {
     },
 
     removeCustom(id) {
-      if (builtInProviders.some((provider) => provider.id === id)) throw new Error('Built-in providers cannot be removed.')
+      if (builtInProviders().some((provider) => provider.id === id)) throw new Error('Built-in providers cannot be removed.')
       if (!store.removeCustomProvider(id)) throw new Error('Custom provider not found.')
       store.removeProviderSettings(id)
       return id

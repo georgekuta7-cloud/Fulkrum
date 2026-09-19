@@ -34,6 +34,8 @@ export const endpoints = [
   { method: 'GET', path: '/api/health', summary: 'Liveness, schema version, and the execution boundary', tags: ['system'] },
   { method: 'GET', path: '/api/config', summary: 'Every setting with its effective value, and any that could not be used', tags: ['system'] },
   { method: 'GET', path: '/api/openapi.json', summary: 'This document', tags: ['system'] },
+  { method: 'GET', path: '/api/settings', summary: 'Every setting with its value, source, and restart flag', tags: ['system'] },
+  { method: 'PATCH', path: '/api/settings', summary: 'Change a setting ({ name, value }); null resets it', tags: ['system'], errors: [400] },
   { method: 'GET', path: '/api/tools', summary: 'Tool definitions, role allowlists, and the permission matrix', tags: ['system'] },
 
   { method: 'GET', path: '/api/providers', summary: 'Providers with whether they are configured (never a key)', tags: ['providers'] },

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { demoPlan, extractPlanJson, planContentHash, planLayers, splitLayerForConcurrency, validatePlan } from '../server/plans.mjs'
+import { extractPlanJson, planContentHash, planLayers, splitLayerForConcurrency, validatePlan } from '../server/plans.mjs'
 import { compactTaskMessages } from '../server/orchestrator.mjs'
 import { agentRoles } from '../server/roles.mjs'
 
@@ -86,15 +86,6 @@ test('plan JSON is extracted from prose and fences', () => {
   assert.equal(extractPlanJson('no json here'), null)
   assert.equal(extractPlanJson('{"broken": '), null)
   assert.equal(extractPlanJson(null), null)
-})
-
-test('the demo plan is valid and uses the direction', () => {
-  const plan = demoPlan('Ship the smallest billing change.')
-  const validation = validatePlan(plan)
-  assert.equal(validation.ok, true)
-  assert.match(plan.objective, /Ship the smallest billing change\./)
-  assert.equal(plan.tasks[0].role, 'research')
-  assert.deepEqual(plan.tasks[1].dependsOn, [0], 'the build task must wait for research by default')
 })
 
 test('old tool results compact into citations past the token budget', () => {

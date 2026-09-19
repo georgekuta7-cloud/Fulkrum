@@ -6,7 +6,9 @@
  * "what did the agent change in this file", and bounded so a huge file cannot
  * stall the request.
  */
-const maxDiffLines = Number(process.env.FULKRUM_MAX_DIFF_LINES ?? 2_000)
+// Read at use time, not import time: a value saved through the app must apply
+// without restarting the bridge.
+const maxDiffLines = () => Number(process.env.FULKRUM_MAX_DIFF_LINES ?? 2_000)
 const contextLines = 3
 
 function splitLines(text) {
@@ -35,8 +37,8 @@ export function lineDiff(beforeText, afterText) {
   const before = splitLines(beforeText)
   const after = splitLines(afterText)
 
-  if (before.length > maxDiffLines || after.length > maxDiffLines) {
-    return { truncated: true, entries: [], added: null, removed: null, reason: `File is larger than ${maxDiffLines} lines.` }
+  if (before.length > maxDiffLines() || after.length > maxDiffLines()) {
+    return { truncated: true, entries: [], added: null, removed: null, reason: `File is larger than ${maxDiffLines()} lines.` }
   }
   if (before.length === 0 && after.length === 0) return { truncated: false, entries: [], added: 0, removed: 0 }
 

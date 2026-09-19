@@ -46,41 +46,67 @@ test('run history reports each run with what it cost and changed', async () => {
 })
 
 test('a fork re-runs a plan under its own approval', async () => {
-  await withTempDirectory(async (directory) => {
-    await withServer(async ({ request, store }) => {
-      const project = await request('POST', '/api/projects', { name: 'fork fixture' })
-      const projectId = project.payload.project.id
-      const source = await request('POST', '/api/runs', { projectId, permissionMode: 'autopilot' })
-      const sourceRunId = source.payload.run.id
-      await request('POST', '/api/chat', { projectId, runId: sourceRunId, message: 'Write the release notes.', history: [] })
-      const drafted = await request('POST', `/api/runs/${sourceRunId}/plan`, {})
-      await request('POST', `/api/runs/${sourceRunId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+  const previousKey = process.env.XAI_API_KEY
+  // Drafting needs a configured provider; the scripted model keeps it offline.
+  process.env.XAI_API_KEY = 'sk-test-key-for-fork'
+  const model = async ({ options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) {
+      return {
+        text: JSON.stringify({
+          objective: 'Write the release notes.',
+          tasks: [
+            { role: 'research', title: 'Gather the changes', instructions: 'List what changed.', dependsOn: [] },
+            { role: 'builder', title: 'Write the notes', instructions: 'Write NOTES.md.', dependsOn: [0] },
+          ],
+        }),
+        toolCalls: [],
+        usage: null,
+      }
+    }
+    return { text: 'Worker summary.', toolCalls: [], usage: null }
+  }
+  try {
+    await withTempDirectory(async (directory) => {
+      await withServer(async ({ request, store }) => {
+        const project = await request('POST', '/api/projects', { name: 'fork fixture' })
+        const projectId = project.payload.project.id
+        const source = await request('POST', '/api/runs', { projectId, permissionMode: 'autopilot' })
+        const sourceRunId = source.payload.run.id
+        await request('POST', '/api/chat', { projectId, runId: sourceRunId, message: 'Write the release notes.', history: [] })
+        const drafted = await request('POST', `/api/runs/${sourceRunId}/plan`, {})
+        assert.equal(drafted.status, 200, JSON.stringify(drafted.payload))
+        await request('POST', `/api/runs/${sourceRunId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
 
-      const fork = await request('POST', `/api/runs/${sourceRunId}/fork`, { permissionMode: 'selective' })
-      assert.equal(fork.status, 201, JSON.stringify(fork.payload))
-      const forkedRunId = fork.payload.run.id
-      assert.notEqual(forkedRunId, sourceRunId)
-      assert.equal(fork.payload.run.status, 'planning', 'a fork starts before its own approval')
-      assert.equal(fork.payload.run.permissionMode, 'selective', 'and can run under different permissions')
-      assert.equal(fork.payload.plan.plan.objective, drafted.payload.plan.objective, 'the same objective')
-      assert.equal(fork.payload.plan.plan.status, 'draft', 'as a fresh draft, not an approved copy')
-      assert.equal(fork.payload.plan.tasks.length, drafted.payload.tasks.length)
+        const fork = await request('POST', `/api/runs/${sourceRunId}/fork`, { permissionMode: 'selective' })
+        assert.equal(fork.status, 201, JSON.stringify(fork.payload))
+        const forkedRunId = fork.payload.run.id
+        assert.notEqual(forkedRunId, sourceRunId)
+        assert.equal(fork.payload.run.status, 'planning', 'a fork starts before its own approval')
+        assert.equal(fork.payload.run.permissionMode, 'selective', 'and can run under different permissions')
+        assert.equal(fork.payload.plan.plan.objective, drafted.payload.plan.objective, 'the same objective')
+        assert.equal(fork.payload.plan.plan.status, 'draft', 'as a fresh draft, not an approved copy')
+        assert.equal(fork.payload.plan.tasks.length, drafted.payload.tasks.length)
 
-      const messages = store.listMessages(forkedRunId)
-      assert.equal(messages.some((message) => message.role === 'user' && message.content === 'Write the release notes.'), true, 'the direction travels with it')
-      assert.equal(store.listEvents(forkedRunId).some((event) => event.type === 'run.forked' && event.payload.from === sourceRunId), true)
+        const messages = store.listMessages(forkedRunId)
+        assert.equal(messages.some((message) => message.role === 'user' && message.content === 'Write the release notes.'), true, 'the direction travels with it')
+        assert.equal(store.listEvents(forkedRunId).some((event) => event.type === 'run.forked' && event.payload.from === sourceRunId), true)
 
-      // The old approval does not carry over: the fork has to be approved itself.
-      const stale = await request('POST', `/api/runs/${forkedRunId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
-      assert.equal(stale.status, 409, 'the original plan belongs to the original run')
+        // The old approval does not carry over: the fork has to be approved itself.
+        const stale = await request('POST', `/api/runs/${forkedRunId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+        assert.equal(stale.status, 409, 'the original plan belongs to the original run')
 
-      const fresh = await request('POST', `/api/runs/${forkedRunId}/control`, { action: 'approve-plan', planId: fork.payload.plan.plan.id, planHash: fork.payload.plan.plan.contentHash, routing: {} })
-      assert.equal(fresh.status, 200, JSON.stringify(fresh.payload))
+        const fresh = await request('POST', `/api/runs/${forkedRunId}/control`, { action: 'approve-plan', planId: fork.payload.plan.plan.id, planHash: fork.payload.plan.plan.contentHash, routing: {} })
+        assert.equal(fresh.status, 200, JSON.stringify(fresh.payload))
 
-      const missing = await request('POST', '/api/runs/run-nope/fork')
-      assert.equal(missing.status, 404)
-    }, { workspaceRoot: directory })
-  })
+        const missing = await request('POST', '/api/runs/run-nope/fork')
+        assert.equal(missing.status, 404)
+      }, { workspaceRoot: directory, model })
+    })
+  } finally {
+    if (previousKey === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousKey
+  }
 })
 
 test('search finds messages and events, and treats a wildcard as a character', async () => {

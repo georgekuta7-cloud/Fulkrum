@@ -1,8 +1,84 @@
 import { useEffect, useState } from 'react'
-import { Activity, Coins, Cpu, Database, KeyRound, Moon, ShieldCheck, Sun, TriangleAlert, X, Zap } from 'lucide-react'
+import { Activity, Coins, Cpu, Database, KeyRound, Moon, ShieldCheck, SlidersHorizontal, Sun, TriangleAlert, X, Zap } from 'lucide-react'
 import type { Bridge } from '../hooks/useBridge'
-import type { Provider } from '../api/types'
+import type { AppSetting, Provider } from '../api/types'
 import { ProviderEditor } from '../ProviderEditor'
+
+const groupTitles: Record<string, string> = {
+  bridge: 'Bridge',
+  storage: 'Storage behavior',
+  limits: 'Limits',
+  providers: 'Provider behavior',
+  budgets: 'Budgets',
+  security: 'Security',
+  execution: 'Execution boundary',
+}
+
+/** One tunable: an input shaped by its kind, a save that applies live unless badged. */
+function SettingRow({ setting, onSave, onReset }: {
+  setting: AppSetting
+  onSave: (name: string, value: unknown) => Promise<unknown>
+  onReset: (name: string) => Promise<unknown>
+}) {
+  const asText = (value: unknown) => (Array.isArray(value) ? value.join(', ') : String(value ?? ''))
+  const [draft, setDraft] = useState(asText(setting.value))
+  const [checked, setChecked] = useState(Boolean(setting.value))
+  const [saving, setSaving] = useState(false)
+  const locked = setting.source === 'env'
+  const dirty = setting.kind === 'bool' ? checked !== Boolean(setting.value) : draft !== asText(setting.value)
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await onSave(setting.name, setting.kind === 'bool' ? checked : draft)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <li className="setting-row">
+      <div className="setting-name">
+        <strong title={setting.description}>{setting.name}</strong>
+        <span className="muted tiny">
+          {locked ? 'set in environment' : setting.source === 'db' ? 'saved here' : 'default'}
+          {setting.restartRequired ? ' · needs restart' : ''}
+        </span>
+      </div>
+      <p className="muted tiny">{setting.description}</p>
+      {setting.problem ? <p className="warning tiny">{setting.problem}</p> : null}
+      <div className="deny-row">
+        {setting.kind === 'bool' ? (
+          <label className="provider-editor-check">
+            <input type="checkbox" checked={checked} disabled={locked} onChange={(event) => setChecked(event.target.checked)} />
+            <span>{checked ? 'on' : 'off'}</span>
+          </label>
+        ) : setting.kind === 'enum' ? (
+          <select value={draft} disabled={locked} onChange={(event) => setDraft(event.target.value)}>
+            {(setting.choices ?? []).map((choice) => (
+              <option key={choice} value={choice}>{choice === '' ? 'Default' : choice}</option>
+            ))}
+          </select>
+        ) : (
+          <input
+            value={draft}
+            disabled={locked}
+            inputMode={setting.kind === 'int' || setting.kind === 'port' || setting.kind === 'money' ? 'decimal' : undefined}
+            placeholder={setting.kind === 'list' ? 'comma, separated, values' : `default: ${asText(setting.default)}`}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter') void save() }}
+          />
+        )}
+        <button type="button" className="tiny-button" disabled={!dirty || locked || saving} onClick={() => void save()}>
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        {setting.source === 'db' ? (
+          <button type="button" className="tiny-button" title="Forget the saved value" onClick={() => void onReset(setting.name)}>Reset</button>
+        ) : null}
+      </div>
+    </li>
+  )
+}
 
 /**
  * The drawer: whether the thing is healthy, what it will let a worker do, and what it
@@ -188,6 +264,40 @@ export function SettingsPanel({ bridge, theme, setTheme, onClose }: { bridge: Br
             <input type="password" autoComplete="off" value={newProvider.apiKey} placeholder="API key (empty if none)" onChange={(event) => setNewProvider((current) => ({ ...current, apiKey: event.target.value }))} />
             <button type="submit" className="primary">Add provider</button>
           </form>
+        </Section>
+
+        <Section icon={<SlidersHorizontal size={14} />} title="Settings" note="everything tunable, no terminal needed">
+          {bridge.appSettings.length === 0 ? <p className="muted">Loading settings…</p> : (
+            Object.entries(
+              bridge.appSettings.reduce<Record<string, AppSetting[]>>((groups, setting) => {
+                ;(groups[setting.group] ??= []).push(setting)
+                return groups
+              }, {}),
+            ).map(([group, settings]) => (
+              <div key={group}>
+                <p className="muted tiny"><strong>{groupTitles[group] ?? group}</strong></p>
+                <ul className="grant-list">
+                  {settings.map((setting) => (
+                    <SettingRow
+                      key={`${setting.name}:${JSON.stringify(setting.value)}`}
+                      setting={setting}
+                      onSave={async (name, value) => {
+                        const saved = await bridge.saveSetting(name, value)
+                        await Promise.all([bridge.loadProviders(), bridge.loadStatus()])
+                        return saved
+                      }}
+                      onReset={async (name) => {
+                        const reset = await bridge.resetSetting(name)
+                        await Promise.all([bridge.loadProviders(), bridge.loadStatus()])
+                        return reset
+                      }}
+                    />
+                  ))}
+                </ul>
+              </div>
+            ))
+          )}
+          <p className="muted tiny">Values set in the environment always win and are locked here. Anything else applies the moment it saves, except entries badged “needs restart”.</p>
         </Section>
 
         <Section icon={<KeyRound size={14} />} title="Standing grants" note="allowed repeatedly, within a scope">

@@ -16,7 +16,10 @@ import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
 import { PERMISSION_MODES, fingerprintToolCall, permissionMatrix, standingScopeFor, validateStandingScope } from './permissions.mjs'
 import { scanArguments } from './redaction.mjs'
 import { planContentHash, validatePlan } from './plans.mjs'
+import { PlanDraftError } from './planService.mjs'
 import { agentRoles } from './roles.mjs'
+import { resolveReasoning } from './reasoning.mjs'
+import { listSettings, resetSetting, saveSetting } from './settings.mjs'
 
 export const MAX_JSON_BODY_BYTES = 100_000
 export const MAX_TOOL_BODY_BYTES = 600_000
@@ -124,10 +127,6 @@ function safeHistory(history, message) {
   }
 
   return normalized
-}
-
-function demoReply(message) {
-  return `I have your direction: “${message}”\n\nI am running in demo mode because the selected provider has no server-side key yet. Add its key to .env.local, restart Fulkrum, and this same chat will route through the live API. For now, the next controlled step is to turn your direction into a plan for Scout and Forge.`
 }
 
 const controlTransitions = {
@@ -247,9 +246,11 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       return
     }
 
-    const project = body.projectId ? store.getProject(body.projectId)?.project : store.ensureDefaultProject()
+    const project = body.projectId
+      ? store.getProject(body.projectId)?.project
+      : store.mostRecentProject()
     if (!project) {
-      sendJson(response, 404, { error: 'Project not found.' })
+      sendJson(response, 404, { error: body.projectId ? 'Project not found.' : 'No projects yet. Create one first — chat needs a project to belong to.' })
       return
     }
     const run = body.runId ? store.getRun(body.runId) : store.ensureActiveRun(project.id, body.mode)
@@ -269,14 +270,17 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
     }
 
     const history = safeHistory(body.history, message)
+    // The head thinks as hard as the project asks it to; unset means the
+    // provider's own default, and the call sends nothing.
+    const reasoning = resolveReasoning(project.settings, 'head')
     store.appendMessage({ projectId: project.id, runId: run.id, role: 'user', content: message })
     store.appendEvent({ runId: run.id, type: 'message.user', agentId: 'head', payload: { content: message } })
 
     if (!providerRegistry.isConfigured(provider)) {
-      const reply = demoReply(message)
-      store.appendMessage({ projectId: project.id, runId: run.id, role: 'assistant', agentId: 'head', content: reply, metadata: { demo: true, provider: provider.id, model } })
-      store.appendEvent({ runId: run.id, type: 'message.assistant', agentId: 'head', payload: { content: reply, demo: true, provider: provider.id, model } })
-      sendJson(response, 200, { reply, demo: true, provider: provider.id, model, projectId: project.id, runId: run.id })
+      // No demo replies: without a key there is nothing to say that is not
+      // invented. The settings drawer takes a key with no restart, and then
+      // this same request works.
+      sendJson(response, 409, { error: `No provider key is configured for ${provider.label}. Add one in Workspace settings — providers, keys, endpoints, and models are all settable there — then send this again.` })
       return
     }
 
@@ -288,7 +292,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       const sink = store.partialSink(run.id, { role: 'head' })
       let completion
       try {
-        completion = await orchestrator.withBudget(run.id, () => callProvider(provider, model, history, { onDelta: sink.push }))
+        completion = await orchestrator.withBudget(run.id, () => callProvider(provider, model, history, { onDelta: sink.push, reasoning }))
       } finally {
         sink.done()
       }
@@ -470,6 +474,28 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         return
       }
 
+      if (request.method === 'GET' && requestUrl.pathname === '/api/settings') {
+        // Every tunable with its effective value, where it came from, and
+        // whether changing it needs a restart. This is the settings drawer.
+        sendJson(response, 200, { settings: listSettings(store) })
+        return
+      }
+
+      if (request.method === 'PATCH' && requestUrl.pathname === '/api/settings') {
+        try {
+          const body = await readJson(request)
+          // A null or empty value resets: the boot environment or the default
+          // takes over again, whichever the precedence says.
+          const entry = body.value === null || body.value === undefined || String(body.value).trim() === ''
+            ? resetSetting(store, body.name)
+            : saveSetting(store, body.name, body.value)
+          sendJson(response, 200, { setting: entry, settings: listSettings(store) })
+        } catch (error) {
+          sendJson(response, 400, { error: error instanceof Error ? error.message : 'Invalid setting.' })
+        }
+        return
+      }
+
       if (request.method === 'GET' && requestUrl.pathname === '/api/openapi.json') {
         sendJson(response, 200, openApiDocument({ version: process.env.npm_package_version ?? '0.2.0-dev' }))
         return
@@ -616,7 +642,11 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       }
 
       if (request.method === 'GET' && requestUrl.pathname === '/api/projects/default') {
-        const project = store.ensureDefaultProject()
+        const project = store.mostRecentProject()
+        if (!project) {
+          sendJson(response, 404, { error: 'No projects yet. Create one first.' })
+          return
+        }
         const detail = store.getProject(project.id)
         sendJson(response, 200, detail ?? { project, runs: [] })
         return
@@ -1074,8 +1104,16 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         if (request.method === 'POST') {
           const body = await readJson(request)
           const routing = body.routing ?? store.getProject(run.projectId)?.project?.settings?.routing ?? {}
-          const drafted = await planService.ensureDraft(run, { regenerate: body.regenerate === true, routing })
-          sendJson(response, 200, { ...drafted.plan, created: Boolean(drafted.created), demo: Boolean(drafted.demo), fallbackReason: drafted.fallbackReason ?? null })
+          try {
+            const drafted = await planService.ensureDraft(run, { regenerate: body.regenerate === true, routing })
+            sendJson(response, 200, { ...drafted.plan, created: Boolean(drafted.created) })
+          } catch (error) {
+            // Drafting can only fail for honest reasons — no key, no direction,
+            // an unusable model reply, a blown budget — and each carries the
+            // status that explains it. There is no fallback plan to hide behind.
+            const status = error instanceof BudgetExceededError ? 402 : error instanceof PlanDraftError ? error.status : 500
+            sendJson(response, status, { error: error instanceof Error ? error.message : 'The plan could not be drafted.' })
+          }
           return
         }
       }
@@ -1155,8 +1193,14 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           // yet, draft it now so the run is always bound to a stored artifact.
           let plan = typeof body.planId === 'string' ? store.getPlan(body.planId) : store.getLatestPlanForRun(runId)
           if (!plan) {
-            const drafted = await planService.ensureDraft(run, { routing })
-            plan = drafted.plan
+            try {
+              const drafted = await planService.ensureDraft(run, { routing })
+              plan = drafted.plan
+            } catch (error) {
+              const status = error instanceof BudgetExceededError ? 402 : error instanceof PlanDraftError ? error.status : 500
+              sendJson(response, status, { error: error instanceof Error ? error.message : 'The plan could not be drafted.' })
+              return
+            }
           }
           if (plan.plan.runId && plan.plan.runId !== runId) {
             sendJson(response, 409, { error: 'That plan belongs to a different run.' })

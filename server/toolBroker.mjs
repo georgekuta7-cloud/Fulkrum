@@ -7,7 +7,8 @@ import { decidePermission, fingerprintToolCall, isSensitivePath, resolveToolCall
 import { hashHeaderValues, redact } from './redaction.mjs'
 
 const MAX_FILE_BYTES = 500_000
-const MAX_SNAPSHOT_BYTES = Number(process.env.FULKRUM_MAX_SNAPSHOT_BYTES ?? 64_000)
+// Read at use time, not import time: a value saved through the app applies live.
+const maxSnapshotBytes = () => Number(process.env.FULKRUM_MAX_SNAPSHOT_BYTES ?? 64_000)
 const MAX_OUTPUT_BYTES = 100_000
 const MAX_SEARCH_FILES = 400
 const MAX_REDIRECTS = 3
@@ -217,8 +218,9 @@ async function snapshotFile(absolutePath) {
       const stats = await handle.stat()
       if (stats.isDirectory()) return null
       const bytes = Number(stats.size)
-      const snapshot = { previousBytes: bytes, previousSha256: null, previousTruncated: bytes > MAX_SNAPSHOT_BYTES }
-      if (bytes <= MAX_SNAPSHOT_BYTES) {
+      const snapshotLimit = maxSnapshotBytes()
+      const snapshot = { previousBytes: bytes, previousSha256: null, previousTruncated: bytes > snapshotLimit }
+      if (bytes <= snapshotLimit) {
         const content = await handle.readFile({ encoding: 'utf8' })
         snapshot.previousContent = content
         snapshot.previousSha256 = createHash('sha256').update(content, 'utf8').digest('hex')
@@ -235,10 +237,12 @@ async function snapshotFile(absolutePath) {
 
 
 export class FulkrumToolBroker {
-  constructor({ workspaceRoot = process.env.FULKRUM_WORKSPACE_ROOT ?? process.cwd(), httpAllowlist = configuredHttpAllowlist(), execution = null } = {}) {
+  constructor({ workspaceRoot = process.env.FULKRUM_WORKSPACE_ROOT ?? process.cwd(), httpAllowlist = null, execution = null } = {}) {
     // Normalized once, through the same resolver the tools use, so every path the
     // broker reports is relative to a real root. Otherwise a short-named or
     // symlinked workspace root makes result paths point outside themselves.
+    // A null allowlist follows the live setting instead of the value captured
+    // at construction; an explicit array (as tests pass) stays pinned.
     this.workspaceRoot = resolveWorkspacePath(workspaceRoot, '.').resolved
     this.httpAllowlist = httpAllowlist
     this.execution = execution
@@ -288,7 +292,7 @@ export class FulkrumToolBroker {
   }
 
   authorize({ mode, tool, resolution }) {
-    return decidePermission({ mode, tool, resolution, httpAllowlist: this.httpAllowlist })
+    return decidePermission({ mode, tool, resolution, httpAllowlist: this.httpAllowlist ?? configuredHttpAllowlist() })
   }
 
   /**
@@ -414,7 +418,7 @@ export class FulkrumToolBroker {
       // request to a private address the first check already refused — and
       // would forward credential headers and bodies wherever it points.
       for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-        response = await pinnedRequest(currentUrl, { method, headers: requestHeaders, body, allowedHosts: this.httpAllowlist })
+        response = await pinnedRequest(currentUrl, { method, headers: requestHeaders, body, allowedHosts: this.httpAllowlist ?? configuredHttpAllowlist() })
         if (hop === MAX_REDIRECTS && [301, 302, 303, 307, 308].includes(response.status) && response.headers.location) {
           throw new Error('Too many redirects.')
         }

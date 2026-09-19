@@ -15,14 +15,12 @@ import { createExecutionRuntime } from './execution.mjs'
 import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
 import { reconcileInterruptedRuns } from './recovery.mjs'
 import { backupIfStale } from './backup.mjs'
+import { applySavedSettings } from './settings.mjs'
 
 // Read once, validated, with any problems reported below.
-const { values: settings, problems: settingProblems } = resolveSettings()
-const port = settings.FULKRUM_API_PORT
-const ownerId = `bridge-${randomUUID().slice(0, 8)}`
-const allowedOrigins = new Set(settings.FULKRUM_ALLOWED_ORIGINS)
-const dataDir = settings.FULKRUM_DATA_DIR || 'data'
-const databasePath = settings.FULKRUM_DB_PATH || path.join(dataDir, 'fulkrum.sqlite')
+const bootSettings = resolveSettings()
+const bootDatabasePath = bootSettings.values.FULKRUM_DB_PATH
+  || path.join(bootSettings.values.FULKRUM_DATA_DIR || 'data', 'fulkrum.sqlite')
 
 // Reported by /api/status and the OpenAPI document, so a running instance can say
 // which version it is rather than being guessed at.
@@ -36,7 +34,19 @@ const version = (() => {
 
 const systemPrompt = `You are Fulkrum's Head AI. You are the supervisor of a small team with a research worker and a build worker. The user speaks to you in a shared project chat. Keep the conversation practical and concise. Explain the plan, identify the next decision, and never claim a worker completed something unless the system has reported it. Before execution, help the user shape and approve a plan. During execution, coordinate the workers and surface disagreements.`
 
-const store = new FulkrumStore(databasePath)
+const store = new FulkrumStore(bootDatabasePath)
+// Values saved through the app land here on the way in: anything the
+// environment left empty is filled from the database, so the resolved
+// settings below already include in-app changes from previous boots.
+applySavedSettings(store, { log: (message) => console.log(message) })
+const resolved = resolveSettings()
+// Problems from either pass are startup facts: the first covers the database
+// location itself, the second everything applied on top of it.
+const settings = resolved.values
+const settingProblems = [...bootSettings.problems, ...resolved.problems]
+const port = settings.FULKRUM_API_PORT
+const ownerId = `bridge-${randomUUID().slice(0, 8)}`
+const allowedOrigins = new Set(settings.FULKRUM_ALLOWED_ORIGINS)
 const providerRegistry = createProviderRegistry(store)
 const execution = createExecutionRuntime()
 const toolBroker = new FulkrumToolBroker({ execution, workspaceRoot: settings.FULKRUM_WORKSPACE_ROOT || process.cwd() })
