@@ -2,20 +2,13 @@ import { useState } from 'react'
 import { GitBranch, Plus, Search, Trash2 } from 'lucide-react'
 import type { Bridge } from '../hooks/useBridge'
 import type { SearchResults } from '../api/types'
+import { statusTone } from '../lib/tones'
 
 /**
  * Projects, the runs inside the open one, and a search across what was said and
  * recorded. The history is where "what did this thing do last week" is answered, and
  * a fork is how a plan gets run again without retyping the direction.
  */
-
-const statusTone = (status: string) => {
-  if (['review', 'completed'].includes(status)) return 'ok'
-  if (['executing', 'planning'].includes(status)) return 'busy'
-  if (['paused', 'interrupted', 'budget_exceeded'].includes(status)) return 'warn'
-  if (['failed', 'cancelled'].includes(status)) return 'bad'
-  return 'idle'
-}
 
 export function Sidebar({ bridge }: { bridge: Bridge }) {
   const { projects, projectId, runs, runId, openProject, openRun, createProject, deleteProject, forkRun, search } = bridge

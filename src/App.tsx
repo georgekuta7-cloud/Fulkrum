@@ -1,30 +1,33 @@
-import { useEffect, useState } from 'react'
-import { Activity, FileDiff, FolderTree, ListChecks, Settings2, TriangleAlert, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Activity, ArrowLeft, FileDiff, FolderTree, ListChecks, Settings2, TriangleAlert, X } from 'lucide-react'
 import { useBridge } from './hooks/useBridge'
-import { RunHeader } from './components/RunHeader'
+import { TopBar } from './components/TopBar'
+import type { CenterView, InspectorTab } from './components/TopBar'
 import { Sidebar } from './components/Sidebar'
+import { GraphCanvas } from './components/GraphCanvas'
+import { WorkerSheet } from './components/WorkerSheet'
 import { ApprovalDock } from './components/ApprovalDock'
 import { PlanPanel } from './components/PlanPanel'
 import { ActivityPanel } from './components/ActivityPanel'
 import { ArtifactsPanel, FilesPanel } from './components/FilesPanel'
 import { ChatPanel } from './components/ChatPanel'
+import { ContextRail } from './components/ContextRail'
 import { SettingsPanel } from './components/SettingsPanel'
 import { ErrorBoundary } from './ErrorBoundary'
+import { buildGraph } from './lib/runGraph'
+import type { GraphNode } from './lib/runGraph'
 import './app.css'
 
 /**
- * The shell: a header that says what state the run is in, the run itself in the
- * middle, the Head AI on the right, and the drawer for everything that is a decision
- * about the tool rather than about a run.
- *
- * The centre is tabbed because the four views answer different questions — what will
- * happen, what is happening, what changed, what is there — and showing them at once
- * meant none of them had room.
+ * The shell: a status bar that never leaves, the run as a living map in the
+ * middle, and the Head AI one panel away. The map is the main screen because it
+ * answers the two questions everything else serves — what is it doing, and what
+ * is it waiting for. The chat takes the center on demand; the inspector (plan,
+ * activity, artifacts, workspace) is a view over the same records, not a mode
+ * the app is stuck in.
  */
 
-type Tab = 'plan' | 'activity' | 'artifacts' | 'files'
-
-const tabs: Array<{ id: Tab; label: string; icon: React.ReactNode }> = [
+const inspectorTabs: Array<{ id: InspectorTab; label: string; icon: React.ReactNode }> = [
   { id: 'plan', label: 'Plan', icon: <ListChecks size={14} /> },
   { id: 'activity', label: 'Activity', icon: <Activity size={14} /> },
   { id: 'artifacts', label: 'Artifacts', icon: <FileDiff size={14} /> },
@@ -33,8 +36,11 @@ const tabs: Array<{ id: Tab; label: string; icon: React.ReactNode }> = [
 
 export default function App() {
   const bridge = useBridge()
-  const [tab, setTab] = useState<Tab>('plan')
+  const [view, setView] = useState<CenterView>('graph')
+  const [inspector, setInspector] = useState<InspectorTab | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [projectName, setProjectName] = useState('')
   const [theme, setTheme] = useState<'dark' | 'light'>(() => (localStorage.getItem('fulkrum.theme') === 'light' ? 'light' : 'dark'))
 
   useEffect(() => {
@@ -42,15 +48,50 @@ export default function App() {
     localStorage.setItem('fulkrum.theme', theme)
   }, [theme])
 
-  // Escape closes the topmost overlay, which is the one thing a keyboard should do
-  // without being told where the focus is.
+  const graph = useMemo(() => buildGraph({
+    run: bridge.run,
+    plan: bridge.plan,
+    tasks: bridge.tasks,
+    toolCalls: bridge.toolCalls,
+    byTask: bridge.byTask,
+  }), [bridge.run, bridge.plan, bridge.tasks, bridge.toolCalls, bridge.byTask])
+
+  // The node a pending approval belongs to, so the decision surfaces on the
+  // worker that is actually waiting — even if the person is looking elsewhere.
+  // An explicit click always wins; a dismissal is remembered per tool call so it
+  // does not fight the next approval.
+  const [dismissedCallId, setDismissedCallId] = useState<string | null>(null)
+  const approvalNode = bridge.approval
+    ? graph.nodes.find((node) => node.kind === 'task' && node.agentId === bridge.approval?.toolCall.agentId) ?? null
+    : null
+  const explicit = graph.nodes.find((node) => node.id === selectedId) ?? null
+  const selected = explicit ?? (approvalNode && bridge.approval?.toolCall.id !== dismissedCallId ? approvalNode : null)
+
+  const closeSheet = useCallback(() => {
+    if (selected && approvalNode && selected.id === approvalNode.id && bridge.approval) setDismissedCallId(bridge.approval.toolCall.id)
+    setSelectedId(null)
+  }, [selected, approvalNode, bridge.approval])
+
+  // Escape unwinds the topmost layer; ⌃1–4 open the inspector over the map.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setSettingsOpen(false)
+      const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes((event.target as HTMLElement)?.tagName ?? '')
+      if (event.key === 'Escape') {
+        if (settingsOpen) setSettingsOpen(false)
+        else if (inspector) setInspector(null)
+        else closeSheet()
+        return
+      }
+      if (typing || !(event.ctrlKey || event.metaKey)) return
+      const tab = inspectorTabs[Number(event.key) - 1]
+      if (tab) {
+        event.preventDefault()
+        setInspector(tab.id)
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [settingsOpen, inspector, closeSheet])
 
   // A run that parks on an approval is the one thing worth interrupting a person
   // for, and only when they are looking at something else.
@@ -77,7 +118,15 @@ export default function App() {
   return (
     <ErrorBoundary>
       <div className="app">
-        <RunHeader bridge={bridge} />
+        <TopBar
+          bridge={bridge}
+          view={view}
+          onViewChange={setView}
+          onOpenInspector={setInspector}
+          onOpenSettings={() => setSettingsOpen(true)}
+          theme={theme}
+          onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+        />
 
         {setupNeeded ? (
           <div className="setup-card">
@@ -93,43 +142,88 @@ export default function App() {
           </div>
         ) : null}
 
-        <div className="app-body">
+        {bridge.booted && bridge.projects.length === 0 ? (
+          <div className="app-body">
+            <main className="center">
+              <div className="panel-empty">
+                <h2>Start your first project</h2>
+                <p>Runs, plans, and approvals live inside a project, and nothing is seeded — what you see is what you made.</p>
+                <form
+                  className="deny-row"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    if (projectName.trim().length >= 2) {
+                      void bridge.createProject(projectName.trim())
+                      setProjectName('')
+                    }
+                  }}
+                >
+                  <input autoFocus value={projectName} placeholder="Project name (at least 2 characters)" onChange={(event) => setProjectName(event.target.value)} />
+                  <button type="submit" className="primary" disabled={projectName.trim().length < 2}>Create project</button>
+                </form>
+              </div>
+            </main>
+          </div>
+        ) : (
+        <div className={`app-body ${view === 'chat' ? 'chat-centered' : ''}`}>
           <Sidebar bridge={bridge} />
 
           <main className="center">
-            <ApprovalDock bridge={bridge} />
-
-            <nav className="tabs" role="tablist">
-              {tabs.map((entry) => (
-                <button
-                  type="button"
-                  role="tab"
-                  key={entry.id}
-                  aria-selected={tab === entry.id}
-                  className={tab === entry.id ? 'active' : ''}
-                  onClick={() => setTab(entry.id)}
-                >
-                  {entry.icon} {entry.label}
-                  {entry.id === 'activity' && bridge.streaming ? <span className="live-dot" title="text is arriving" /> : null}
-                  {entry.id === 'artifacts' && bridge.artifacts.length ? <span className="count">{bridge.artifacts.length}</span> : null}
-                </button>
-              ))}
-              <button type="button" className="settings-button" onClick={() => setSettingsOpen(true)} title="State, permissions and spend">
-                <Settings2 size={14} />
-                {bridge.status?.lastVerify && !bridge.status.lastVerify.ok ? <span className="live-dot bad" /> : null}
-              </button>
-            </nav>
-
-            <section className="panel">
-              {tab === 'plan' ? <PlanPanel bridge={bridge} /> : null}
-              {tab === 'activity' ? <ActivityPanel bridge={bridge} /> : null}
-              {tab === 'artifacts' ? <ArtifactsPanel bridge={bridge} /> : null}
-              {tab === 'files' ? <FilesPanel bridge={bridge} /> : null}
-            </section>
+            {inspector ? (
+              <>
+                <nav className="tabs" role="tablist">
+                  <button type="button" className="inspector-back" onClick={() => setInspector(null)} title="Back to the map">
+                    <ArrowLeft size={14} />
+                  </button>
+                  {inspectorTabs.map((entry, index) => (
+                    <button
+                      type="button"
+                      role="tab"
+                      key={entry.id}
+                      aria-selected={inspector === entry.id}
+                      className={inspector === entry.id ? 'active' : ''}
+                      onClick={() => setInspector(entry.id)}
+                    >
+                      {entry.icon} {entry.label}
+                      {entry.id === 'activity' && bridge.streaming ? <span className="live-dot" title="text is arriving" /> : null}
+                      {entry.id === 'artifacts' && bridge.artifacts.length ? <span className="count">{bridge.artifacts.length}</span> : null}
+                      <kbd>⌃{index + 1}</kbd>
+                    </button>
+                  ))}
+                </nav>
+                <section className="panel">
+                  {inspector === 'plan' ? <PlanPanel bridge={bridge} /> : null}
+                  {inspector === 'activity' ? <ActivityPanel bridge={bridge} /> : null}
+                  {inspector === 'artifacts' ? <ArtifactsPanel bridge={bridge} /> : null}
+                  {inspector === 'files' ? <FilesPanel bridge={bridge} /> : null}
+                </section>
+              </>
+            ) : view === 'graph' ? (
+              <div className="graph-wrap">
+                {graph.nodes.length ? (
+                  <>
+                    <p className="graph-hint">Click a worker to see what it is doing</p>
+                    <GraphCanvas nodes={graph.nodes} edges={graph.edges} selectedId={selected?.id ?? null} onSelect={(node: GraphNode) => setSelectedId(node.id)} />
+                    {selected ? <WorkerSheet bridge={bridge} node={selected} onClose={closeSheet} /> : null}
+                    {!selected && bridge.approval && !approvalNode ? (
+                      <div className="worker-sheet-fallback"><ApprovalDock bridge={bridge} /></div>
+                    ) : null}
+                  </>
+                ) : (
+                  <div className="panel-empty">
+                    <h2>No run open</h2>
+                    <p className="muted">Pick a run from the sidebar, or start one from the chat.</p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <ChatPanel bridge={bridge} centered />
+            )}
           </main>
 
-          <ChatPanel bridge={bridge} />
+          {view === 'graph' ? <ChatPanel bridge={bridge} /> : <ContextRail bridge={bridge} />}
         </div>
+        )}
 
         {settingsOpen ? <SettingsPanel bridge={bridge} theme={theme} setTheme={setTheme} onClose={() => setSettingsOpen(false)} /> : null}
 

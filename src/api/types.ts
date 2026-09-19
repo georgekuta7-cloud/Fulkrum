@@ -12,6 +12,20 @@ export type Mode = 'plan' | 'review'
 export type PermissionMode = 'guided' | 'selective' | 'autopilot'
 export type AgentId = 'head' | 'research' | 'builder'
 
+export type ReasoningLevel = 'minimal' | 'low' | 'medium' | 'high'
+
+export type Project = {
+  id: string
+  name: string
+  status?: string
+  settings?: {
+    routing?: Record<string, string>
+    reasoning?: Partial<Record<AgentId | 'default', ReasoningLevel>>
+  } & Record<string, unknown>
+  createdAt?: number
+  updatedAt?: number
+}
+
 export type Provider = {
   id: string
   label: string
@@ -55,6 +69,7 @@ export type Task = {
   agentId: string
   title: string
   status: string
+  planTaskId?: string | null
   result?: string | null
   stepCount?: number
 }
@@ -194,4 +209,17 @@ export type ConfigReport = {
   settings: Array<{ name: string; group: string; description: string; configured: boolean; source: string; value: unknown; problem: string | null }>
   problems: Array<{ name: string; message: string; using: unknown }>
   providers: Array<{ id: string; label: string; envKey: string; configured: boolean; hasKey: boolean; keySource: string | null }>
+}
+
+export type AppSetting = {
+  name: string
+  group: string
+  kind: string
+  description: string
+  choices: Array<string> | null
+  default: unknown
+  value: unknown
+  source: 'env' | 'db' | 'default'
+  restartRequired: boolean
+  problem: string | null
 }

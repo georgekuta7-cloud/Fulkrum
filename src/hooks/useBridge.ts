@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, api, openRunStream } from '../api/client'
-import type { Artifact, ConfigReport, Estimate, FileHistoryEntry, Plan, Provider, Run, RunEvent, SearchResults, Spend, StandingGrant, Status, Task, ToolCall, TreeNode, Usage } from '../api/types'
+import type { AgentId, AppSetting, Artifact, ConfigReport, Estimate, FileHistoryEntry, Plan, Project, Provider, ReasoningLevel, Run, RunEvent, SearchResults, Spend, StandingGrant, Status, Task, ToolCall, TreeNode, Usage } from '../api/types'
 
 /**
  * Everything the interface reads, and the actions it takes, in one place.
@@ -16,7 +16,7 @@ const emptySpend: Spend = { costUsd: 0, calls: 0, unpricedCalls: 0 }
 export type Approval = { toolCall: ToolCall; rule: string | null; warnings: Array<{ field: string; kinds: string[] }>; preview: any }
 
 export function useBridge() {
-  const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([])
+  const [projects, setProjects] = useState<Project[]>([])
   const [projectId, setProjectId] = useState<string | null>(null)
   // A history list holds summaries; the open run is fetched in full.
   const [runs, setRuns] = useState<Run[]>([])
@@ -36,9 +36,13 @@ export function useBridge() {
   const [status, setStatus] = useState<Status | null>(null)
   const [grants, setGrants] = useState<StandingGrant[]>([])
   const [configReport, setConfigReport] = useState<ConfigReport | null>(null)
+  const [appSettings, setAppSettings] = useState<AppSetting[]>([])
   const [usage, setUsage] = useState<Usage | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  // False until the first load finishes, so an empty project list reads as
+  // "nothing here yet" rather than flashing on every boot.
+  const [booted, setBooted] = useState(false)
   // Text arriving for the call in flight: cleared when the stream says it landed.
   const [streaming, setStreaming] = useState<{ role: string; text: string } | null>(null)
   const [approval, setApproval] = useState<Approval | null>(null)
@@ -131,6 +135,12 @@ export function useBridge() {
     const payload = await api.get<ConfigReport>('/api/config').catch(() => null)
     setConfigReport(payload)
     return payload
+  }, [])
+
+  const loadSettings = useCallback(async () => {
+    const payload = await api.get<{ settings: AppSetting[] }>('/api/settings').catch(() => null)
+    if (payload) setAppSettings(payload.settings)
+    return payload?.settings ?? []
   }, [])
 
   const loadUsage = useCallback(async (days = 30) => {
@@ -244,11 +254,13 @@ export function useBridge() {
   useEffect(() => {
     void (async () => {
       try {
-        const [list] = await Promise.all([loadProjects(), loadProviders(), loadStatus(), loadGrants(), loadConfig()])
+        const [list] = await Promise.all([loadProjects(), loadProviders(), loadStatus(), loadGrants(), loadConfig(), loadSettings()])
         const first = list[0]
         if (first) await openProject(first.id)
       } catch (caught) {
         report(caught, 'Could not reach the local API.')
+      } finally {
+        setBooted(true)
       }
     })()
     // Runs once: the bridge is local, and a project switch loads what it needs.
@@ -274,6 +286,26 @@ export function useBridge() {
         if (projectId === id && remaining[0]) await openProject(remaining[0].id)
       } catch (caught) {
         report(caught, 'Could not delete the project.')
+      }
+    },
+    /**
+     * Set how hard a role thinks, stored on the project beside its routing. A
+     * null level hands the decision back to the provider. The projects list is
+     * reloaded so the new value is what every panel renders.
+     */
+    async setReasoning(role: AgentId | 'default', level: ReasoningLevel | null) {
+      if (!projectId) return
+      const current = projects.find((project) => project.id === projectId)
+      const reasoning: Record<string, ReasoningLevel> = { ...(current?.settings?.reasoning ?? {}) }
+      if (level) reasoning[role] = level
+      else delete reasoning[role]
+      const settings = { ...(current?.settings ?? {}), reasoning }
+      try {
+        await api.patch(`/api/projects/${encodeURIComponent(projectId)}`, { settings })
+        await loadProjects()
+        setNotice(level ? `${role === 'default' ? 'All roles' : role} now thinks at ${level}.` : `${role === 'default' ? 'All roles' : role} reasoning is back to the provider default.`)
+      } catch (caught) {
+        report(caught, 'The reasoning level could not be saved.')
       }
     },
     async chat(message: string) {
@@ -419,6 +451,33 @@ export function useBridge() {
       setNotice(result.record?.ok ? 'Audit chain intact.' : 'Audit verification found a problem — see the status panel.')
       return result
     },
+    async saveSetting(name: string, value: unknown) {
+      try {
+        const updated = await api.patch<{ setting: AppSetting; settings: AppSetting[] }>('/api/settings', { name, value })
+        setAppSettings(updated.settings)
+        const saved = updated.setting
+        setNotice(saved.restartRequired
+          ? `${name} saved. It takes effect after a restart.`
+          : `${name} saved and live.`)
+        await loadConfig()
+        return saved
+      } catch (caught) {
+        report(caught, 'The setting could not be saved.')
+        return null
+      }
+    },
+    async resetSetting(name: string) {
+      try {
+        const updated = await api.patch<{ setting: AppSetting; settings: AppSetting[] }>('/api/settings', { name, value: null })
+        setAppSettings(updated.settings)
+        setNotice(`${name} reset to its default.`)
+        await loadConfig()
+        return updated.setting
+      } catch (caught) {
+        report(caught, 'The setting could not be reset.')
+        return null
+      }
+    },
     async backupNow() {
       const result = await api.post<{ record: any }>('/api/maintenance/backup')
       await loadStatus()
@@ -429,13 +488,13 @@ export function useBridge() {
     tree: (path = '.', depth = 2) => api.get<{ path: string; entries: TreeNode[] }>(`/api/workspace/tree?path=${encodeURIComponent(path)}&depth=${depth}`),
     fileHistory: (path: string) => api.get<{ path: string; calls: FileHistoryEntry[] }>(`/api/workspace/history?path=${encodeURIComponent(path)}`),
     reloadRuns: () => loadRuns(projectId),
-  }), [approval, loadArtifacts, loadEstimate, loadGrants, loadProjects, loadProviders, loadRun, loadRuns, loadStatus, messages, openProject, openRun, projectId, report, runId])
+  }), [approval, loadArtifacts, loadConfig, loadEstimate, loadGrants, loadProjects, loadProviders, loadRun, loadRuns, loadStatus, messages, openProject, openRun, projectId, projects, report, runId])
 
   return {
     projects, projectId, runs, runId, run, tasks, messages, toolCalls, events, plan, artifacts, spend, byTask, estimate, audit,
-    providers, status, grants, configReport, usage, error, notice, streaming, approval,
+    providers, status, grants, configReport, usage, error, notice, streaming, approval, booted, appSettings,
     setError, setNotice, setApproval,
-    openProject, openRun, loadRuns, loadStatus, loadGrants, loadConfig, loadUsage, loadProviders,
+    openProject, openRun, loadRuns, loadStatus, loadGrants, loadConfig, loadUsage, loadProviders, loadSettings,
     ...actions,
     approveWithKeyboard: (scope: 'once' | 'run' | 'always') => actions.approveCall(scope),
   }

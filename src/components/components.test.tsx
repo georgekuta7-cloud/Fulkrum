@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { ApprovalDock } from './ApprovalDock'
-import { RunHeader } from './RunHeader'
+import { TopBar } from './TopBar'
 import { PlanPanel } from './PlanPanel'
 import { Sidebar } from './Sidebar'
+import { ChatFeed } from './ChatFeed'
 import type { Bridge } from '../hooks/useBridge'
 
 /**
@@ -121,24 +122,34 @@ describe('the approval dock', () => {
   })
 })
 
-describe('the run header', () => {
+describe('the top bar', () => {
   const run = { id: 'run-1', projectId: 'p1', status: 'executing', mode: 'plan', permissionMode: 'selective', planVersion: 1, budgetUsd: 2, createdAt: 1, updatedAt: 2 }
+  const topBarProps = { view: 'graph' as const, onViewChange: vi.fn(), onOpenInspector: vi.fn(), onOpenSettings: vi.fn(), theme: 'dark' as const, onToggleTheme: vi.fn() }
 
-  it('shows the cost, and its per-task breakdown on demand', () => {
-    render(<RunHeader bridge={makeBridge({
+  it('shows the cost against the ceiling, and its per-task breakdown on demand', () => {
+    render(<TopBar bridge={makeBridge({
       run: run as any,
       tasks: [{ id: 't1', agentId: 'research', title: 'Look around', status: 'completed' }] as any,
       spend: { costUsd: 0.0432, calls: 7, unpricedCalls: 1 },
       byTask: [{ taskId: 't1', title: 'Look around', agentId: 'research', costUsd: 0.02, calls: 3, unpricedCalls: 0 }, { taskId: null, title: 'supervisor', agentId: 'head', costUsd: 0.0232, calls: 4, unpricedCalls: 1 }],
       estimate: { runId: 'run-1', tasks: 1, expectedCalls: 6, basis: 'from 7 priced call(s)', estimateUsd: { low: 0.01, average: 0.03, high: 0.09 }, perCall: { average: 0.006, low: 0.001, high: 0.02 }, ceilingUsd: 2 },
-    })} />)
+    })} {...topBarProps} />)
 
-    expect(screen.getByText('$0.0432')).toBeInTheDocument()
-    expect(screen.getByText(/1 unpriced/)).toBeInTheDocument()
+    expect(screen.getByText(/0\.0432/)).toBeInTheDocument()
+    expect(screen.getByText('+1')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /0\.0432/ }))
     expect(screen.getByText('Look around')).toBeInTheDocument()
     expect(screen.getByText('supervisor')).toBeInTheDocument()
     expect(screen.getByText(/lower bound/)).toBeInTheDocument()
+  })
+
+  it('flags the chat view when a decision is waiting', () => {
+    render(<TopBar bridge={makeBridge({
+      run: run as any,
+      approval: { toolCall: pendingCall as any, rule: 'ask.default', warnings: [], preview: null },
+    })} {...topBarProps} />)
+
+    expect(screen.getByTitle('A decision is waiting')).toBeInTheDocument()
   })
 })
 
@@ -177,6 +188,66 @@ describe('the plan panel', () => {
     expect(objective).toBe('Ship it')
     expect(tasks[0].title).toBe('Look harder')
     expect(tasks[1].dependsOn).toEqual([0])
+  })
+})
+
+describe('the chat feed', () => {
+  const feedBridge = (overrides: Partial<Bridge> = {}) => makeBridge({
+    run: { id: 'run-1', status: 'planning' } as any,
+    messages: [{ id: 1, role: 'user', agentId: null, content: 'Ship a narrow proof.', createdAt: 1, metadata: null }] as any,
+    plan: {
+      plan: { id: 'plan-1', version: 2, objective: 'Ship a narrow proof.', contentHash: 'hash1234567890', status: 'draft', source: 'model' },
+      tasks: [
+        { id: 'pt1', orderIndex: 0, role: 'research', title: 'Look', instructions: 'Look around.', dependsOn: [] },
+        { id: 'pt2', orderIndex: 1, role: 'builder', title: 'Write', instructions: 'Write it.', dependsOn: [0] },
+      ],
+    } as any,
+    events: [
+      { eventId: 'e1', runId: 'run-1', sequence: 1, type: 'plan.drafted', agentId: 'head', payload: { planId: 'plan-1' }, createdAt: 2000 },
+      { eventId: 'e2', runId: 'run-1', sequence: 2, type: 'task.started', agentId: 'research', payload: { taskId: 't1' }, createdAt: 3000 },
+      { eventId: 'e3', runId: 'run-1', sequence: 3, type: 'task.completed', agentId: 'research', payload: { taskId: 't1' }, createdAt: 9000 },
+    ] as any,
+    tasks: [{ id: 't1', agentId: 'research', title: 'Look', status: 'completed', planTaskId: 'pt1', result: 'Found it.' }] as any,
+    toolCalls: [
+      { id: 'c1', runId: 'run-1', agentId: 'research', name: 'workspace.read', kind: 'read', status: 'completed', input: { path: 'README.md' }, resolved: null, fingerprint: null, ruleId: null, warnings: [], approvalScope: null, error: null, createdAt: 4000 },
+      { id: 'c2', runId: 'run-1', agentId: 'research', name: 'workspace.write', kind: 'write', status: 'completed', input: { path: 'proof.txt' }, resolved: null, fingerprint: null, ruleId: null, warnings: [], approvalScope: null, error: null, createdAt: 5000 },
+    ] as any,
+    artifacts: [{ toolCallId: 'c2', agentId: 'research', path: 'proof.txt', bytes: 12, created: true, previousBytes: null, diffAvailable: true, diff: { added: 3, removed: 0, hunks: [] }, at: 5000 }] as any,
+    byTask: [{ taskId: 't1', title: 'Look', agentId: 'research', costUsd: 0.01, calls: 2, unpricedCalls: 0 }],
+    ...overrides,
+  })
+
+  it('narrates the plan and approves it from the chat', () => {
+    const control = vi.fn()
+    render(<ChatFeed bridge={feedBridge({ control })} />)
+
+    expect(screen.getByText(/Plan v2 · Ship a narrow proof/)).toBeInTheDocument()
+    expect(screen.getByText('no deps')).toBeInTheDocument()
+    expect(screen.getByText('after 1')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Approve & run/ }))
+    expect(control).toHaveBeenCalledWith('approve-plan', { planId: 'plan-1', planHash: 'hash1234567890', routing: {} })
+  })
+
+  it('shows what a worker did, with what it added and removed', () => {
+    render(<ChatFeed bridge={feedBridge()} />)
+
+    const head = screen.getByRole('button', { name: /worked for 6\.0s · 2 tool calls · \$0\.0100/ })
+    // The card opens on the calls: the read, and the write with its diff stats.
+    fireEvent.click(head)
+    expect(screen.getByText('README.md')).toBeInTheDocument()
+    expect(screen.getByText('proof.txt')).toBeInTheDocument()
+    expect(screen.getByText('+3')).toBeInTheDocument()
+    expect(screen.getByText('−0')).toBeInTheDocument()
+  })
+
+  it('closes with the review card once the head has reviewed', () => {
+    render(<ChatFeed bridge={feedBridge({
+      events: [...feedBridge().events, { eventId: 'e4', runId: 'run-1', sequence: 4, type: 'run.review.ready', agentId: 'head', payload: { summary: 'Both findings check out.' }, createdAt: 10 }] as any,
+    })} />)
+
+    expect(screen.getByText('Run review')).toBeInTheDocument()
+    expect(screen.getByText('Both findings check out.')).toBeInTheDocument()
+    expect(screen.getByText(/Full report/)).toBeInTheDocument()
   })
 })
 

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Send, Sparkles } from 'lucide-react'
 import type { Bridge } from '../hooks/useBridge'
+import { ChatFeed } from './ChatFeed'
+import { ReasoningSelect } from './ReasoningSelect'
 
 /**
  * The conversation with the Head AI.
@@ -11,7 +13,7 @@ import type { Bridge } from '../hooks/useBridge'
  * text that has not landed yet is not part of it.
  */
 
-export function ChatPanel({ bridge }: { bridge: Bridge }) {
+export function ChatPanel({ bridge, centered = false }: { bridge: Bridge; centered?: boolean }) {
   const { messages, streaming, chat, providers, draftPlan, run } = bridge
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
@@ -19,7 +21,7 @@ export function ChatPanel({ bridge }: { bridge: Bridge }) {
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' })
-  }, [messages.length, streaming?.text])
+  }, [messages.length, streaming?.text, bridge.events.length])
 
   const ready = providers.some((provider) => provider.configured)
 
@@ -36,29 +38,16 @@ export function ChatPanel({ bridge }: { bridge: Bridge }) {
   }
 
   return (
-    <section className="chat-panel">
+    <section className={`chat-panel ${centered ? 'centered' : ''}`}>
       <div className="panel-bar">
         <Sparkles size={13} />
         <strong>Head AI</strong>
-        <span className="muted tiny">{ready ? 'live' : 'demo — no provider key yet'}</span>
+        <ReasoningSelect bridge={bridge} role="head" label="thinks" />
+        <span className="muted tiny">{ready ? 'live' : 'no provider key — add one in settings'}</span>
       </div>
 
       <div className="chat-transcript">
-        {messages.length === 0 ? (
-          <p className="muted">Give the Head AI a direction: what to build, fix, or investigate. It answers in the provider you configured, and its plan is what you approve.</p>
-        ) : null}
-        {messages.map((message) => (
-          <article className={`chat-message ${message.role}`} key={message.id}>
-            <span className="chat-role">{message.role === 'user' ? 'you' : message.agentId ?? 'head'}{message.metadata?.demo ? ' · demo' : ''}</span>
-            <p>{message.content}</p>
-          </article>
-        ))}
-        {streaming ? (
-          <article className="chat-message assistant streaming">
-            <span className="chat-role">{streaming.role} · writing</span>
-            <p>{streaming.text || '…'}<span className="caret" /></p>
-          </article>
-        ) : null}
+        <ChatFeed bridge={bridge} />
         <div ref={endRef} />
       </div>
 
