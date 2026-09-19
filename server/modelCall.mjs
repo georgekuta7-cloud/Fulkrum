@@ -1,6 +1,7 @@
 import { createSseParser } from './sse.mjs'
 import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
 import { pinnedRequest, pinnedStream } from './outboundHttp.mjs'
+import { reasoningPayload } from './reasoning.mjs'
 
 /**
  * One normalized conversation format over three provider protocols.
@@ -16,7 +17,8 @@ import { pinnedRequest, pinnedStream } from './outboundHttp.mjs'
 
 const nonNegative = (value) => Math.max(Number(value) || 0, 0)
 
-const maxTokens = Number(process.env.FULKRUM_MAX_OUTPUT_TOKENS ?? 4096)
+// Read at use time, not import time: values saved through the app apply live.
+const maxTokens = () => Number(process.env.FULKRUM_MAX_OUTPUT_TOKENS ?? 4096)
 
 function safeParseJson(value) {
   if (typeof value !== 'string') return { value, invalid: false }
@@ -109,21 +111,25 @@ export function toGoogleContents(messages) {
  * other than their own default with a 400.
  *
  * @param {string} protocol
- * @param {{ baseUrl: string, model: string, messages: Array<Record<string, any>>, tools?: Array<Record<string, any>>, instructions?: string, temperature?: number, stream?: boolean }} request
+ * @param {{ baseUrl: string, model: string, messages: Array<Record<string, any>>, tools?: Array<Record<string, any>>, instructions?: string, temperature?: number, stream?: boolean, reasoning?: string | null }} request
  * @returns {{ url: string, body: any }}
  */
-export function buildRequest(protocol, { baseUrl, model, messages, tools = [], instructions, temperature, stream = false }) {
+export function buildRequest(protocol, { baseUrl, model, messages, tools = [], instructions, temperature, stream = false, reasoning = null }) {
   const endpoint = String(baseUrl).replace(/\/$/, '')
+  // Model-native reasoning, in the dialect this protocol speaks. Empty when the
+  // level is unset or the model does not reason, so the spread is always safe.
+  const effort = reasoningPayload(protocol, model, reasoning)
 
   if (protocol === 'anthropic') {
     return {
       url: `${endpoint}/messages`,
       body: {
         model,
-        max_tokens: maxTokens,
+        max_tokens: maxTokens(),
         system: instructions,
         messages: toAnthropicMessages(messages),
         ...(temperature === undefined ? {} : { temperature }),
+        ...effort,
         ...(stream ? { stream: true } : {}),
         ...(tools.length ? { tools: tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.parameters })) } : {}),
       },
@@ -138,7 +144,7 @@ export function buildRequest(protocol, { baseUrl, model, messages, tools = [], i
         systemInstruction: { parts: [{ text: instructions }] },
         contents: toGoogleContents(messages),
         ...(tools.length ? { tools: [{ functionDeclarations: tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters })) }] } : {}),
-        ...(temperature === undefined ? {} : { generationConfig: { temperature } }),
+        ...(temperature === undefined && !effort.thinkingConfig ? {} : { generationConfig: { ...(temperature === undefined ? {} : { temperature }), ...effort } }),
       },
     }
   }
@@ -148,6 +154,7 @@ export function buildRequest(protocol, { baseUrl, model, messages, tools = [], i
     body: {
       model,
       ...(temperature === undefined ? {} : { temperature }),
+      ...effort,
       messages: toOpenAiMessages(messages, instructions),
       // Token counts arrive in the final chunk only when the provider is asked for
       // them; a provider that ignores the option simply reports no usage.
@@ -362,8 +369,8 @@ export function normalizeUsage(protocol, usage) {
 
 const retryableStatuses = new Set([408, 409, 425, 429, 500, 502, 503, 504])
 const defaultMaxAttempts = 3
-const requestTimeoutMs = Number(process.env.FULKRUM_PROVIDER_TIMEOUT_MS ?? 60_000)
-const maxResponseBytes = Number(process.env.FULKRUM_MAX_PROVIDER_BYTES ?? 8_000_000)
+const requestTimeoutMs = () => Number(process.env.FULKRUM_PROVIDER_TIMEOUT_MS ?? 60_000)
+const maxResponseBytes = () => Number(process.env.FULKRUM_MAX_PROVIDER_BYTES ?? 8_000_000)
 
 // Read where they are used rather than at import, so a caller can configure them
 // before the first call and a test does not have to reload the module.
@@ -490,15 +497,15 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
   const requestOnce = async (url, { method, headers, body, allowPrivate: allowRequest = allowPrivate }) => {
     let response
     try {
-      response = await pinnedRequest(url, { method, headers, body, allowPrivate: allowRequest, maxBytes: maxResponseBytes, timeoutMs: requestTimeoutMs })
+      response = await pinnedRequest(url, { method, headers, body, allowPrivate: allowRequest, maxBytes: maxResponseBytes(), timeoutMs: requestTimeoutMs() })
     } catch (error) {
       const name = error instanceof Error ? error.name : ''
       const timedOut = name === 'AbortError' || name === 'TimeoutError'
-      throw new ProviderError(timedOut ? `Provider request timed out after ${requestTimeoutMs}ms.` : `Provider request failed: ${error instanceof Error ? error.message : 'unknown error'}`, { retryable: true })
+      throw new ProviderError(timedOut ? `Provider request timed out after ${requestTimeoutMs()}ms.` : `Provider request failed: ${error instanceof Error ? error.message : 'unknown error'}`, { retryable: true })
     }
 
     if (response.truncated) {
-      throw new ProviderError(`The provider response exceeded ${maxResponseBytes} bytes and was cut off.`, { retryable: false })
+      throw new ProviderError(`The provider response exceeded ${maxResponseBytes()} bytes and was cut off.`, { retryable: false })
     }
 
     let payload = /** @type {any} */ ({})
@@ -538,8 +545,8 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
       headers: requestOptions.headers,
       body: requestOptions.body,
       allowPrivate: requestOptions.allowPrivate,
-      maxBytes: maxResponseBytes,
-      timeoutMs: requestTimeoutMs,
+      maxBytes: maxResponseBytes(),
+      timeoutMs: requestTimeoutMs(),
     })
 
     if (!stream.ok) {
@@ -567,7 +574,7 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
         onDelta(delta)
       }
     }
-    if (stream.truncated) throw new ProviderError(`The provider response exceeded ${maxResponseBytes} bytes and was cut off.`, { retryable: false })
+    if (stream.truncated) throw new ProviderError(`The provider response exceeded ${maxResponseBytes()} bytes and was cut off.`, { retryable: false })
     return parser.finish()
   }
 
@@ -596,9 +603,9 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
    * @param {any} provider
    * @param {string} model
    * @param {Array<Record<string, any>>} messages
-   * @param {{ tools?: Array<Record<string, any>>, instructions?: string, onDelta?: (delta: string) => void }} [options]
+   * @param {{ tools?: Array<Record<string, any>>, instructions?: string, onDelta?: (delta: string) => void, reasoning?: string | null }} [options]
    */
-  const callModel = async (provider, model, messages, { tools = [], instructions, onDelta } = {}) => {
+  const callModel = async (provider, model, messages, { tools = [], instructions, onDelta, reasoning = null } = {}) => {
     const credentials = providerRegistry.credentials(provider)
     // A provider marked as local is allowed to resolve to a private address; the
     // global flag stays as the fallback for everyone else. The address is checked
@@ -606,7 +613,7 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
     const allow = credentials.allowPrivate || allowPrivate
     const sampling = providerRegistry.sampling(provider, model)
     const streaming = typeof onDelta === 'function'
-    const { url, body } = buildRequest(provider.protocol, { baseUrl: provider.baseUrl, model, messages, tools, instructions, temperature: sampling.temperature, stream: streaming })
+    const { url, body } = buildRequest(provider.protocol, { baseUrl: provider.baseUrl, model, messages, tools, instructions, temperature: sampling.temperature, stream: streaming, reasoning })
     const headers = { 'Content-Type': 'application/json', ...providerAuthHeaders(provider.protocol, credentials) }
     const requestOptions = { method: 'POST', headers, body: JSON.stringify(body), allowPrivate: allow }
 

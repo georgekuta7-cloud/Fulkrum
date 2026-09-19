@@ -1,13 +1,21 @@
-import { demoPlan, extractPlanJson, planContentHash, planPrompt, validatePlan } from './plans.mjs'
+import { extractPlanJson, planContentHash, planPrompt, validatePlan } from './plans.mjs'
+import { resolveReasoning } from './reasoning.mjs'
 
 /**
  * Produce the plan a run will execute.
  *
- * A model-written plan is preferred, but a plan is required for a run to start,
- * so a failed or unparseable generation falls back to the deterministic plan and
- * says so in the audit log rather than leaving the run stuck or inventing tasks
- * the model never proposed.
+ * There is exactly one way to get a plan: the model writes one, it validates,
+ * and it is stored. Anything else — no key, no direction, an unusable reply,
+ * a blown budget — is refused with a status and a reason, and the refusal is
+ * recorded as a `plan.rejected` event. A run never starts on invented tasks.
  */
+export class PlanDraftError extends Error {
+  constructor(status, message) {
+    super(message)
+    this.status = status
+  }
+}
+
 export function createPlanService({ store, providerRegistry, callModel, pricing, checkBudget = async (_runId) => {} }) {
   const directionFor = (runId) => store.listMessages(runId).filter((message) => message.role === 'user').at(-1)?.content ?? ''
 
@@ -30,34 +38,37 @@ export function createPlanService({ store, providerRegistry, callModel, pricing,
     return plan
   }
 
-  const draftFromModel = async ({ run, direction, provider, route }) => {
+  const reject = (run, problems) => {
+    store.appendEvent({ runId: run.id, type: 'plan.rejected', agentId: 'head', payload: { problems } })
+  }
+
+  const draftFromModel = async ({ run, direction, provider, route, reasoning = null }) => {
     const model = providerRegistry.model(provider, route)
     const instructions = 'You are Head AI. You plan work for a small agent team. Reply with JSON only, with no commentary and no code fences.'
     const messages = [{ role: 'user', content: planPrompt({ direction, workspaceRoot: 'the workspace root', maxTasks: 8 }) }]
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
       // Planning drafts bill the same ledger as worker calls, so they pass
-      // the same ceiling first: a budget stops the planning that starts work,
-      // not only the work. A refusal lands in demo-fallback with its reason,
-      // the way provider failures already do.
+      // the same ceiling first. A refusal propagates — it is answered with a
+      // status, never papered over with a fallback plan.
       await checkBudget(run.id)
       const startedAt = Date.now()
-      const response = await callModel(provider, model, messages, { tools: [], instructions })
+      const response = await callModel(provider, model, messages, { tools: [], instructions, reasoning })
       // Planning costs money too, so it lands in the same ledger as worker calls.
       const cost = pricing ? pricing.costOf({ model, usage: response.usage }) : { costUsd: null, priced: false, version: null }
       store.recordModelCall({ runId: run.id, role: 'head', provider: provider.id, model, usage: response.usage, cost, latencyMs: Date.now() - startedAt })
 
       const candidate = extractPlanJson(response.text)
       const validation = validatePlan(candidate)
-      if (validation.ok) return { built: validation.plan, problems: [] }
+      if (validation.ok) return validation.plan
 
       const problems = validation.problems.length ? validation.problems : ['The reply did not contain a JSON object.']
-      store.appendEvent({ runId: run.id, type: 'plan.rejected', agentId: 'head', payload: { attempt: attempt + 1, problems } })
+      reject(run, problems)
       messages.push({ role: 'assistant', content: response.text })
       messages.push({ role: 'user', content: `That plan could not be used: ${problems.join(' ')} Reply again with JSON only, in the required shape.` })
     }
 
-    return { built: null, problems: ['The model did not produce a usable plan.'] }
+    throw new PlanDraftError(502, 'The model did not produce a usable plan after two attempts. The rejections are in the audit log.')
   }
 
   return {
@@ -70,9 +81,14 @@ export function createPlanService({ store, providerRegistry, callModel, pricing,
       const existing = store.getLatestPlanForRun(run.id)
       if (existing && !regenerate) return { plan: existing, created: false }
 
-      const direction = directionFor(run.id)
+      const direction = directionFor(run.id).trim()
+      if (!direction) {
+        throw new PlanDraftError(400, 'Describe what you want first: a plan needs a direction to plan from.')
+      }
       let provider = null
-      let route = routing.head ?? store.getProject(run.projectId)?.project?.settings?.routing?.head ?? ''
+      const projectSettings = store.getProject(run.projectId)?.project?.settings
+      const route = routing.head ?? projectSettings?.routing?.head ?? ''
+      const reasoning = resolveReasoning(projectSettings, 'head')
       try {
         provider = providerRegistry.resolve(route)
       } catch {
@@ -80,18 +96,11 @@ export function createPlanService({ store, providerRegistry, callModel, pricing,
       }
 
       if (!provider || !providerRegistry.isConfigured(provider)) {
-        return { plan: persist({ run, built: demoPlan(direction), source: 'demo' }), created: true, demo: true }
+        const label = provider?.label ?? 'The selected provider'
+        throw new PlanDraftError(409, `No provider key is configured for ${label}. Add one in Workspace settings — providers, keys, endpoints, and models are all settable there — then draft again.`)
       }
 
-      try {
-        const { built, problems } = await draftFromModel({ run, direction, provider, route })
-        if (built) return { plan: persist({ run, built, source: 'model' }), created: true }
-        return { plan: persist({ run, built: demoPlan(direction), source: 'demo-fallback' }), created: true, fallbackReason: problems.join(' ') }
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : 'Plan generation failed.'
-        store.appendEvent({ runId: run.id, type: 'plan.rejected', agentId: 'head', payload: { problems: [reason] } })
-        return { plan: persist({ run, built: demoPlan(direction), source: 'demo-fallback' }), created: true, fallbackReason: reason }
-      }
+      return { plan: persist({ run, built: await draftFromModel({ run, direction, provider, route, reasoning }), source: 'model' }), created: true }
     },
   }
 }
