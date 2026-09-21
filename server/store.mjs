@@ -1158,9 +1158,43 @@ export class FulkrumStore {
     return this.database.prepare('SELECT * FROM tool_calls WHERE run_id = ? ORDER BY created_at ASC').all(runId).map(toolCallFromRow)
   }
 
-  getRunSnapshot(runId) {
+  getRunSnapshot(runId, { light = false, sinceSequence = 0 } = {}) {
     const run = this.getRun(runId)
     if (!run) return null
+    if (light) {
+      // The refresh path. No history — a long run's refresh must not cost
+      // proportional to its age — but status flips and new rows must still
+      // land, or the UI shows workers as active forever and new calls without
+      // results. So: full rows for whatever is still live plus whatever was
+      // created since the caller's cursor (same database clock, so created_at
+      // is comparable), id+status pairs for everything else (tiny, and enough
+      // to flip a stale row), and counts as a safety net: if they outgrow the
+      // merged copy, the client takes a full snapshot.
+      // No cursor means live rows only: defaulting to 0 would match every
+      // created_at and silently turn the light snapshot into a full one.
+      let sinceTime = Number.POSITIVE_INFINITY
+      if (Number.isFinite(Number(sinceSequence)) && Number(sinceSequence) > 0) {
+        const cursor = this.database.prepare('SELECT created_at AS t FROM run_events WHERE run_id = ? AND sequence = ?').get(runId, Number(sinceSequence))
+        sinceTime = Number(cursor?.t ?? 0) || 0
+      }
+      const live = "status NOT IN ('cancelled', 'completed', 'failed')"
+      const liveCall = "status NOT IN ('completed', 'denied', 'failed')"
+      const tasks = this.database.prepare(`SELECT * FROM run_tasks WHERE run_id = ? AND (${live} OR created_at >= ?) ORDER BY created_at ASC`).all(runId, sinceTime).map(taskFromRow)
+      const toolCalls = this.database.prepare(`SELECT * FROM tool_calls WHERE run_id = ? AND (${liveCall} OR created_at >= ?) ORDER BY created_at ASC`).all(runId, sinceTime).map(toolCallFromRow)
+      const statuses = (table) => this.database.prepare(`SELECT id, status FROM ${table} WHERE run_id = ?`).all(runId)
+      const count = (table) => this.database.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE run_id = ?`).get(runId)?.n ?? 0
+      return {
+        run,
+        messages: [],
+        tasks,
+        toolCalls,
+        events: [],
+        light: true,
+        taskStatuses: statuses('run_tasks'),
+        toolCallStatuses: statuses('tool_calls'),
+        counts: { messages: count('messages'), tasks: count('run_tasks'), toolCalls: count('tool_calls'), events: count('run_events') },
+      }
+    }
     return { run, messages: this.listMessages(runId), tasks: this.listTasks(runId), toolCalls: this.listToolCalls(runId), events: this.listEvents(runId) }
   }
 

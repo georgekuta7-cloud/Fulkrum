@@ -64,15 +64,27 @@ const label = (event: RunEvent): { title: string; detail?: string; tone: string 
   }
 }
 
+/** How many rows render before the rest waits behind a button: a 10k-event run
+ * must not cost 10k DOM nodes to glance at. */
+const EVENT_WINDOW = 300
+
 export function ActivityPanel({ bridge }: { bridge: Bridge }) {
   const { events, streaming, tasks, timeline } = bridge
   const [filter, setFilter] = useState<'all' | 'tools' | 'decisions'>('all')
   const [follow, setFollow] = useState(true)
+  // Per-run on purpose: a new run starts windowed without any reset effect,
+  // and scrubbing to a hidden event opens the window at render time instead
+  // of seeking to a row that is not rendered.
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const endRef = useRef<HTMLDivElement | null>(null)
   const feedRef = useRef<HTMLOListElement | null>(null)
+  const scrubHidden = Boolean(timeline && timeline.seq < (events.at(-EVENT_WINDOW)?.sequence ?? Infinity))
+  const showAll = (bridge.runId && expanded[bridge.runId]) || scrubHidden
 
   useEffect(() => {
-    if (follow) endRef.current?.scrollIntoView({ block: 'end' })
+    // Same guard as the scrub seek below: environments without layout have no
+    // scrollIntoView, and following must not crash there.
+    if (follow && typeof endRef.current?.scrollIntoView === 'function') endRef.current.scrollIntoView({ block: 'end' })
   }, [events.length, streaming?.text, follow])
 
   // The timeline scrubber drives the feed: scrubbing seeks the event the
@@ -84,11 +96,13 @@ export function ActivityPanel({ bridge }: { bridge: Bridge }) {
     if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' })
   }, [timeline])
 
-  const visible = events.filter((event) => {
+  const filtered = events.filter((event) => {
     if (filter === 'tools') return event.type.startsWith('tool.') || event.type.startsWith('approval.')
     if (filter === 'decisions') return ['approval.requested', 'approval.granted', 'approval.standing', 'tool.denied', 'plan.approved', 'plan.approval.rejected', 'tool.arguments.suspicious', 'tool.output.suspicious'].includes(event.type)
     return true
   })
+  const hidden = showAll ? 0 : Math.max(filtered.length - EVENT_WINDOW, 0)
+  const visible = showAll ? filtered : filtered.slice(-EVENT_WINDOW)
 
   return (
     <div className="activity-panel">
@@ -103,6 +117,13 @@ export function ActivityPanel({ bridge }: { bridge: Bridge }) {
       </div>
 
       <ol className="feed" ref={feedRef}>
+        {hidden > 0 ? (
+          <li className="feed-item idle">
+            <div className="feed-body">
+              <button type="button" className="tiny-button" onClick={() => bridge.runId && setExpanded((current) => ({ ...current, [bridge.runId as string]: true }))}>Show {hidden} earlier event(s)</button>
+            </div>
+          </li>
+        ) : null}
         {visible.map((event) => {
           const { title, detail, tone } = label(event)
           return (

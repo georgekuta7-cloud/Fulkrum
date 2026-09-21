@@ -7,6 +7,7 @@ import { Sidebar } from './Sidebar'
 import { ChatFeed } from './ChatFeed'
 import { CastingLine } from './CastingLine'
 import { TimelinePanel } from './TimelinePanel'
+import { ActivityPanel } from './ActivityPanel'
 import { MarketplacePanel } from './MarketplacePanel'
 import { ArsenalPanel } from './ArsenalPanel'
 import { AutomationsPanel } from './AutomationsPanel'
@@ -255,6 +256,19 @@ describe('the chat feed', () => {
     expect(screen.getByText(/Full report/)).toBeInTheDocument()
   })
 
+  it('windows a long feed and opens history on request', () => {
+    const messages = Array.from({ length: 150 }, (_, index) => ({
+      id: index + 1, role: index % 2 ? 'assistant' : 'user', agentId: null,
+      content: `Message number ${index + 1}.`, createdAt: index + 1, metadata: null,
+    }))
+    render(<ChatFeed bridge={feedBridge({ messages: messages as any, plan: null, tasks: [], events: [] as any })} />)
+
+    expect(screen.queryByText('Message number 1.')).not.toBeInTheDocument()
+    expect(screen.getByText('Message number 150.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Show 50 earlier/ }))
+    expect(screen.getByText('Message number 1.')).toBeInTheDocument()
+  })
+
   it('lists the run claims on the review card, with what each one proved', () => {
     render(<ChatFeed bridge={feedBridge({
       events: [...feedBridge().events, { eventId: 'e4', runId: 'run-1', sequence: 4, type: 'run.review.ready', agentId: 'head', payload: { summary: 'Checked.' }, createdAt: 10 }] as any,
@@ -267,6 +281,20 @@ describe('the chat feed', () => {
     expect(screen.getByText(/1\/2 claims proven/)).toBeInTheDocument()
     expect(screen.getByText('The flow completes.')).toBeInTheDocument()
     expect(screen.getByText('npm test (exit 0)')).toBeInTheDocument()
+  })
+})
+
+describe('the activity panel', () => {
+  it('windows a long event log and opens history on request', () => {
+    const events = Array.from({ length: 350 }, (_, index) => ({
+      eventId: `e${index}`, runId: 'run-1', sequence: index + 1, type: 'tool.completed',
+      agentId: 'builder', payload: {}, createdAt: index + 1,
+    }))
+    render(<ActivityPanel bridge={makeBridge({ runId: 'run-1', events: events as any, tasks: [], streaming: null, timeline: null })} />)
+
+    expect(screen.getByText('350 event(s)')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Show 50 earlier/ }))
+    expect(screen.queryByRole('button', { name: /Show .* earlier/ })).not.toBeInTheDocument()
   })
 })
 

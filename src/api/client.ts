@@ -81,13 +81,15 @@ export const api = {
 export const downloadUrl = (path: string) => path
 
 /**
- * An event stream for one run.
+ * An event stream for one run, resumed from a sequence cursor.
  *
- * Returns the source so the caller can close it: the browser reconnects on its own
- * and resends the last id it saw, which is why nothing here tracks a cursor.
+ * Returns the source so the caller can close it. The browser reconnects on
+ * its own but a *new* source does not resend anything — hence the explicit
+ * ?after=: without it every run open replays the run's whole history.
  */
-export function openRunStream(runId: string, handlers: { onEvent?: (event: any) => void; onDelta?: (frame: any) => void; onPartial?: (text: string) => void } = {}) {
-  const source = new EventSource(`/api/runs/${encodeURIComponent(runId)}/stream`)
+export function openRunStream(runId: string, handlers: { onEvent?: (event: any) => void; onDelta?: (frame: any) => void; onPartial?: (text: string) => void } = {}, after = 0) {
+  const cursor = Number(after) > 0 ? `?after=${Number(after)}` : ''
+  const source = new EventSource(`/api/runs/${encodeURIComponent(runId)}/stream${cursor}`)
   source.addEventListener('fulkrum', (message) => {
     try {
       handlers.onEvent?.(JSON.parse((message as MessageEvent).data))

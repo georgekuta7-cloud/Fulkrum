@@ -2088,9 +2088,18 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       const runMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)$/)
       if (request.method === 'GET' && runMatch) {
         const runId = decodeURIComponent(runMatch[1])
-        const snapshot = store.getRunSnapshot(runId)
+        // ?light=1 is the refresh path: status, parked approvals, and counts.
+        // History grows with the run's age; a refresh must not cost that age.
+        // The chain check and spend rollup ride the full snapshot only.
+        const light = requestUrl.searchParams.get('light') === '1'
+        const sinceSequence = Number(requestUrl.searchParams.get('since') ?? 0)
+        const snapshot = store.getRunSnapshot(runId, { light, sinceSequence: Number.isFinite(sinceSequence) ? sinceSequence : 0 })
         if (!snapshot) {
           sendJson(response, 404, { error: 'Run not found.' })
+          return
+        }
+        if (light) {
+          sendJson(response, 200, snapshot)
           return
         }
         sendJson(response, 200, {

@@ -22,6 +22,12 @@ All notable changes to Fulkrum are documented here. This project follows
   out of the settings drawer, which keeps health, permissions, memory, and
   money. The drawer shrinks by a third; nothing it lost went further than one
   click away.
+- **Big runs stay cheap.** `GET /api/runs/{id}?light=1` returns live rows,
+  status maps, and counts instead of the run's whole history (with `&since=`
+  for delta rows); the hot refresh path uses it, so per-event traffic stops
+  scaling with the run's age. The event stream resumes from `?after=` instead
+  of replaying, and the chat and activity feeds window long histories behind
+  "show earlier" buttons.
 - **The run is a living map.** The main screen graphs you, the Head, and one
   node per plan task in dependency layers, with animated traffic on active
   edges. Clicking a worker opens what it is doing — task, handoff, tool calls,

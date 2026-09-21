@@ -64,6 +64,13 @@ export function useBridge() {
   const streamRef = useRef<EventSource | null>(null)
   const runIdRef = useRef<string | null>(null)
   runIdRef.current = runId
+  // Newest event sequence seen per run (stream resume cursor) and newest
+  // sequence covered by a *full* snapshot (light-snapshot delta cursor).
+  // Kept separate on purpose: the delta cursor must only advance on full
+  // loads, or rows created between the full load and a newer event fall in
+  // the gap. Refs, not state — handlers read them without re-subscribing.
+  const seqRef = useRef<Record<string, number>>({})
+  const baseSeqRef = useRef<Record<string, number>>({})
 
   const report = useCallback((caught: unknown, fallback: string) => {
     const message = caught instanceof ApiError ? caught.message : caught instanceof Error ? caught.message : fallback
@@ -86,19 +93,58 @@ export function useBridge() {
     return payload.runs
   }, [])
 
-  const loadRun = useCallback(async (id: string) => {
-    const snapshot = await api.get<{ run: Run; tasks: Task[]; toolCalls: ToolCall[]; events: RunEvent[]; messages: any[]; audit: any }>(`/api/runs/${encodeURIComponent(id)}`)
+  type Snapshot = { run: Run; tasks: Task[]; toolCalls: ToolCall[]; events: RunEvent[]; messages: any[]; audit: any; light?: boolean; taskStatuses?: Array<{ id: string; status: string }>; toolCallStatuses?: Array<{ id: string; status: string }>; counts?: { messages: number; tasks: number; toolCalls: number; events: number } }
+
+  const trackSeq = useCallback((id: string, events: RunEvent[]) => {
+    const max = events.reduce((top, event) => Math.max(top, Number(event.sequence ?? 0) || 0), 0)
+    if (max > 0) seqRef.current[id] = Math.max(seqRef.current[id] ?? 0, max)
+  }, [])
+
+  const loadRun = useCallback(async (id: string, options: { light?: boolean } = {}) => {
+    const query = options.light ? `?light=1&since=${baseSeqRef.current[id] ?? 0}` : ''
+    const snapshot = await api.get<Snapshot>(`/api/runs/${encodeURIComponent(id)}${query}`).catch(() => null)
     // A late answer for a run the user has moved away from must not overwrite the
     // one they are looking at.
-    if (runIdRef.current !== id) return null
+    if (!snapshot || runIdRef.current !== id) return null
+    if (snapshot.light) {
+      // Merge, never replace: full rows upsert by id, status maps flip stale
+      // rows. New rows are covered because the delta cursor only advances on
+      // full loads, so everything created since is in this payload.
+      setRun(snapshot.run)
+      const taskStatus = new Map((snapshot.taskStatuses ?? []).map((entry) => [entry.id, entry.status]))
+      const callStatus = new Map((snapshot.toolCallStatuses ?? []).map((entry) => [entry.id, entry.status]))
+      const liveTasks = new Map((snapshot.tasks ?? []).map((task) => [task.id, task]))
+      const liveCalls = new Map((snapshot.toolCalls ?? []).map((call) => [call.id, call]))
+      const upsert = <T extends { id: string; status: string }>(current: T[], live: Map<string, T>, statuses: Map<string, string>): T[] => {
+        const next = current.map((row) => (live.get(row.id) ?? (statuses.has(row.id) ? { ...row, status: statuses.get(row.id) as T['status'] } : row)))
+        const known = new Set(current.map((row) => row.id))
+        for (const row of live.values()) {
+          if (!known.has(row.id)) next.push(row)
+        }
+        return next
+      }
+      setTasks((current) => upsert(current, liveTasks as Map<string, Task>, taskStatus))
+      setToolCalls((current) => {
+        const next = upsert(current, liveCalls as Map<string, ToolCall>, callStatus)
+        setApproval((approvalCurrent) => {
+          const parked = next.filter((call) => call.status === 'approval_required')
+          if (!parked.length) return approvalCurrent?.toolCall.status === 'approval_required' ? null : approvalCurrent
+          return approvalCurrent && parked.some((call) => call.id === approvalCurrent.toolCall.id) ? approvalCurrent : { toolCall: parked[0], rule: parked[0].ruleId ?? null, warnings: parked[0].warnings ?? [], preview: null }
+        })
+        return next
+      })
+      return snapshot
+    }
     setRun(snapshot.run)
     setTasks(snapshot.tasks ?? [])
     setToolCalls(snapshot.toolCalls ?? [])
     setEvents(snapshot.events ?? [])
     setMessages(snapshot.messages ?? [])
     setAudit(snapshot.audit ?? null)
+    trackSeq(id, snapshot.events ?? [])
+    baseSeqRef.current[id] = seqRef.current[id] ?? 0
     return snapshot
-  }, [])
+  }, [trackSeq])
 
   const loadPlan = useCallback(async (id: string) => {
     const payload = await api.get<Plan>(`/api/runs/${encodeURIComponent(id)}/plan`).catch(() => null)
@@ -230,10 +276,13 @@ export function useBridge() {
   // ---------------------------------------------------------------- stream
 
   const refreshAfterEvent = useCallback(async (id: string, event: RunEvent) => {
-    // Cheap and correct: the run row, the cost and the plan change for a handful of
-    // event types, and re-reading a snapshot is one local request.
-    if (event.type.startsWith('task.') || event.type.startsWith('run.') || event.type.startsWith('tool.') || event.type.startsWith('plan.')) {
-      await Promise.all([loadRun(id), loadTrace(id), loadPlan(id)])
+    // Cheap and correct: the light snapshot carries status and live rows, so
+    // the hot path (every tool call fires two of these) never re-reads the
+    // run's whole history. Only new message content needs the full copy.
+    if (event.type === 'message.assistant' || event.type === 'message.user') {
+      await Promise.all([loadRun(id), loadTrace(id)])
+    } else if (event.type.startsWith('task.') || event.type.startsWith('run.') || event.type.startsWith('tool.') || event.type.startsWith('plan.')) {
+      await Promise.all([loadRun(id, { light: true }), loadTrace(id), loadPlan(id)])
       if (event.type === 'tool.completed' || event.type === 'artifact.revert') await loadArtifacts(id)
       if (event.type === 'plan.drafted' || event.type === 'plan.edited') await loadEstimate(id)
     }
@@ -247,7 +296,8 @@ export function useBridge() {
   // genuinely parked still shows, and a stale prompt never lingers after its call
   // has resolved.
   const syncApprovalQueue = useCallback(async (id: string) => {
-    const snapshot = await loadRun(id)
+    // Light is enough: parked approvals ride the light snapshot by design.
+    const snapshot = await loadRun(id, { light: true })
     if (!snapshot) return
     const pending = (snapshot.toolCalls as ToolCall[]).filter((call) => call.status === 'approval_required')
     setApproval((current) => {
@@ -258,6 +308,7 @@ export function useBridge() {
 
   const ingestEvent = useCallback((event: RunEvent) => {
     if (runIdRef.current !== event.runId) return
+    trackSeq(event.runId, [event])
     setEvents((current) => (current.some((candidate) => candidate.sequence === event.sequence) ? current : [...current, event]))
     if (event.type === 'message.assistant' || event.type === 'message.user') {
       setStreaming(null)
@@ -267,7 +318,7 @@ export function useBridge() {
     if (event.type === 'approval.requested' && typeof callId === 'string') {
       void (async () => {
         const detail = await api.get<{ status: string; rule: string | null; warnings: any[]; preview: any }>(`/api/runs/${encodeURIComponent(event.runId)}/tools/${encodeURIComponent(callId)}/preview`).catch(() => null)
-        const call = (await loadRun(event.runId))?.toolCalls?.find((candidate: ToolCall) => candidate.id === callId)
+        const call = (await loadRun(event.runId, { light: true }))?.toolCalls?.find((candidate: ToolCall) => candidate.id === callId)
         if (call) setApproval({ toolCall: call, rule: detail?.rule ?? call.ruleId ?? event.payload?.rule ?? null, warnings: detail?.warnings ?? call.warnings ?? [], preview: detail?.preview ?? null })
       })()
     }
@@ -276,7 +327,7 @@ export function useBridge() {
     }
     if (event.type === 'approval.requested') void syncApprovalQueue(event.runId)
     void refreshAfterEvent(event.runId, event)
-  }, [loadRun, refreshAfterEvent, syncApprovalQueue])
+  }, [loadRun, refreshAfterEvent, syncApprovalQueue, trackSeq])
 
 
   const ingestDelta = useCallback((frame: { role?: string; delta?: string }) => {
@@ -287,11 +338,14 @@ export function useBridge() {
   const watchRun = useCallback((id: string) => {
     streamRef.current?.close()
     setStreaming(null)
+    // Resume, never replay: the server replays from the cursor, and ingest
+    // dedupes by sequence, so overlap between the snapshot and the stream is
+    // harmless but unbounded replay is gone.
     const source = openRunStream(id, {
       onEvent: ingestEvent,
       onDelta: ingestDelta,
       onPartial: (text) => setStreaming((current) => ({ role: current?.role ?? 'head', text })),
-    })
+    }, seqRef.current[id] ?? 0)
     streamRef.current = source
   }, [ingestDelta, ingestEvent])
 

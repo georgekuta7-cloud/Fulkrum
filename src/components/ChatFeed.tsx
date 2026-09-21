@@ -173,8 +173,14 @@ function ReviewCard({ bridge, event }: { bridge: Bridge; event: RunEvent }) {
   )
 }
 
+/** Same contract as the activity feed: recent first-class, history one click away. */
+const FEED_WINDOW = 100
+
 export function ChatFeed({ bridge }: { bridge: Bridge }) {
   const { messages, plan, tasks, events, streaming } = bridge
+  // Per-run like the activity feed: no reset effect, a new run just starts windowed.
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const showAll = (bridge.runId && expanded[bridge.runId]) || false
 
   const feed = useMemo<FeedItem[]>(() => {
     const items: FeedItem[] = messages.map((message) => ({ kind: 'message', at: message.createdAt, message }))
@@ -217,12 +223,18 @@ export function ChatFeed({ bridge }: { bridge: Bridge }) {
 
   const headStream = streaming && streaming.role === 'head' ? streaming.text : null
 
+  const hidden = showAll ? 0 : Math.max(feed.length - FEED_WINDOW, 0)
+  const visible = showAll ? feed : feed.slice(-FEED_WINDOW)
+
   return (
     <>
       {messages.length === 0 && feed.length === 0 ? (
         <p className="muted">Give the Head AI a direction: what to build, fix, or investigate. It answers in the provider you configured, and its plan is what you approve.</p>
       ) : null}
-      {feed.map((item) => {
+      {hidden > 0 ? (
+        <p className="muted tiny"><button type="button" className="tiny-button" onClick={() => bridge.runId && setExpanded((current) => ({ ...current, [bridge.runId as string]: true }))}>Show {hidden} earlier item(s)</button></p>
+      ) : null}
+      {visible.map((item) => {
         if (item.kind === 'message') {
           return (
             <article className={`chat-message ${item.message.role}`} key={`m-${item.message.id}`}>
