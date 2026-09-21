@@ -16,6 +16,8 @@ import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
 import { reconcileInterruptedRuns } from './recovery.mjs'
 import { backupIfStale } from './backup.mjs'
 import { applySavedSettings } from './settings.mjs'
+import { createScheduler } from './schedules.mjs'
+import { seedBuiltinCatalog } from './marketplace-import.mjs'
 
 // Read once, validated, with any problems reported below.
 const bootSettings = resolveSettings()
@@ -56,7 +58,7 @@ const modelCaller = createModelCaller({ providerRegistry, allowPrivate: privateP
 // Chat has no tools: the Head plans and answers. Workers get tools through the
 // orchestrator, restricted to their own role's allowlist. Both return usage so
 // every call can be priced.
-const callProvider = (provider, model, messages, options = {}) => modelCaller.callModel(provider, model, messages, { tools: [], instructions: options.instructions ?? systemPrompt, onDelta: options.onDelta })
+const callProvider = (provider, model, messages, options = {}) => modelCaller.callModel(provider, model, messages, { tools: [], instructions: options.instructions ?? systemPrompt, onDelta: options.onDelta, reasoning: options.reasoning ?? null })
 const callModel = (provider, model, messages, options = {}) => modelCaller.callModel(provider, model, messages, { ...options, instructions: options.instructions ?? systemPrompt })
 
 const orchestrator = createRunOrchestrator({
@@ -68,7 +70,7 @@ const orchestrator = createRunOrchestrator({
   pricing,
 })
 
-const planService = createPlanService({ store, providerRegistry, pricing, callModel: (provider, model, messages, options) => modelCaller.callModel(provider, model, messages, options), checkBudget: async (runId) => { orchestrator.assertBudget(runId) } })
+const planService = createPlanService({ store, providerRegistry, pricing, workspaceRoot: toolBroker.workspaceRoot, callModel: (provider, model, messages, options) => modelCaller.callModel(provider, model, messages, options), checkBudget: async (runId) => { orchestrator.assertBudget(runId) } })
 
 const app = createApp({
   store,
@@ -104,6 +106,14 @@ if (interrupted.interrupted.length) {
 const { pruned } = store.pruneToolOutputs()
 if (pruned > 0) console.log(`[fulkrum] pruned ${pruned} stored tool output(s) past the retention window`)
 
+try {
+  const seedRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'marketplace-seed')
+  const seed = seedBuiltinCatalog({ seedDir: process.env.FULKRUM_MARKETPLACE_SEED_DIR || seedRoot })
+  if (seed.seeded.length) console.log(`[fulkrum] staged ${seed.seeded.length} builtin marketplace skill(s): ${seed.seeded.join(', ')}`)
+} catch (error) {
+  console.log(`[fulkrum] marketplace seed skipped: ${error instanceof Error ? error.message : error}`)
+}
+
 // A daily copy, written from the live database with VACUUM INTO. A corrupted file
 // with no backup is the one failure this store cannot recover from on its own.
 // The timer below keeps that true for a bridge that runs for weeks, not just
@@ -122,6 +132,12 @@ const backupTimer = setInterval(() => {
   }
 }, 3_600_000)
 backupTimer.unref?.()
+
+// Schedules fire playbooks while the bridge runs — there is no daemon, so a
+// stopped bridge fires nothing, and a restart fires whatever came due. The
+// tick is best-effort and self-recording; see server/schedules.mjs.
+const scheduler = createScheduler({ store, orchestrator, workspaceRoot: toolBroker.workspaceRoot })
+scheduler.start()
 
 app.server.listen(port, '127.0.0.1', async () => {
   console.log(`Fulkrum API bridge listening on http://127.0.0.1:${port}`)
@@ -160,6 +176,11 @@ function shutdown(signal) {
   if (shuttingDown) return
   shuttingDown = true
   clearInterval(backupTimer)
+  try {
+    scheduler.stop()
+  } catch {
+    // Never constructed or already stopped; shutdown must not depend on it.
+  }
   console.log(`[fulkrum] received ${signal}; draining`)
   // Draining refuses new work and ends open event streams, so the server can
   // actually close instead of waiting on a stream that never ends.

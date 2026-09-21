@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Check, FilePen, Plus, RefreshCw, Trash2, TriangleAlert } from 'lucide-react'
 import type { Bridge } from '../hooks/useBridge'
+import { CastingLine } from './CastingLine'
 
 /**
  * The plan: what the run will do, and the place it can be changed before it does.
@@ -16,7 +17,8 @@ const roles = ['research', 'builder']
 type DraftTask = { role: string; title: string; instructions: string; acceptanceCheck: string; dependsOn: number[] }
 
 export function PlanPanel({ bridge }: { bridge: Bridge }) {
-  const { plan, run, estimate, draftPlan, editPlan, control } = bridge
+  const { plan, run, estimate, draftPlan, editPlan, control, events } = bridge
+  const contextSources = events.filter((event) => event.type === 'plan.drafted').at(-1)?.payload?.contextSources ?? []
   const [editing, setEditing] = useState(false)
   const [objective, setObjective] = useState('')
   const [tasks, setTasks] = useState<DraftTask[]>([])
@@ -65,7 +67,14 @@ export function PlanPanel({ bridge }: { bridge: Bridge }) {
           <span className={`status-chip ${approved ? 'ok' : 'idle'}`}>v{plan.plan.version} · {plan.plan.status}</span>
           <span className="muted">{plan.plan.source === 'model' ? 'written by the model' : plan.plan.source === 'edited' ? 'edited by you' : 'template'}</span>
           <span className="muted tiny">hash {plan.plan.contentHash.slice(0, 12)}…</span>
+          {plan.complexity && plan.complexity.score >= 7 ? (
+            <span className="status-chip warn" title={`Complexity ${plan.complexity.score}/10: ${plan.complexity.factors.join('; ')}. Advisory only — consider a sharper direction or splitting the work.`}>
+              {plan.complexity.score}/10 complex
+            </span>
+          ) : null}
         </div>
+        <CastingLine bridge={bridge} tasks={plan.tasks} />
+        {contextSources.length ? <span className="muted tiny">read {contextSources.join(', ')}</span> : null}
         <div className="plan-actions">
           {editing ? (
             <>

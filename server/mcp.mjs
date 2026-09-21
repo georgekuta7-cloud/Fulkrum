@@ -18,6 +18,8 @@ const exposed = [
   { mcp: 'workspace_list', broker: 'workspace.list' },
   { mcp: 'workspace_read', broker: 'workspace.read' },
   { mcp: 'workspace_search', broker: 'workspace.search' },
+  { mcp: 'workspace_map', broker: 'workspace.map' },
+  { mcp: 'skills_find', broker: 'skills.find' },
 ]
 
 const reportInputSchema = {

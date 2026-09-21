@@ -1,0 +1,15 @@
+{
+  "name": "TDD Autopilot",
+  "version": "1",
+  "description": "Small precise edits with tests after every write, running unattended inside a budget. For well-understood chores.",
+  "roles": {
+    "research": { "reasoning": "low" },
+    "builder": { "reasoning": "medium" },
+    "editor": { "reasoning": "low" }
+  },
+  "defaults": {
+    "permissionMode": "autopilot",
+    "budgetUsd": 5
+  },
+  "grants": []
+}

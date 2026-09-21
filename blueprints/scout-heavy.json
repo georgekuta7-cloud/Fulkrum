@@ -1,0 +1,13 @@
+{
+  "name": "Scout-Heavy",
+  "version": "1",
+  "description": "Research leads: a strong reasoner investigates, a cheap model builds. For unfamiliar codebases where understanding is the work.",
+  "roles": {
+    "research": { "reasoning": "high" },
+    "builder": { "reasoning": "low" }
+  },
+  "defaults": {
+    "permissionMode": "selective"
+  },
+  "grants": []
+}

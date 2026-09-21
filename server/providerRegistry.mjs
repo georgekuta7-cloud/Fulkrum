@@ -57,7 +57,8 @@ function credentialsFor(provider, settings) {
 function isConfiguredProvider(provider, settings) {
   const credentials = credentialsFor(provider, settings)
   // "No auth" is a real configuration: a server on your own machine may simply
-  // not take a key, and treating that as unconfigured would force demo mode.
+  // not take a key, and treating that as unconfigured would refuse calls that
+  // need no key at all.
   return Boolean(credentials.key) || credentials.style === 'none'
 }
 

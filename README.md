@@ -2,7 +2,7 @@
 
 Fulkrum is a supervisor-style multi-agent workspace: you chat with the Head AI, approve a plan, and then route work to Scout and Forge.
 
-After approval, the current worker slice runs Scout first, hands its findings to Forge, and then asks Head AI to prepare a review checkpoint. With no provider key configured this flow runs in explicit demo mode; with keys configured, each role uses its selected server-side provider.
+After approval, the current worker slice runs Scout first, hands its findings to Forge, and then asks Head AI to prepare a review checkpoint. Every role needs a configured provider: without a key the bridge refuses with a 409 that says where to add one, instead of inventing work.
 
 Fulkrum is a **single-user, local-first** tool. The API bridge binds to `127.0.0.1` only, there are no accounts, and nothing is sent anywhere except to the model providers you configure.
 
@@ -321,6 +321,36 @@ chain still commits to them exactly.
 the audit log does **not** cover, including why a checkpoint in the same file is
 tamper-evident rather than tamper-proof.
 
+## Teams, memory, and automation
+
+Runs are planned by role, and roles are contracts, not models: Scout and Forge
+are joined by Architect (markdown only, enforced), Editor (three steps, one
+write per turn, no shell), and Debugger (hypothesis first, receipts always).
+Which model plays each role is casting, shown on the plan before you approve
+it and changeable any time without re-approving — casting is not plan content.
+When a role keeps failing verification or outgrows its step budget, the Head
+advises re-casting; a declared escalation policy re-routes it mid-run, on the
+record. Workers ask each other through the ledger with `task.query`, never
+through a side channel.
+
+Knowledge lives in `skills/` (markdown packs, matched by trigger), extra
+calling power in `plugins/` (declarative HTTPS tools with fixed destinations),
+and team setups in `blueprints/` — applied through a previewed diff that can
+never silently elevate. A signed marketplace index distributes both; installs
+pin hashes, updates need new approvals, and uninstalls revoke scoped grants.
+
+Reviewed runs that produced evidence teach up to three durable facts each
+(settings shows and forgets them), and the planner reads `AGENTS.md` plus
+recent learnings. Approved plans save as playbooks whose re-runs inherit the
+approval; schedules fire them on intervals while the bridge runs; goals group
+runs under one shared ceiling. Scrub the timeline to see the run's files at
+any event — every undo hash-verified, every gap named — and restore through
+the same approval path as any write.
+
+`docs/roadmap.md` is the program these belong to; `docs/adr/0009-provable-work.md`
+is the rule they all obey: the value of a run is the fraction of its claims
+that are proven.
+
 ## Current limits
 
 - **Approval is per tool call, not per plan.** Approving a plan starts it; a consequential call still parks for its own approval unless the permission mode allows it or you grant that tool for the rest of the run. Grouped approval of similar calls is not built.
@@ -330,4 +360,4 @@ tamper-evident rather than tamper-proof.
 - **A key entered in the settings drawer is stored unencrypted** in the local database, which is gitignored. An environment variable of the same name takes precedence.
 - **Run it as one process.** `npm start` serves the built UI from the bridge itself — that is the production run mode. `npm run dev` starts the UI and the bridge together for development; `npm run preview` serves the built assets without the bridge, so the app is not functional under it.
 - **The local API has no authentication.** It binds to loopback and rejects unapproved browser origins, so this is CSRF protection, not access control: any local process can call it, including approving tool calls.
-- **Plan quality depends on the model.** Without a provider key the workers cannot run at all, and the plan falls back to a labelled template. When a model plan cannot be parsed, the fallback is recorded in the audit log rather than hidden.
+- **Plan quality depends on the model.** Without a provider key the workers cannot run at all: drafting is refused with a 409 naming the fix. When a model plan cannot be parsed, the rejection is recorded in the audit log rather than hidden.

@@ -3,6 +3,7 @@ import { realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { canonicalJson } from './canonicalJson.mjs'
 import { hostMatches } from './networkPolicy.mjs'
+import { loadPluginManifests } from './plugins.mjs'
 import { findSecrets } from './redaction.mjs'
 
 export const PERMISSION_MODES = ['guided', 'selective', 'autopilot']
@@ -132,12 +133,12 @@ function describeWrite(value) {
 export function resolveToolCall({ name, input = {}, workspaceRoot }) {
   const raw = input && typeof input === 'object' ? input : {}
   try {
-    if (name === 'workspace.list' || name === 'workspace.read' || name === 'workspace.search') {
+    if (name === 'workspace.list' || name === 'workspace.read' || name === 'workspace.search' || name === 'workspace.map') {
       const target = resolveWorkspacePath(workspaceRoot, raw.path)
       return {
         ok: true,
         // `directory` is what tells a standing grant where to draw its boundary:
-        // these two tools act on a directory, the others on a file.
+        // these three tools act on a directory, read acts on a file.
         resolved: { tool: name, path: target.resolved, relative: target.relative, ...(name === 'workspace.read' ? {} : { directory: true }), query: name === 'workspace.search' ? String(raw.query ?? '') : undefined },
         sensitive: isSensitivePath(target.relative),
       }
@@ -186,6 +187,49 @@ export function resolveToolCall({ name, input = {}, workspaceRoot }) {
         // putting credentials into the log. Whether the body *looks* secret is
         // stored as one boolean, so the policy can ask about it later.
         resolved: { tool: name, method, url: url.href, host: url.hostname.toLowerCase(), headerNames: headers, bodySha256: body === undefined ? null : createHash('sha256').update(body, 'utf8').digest('hex'), bodyHasSecrets: body !== undefined && findSecrets(body).length > 0 },
+        sensitive: false,
+      }
+    }
+
+    if (name === 'skills.find') {
+      const query = String(raw.query ?? '').trim()
+      if (!query) throw new Error('A search query is required.')
+      return { ok: true, resolved: { tool: name, query: query.slice(0, 500) }, sensitive: false }
+    }
+
+    if (name === 'task.query') {
+      const question = String(raw.question ?? '').trim()
+      if (!question) throw new Error('A question is required.')
+      const role = String(raw.role ?? '').trim().toLowerCase()
+      // The target must name a worker role; whether it is the asker's own
+      // role is judged where the asker is known (the orchestrator answers),
+      // because resolution never sees who is calling.
+      if (!['research', 'builder', 'architect', 'editor', 'debug'].includes(role)) {
+        throw new Error(`Unknown role to ask: ${raw.role ?? '(missing)'}. Ask research, builder, architect, editor, or debug.`)
+      }
+      return { ok: true, resolved: { tool: name, question: question.slice(0, 2000), role }, sensitive: false }
+    }
+
+    if (name.startsWith('plugin.')) {
+      // The model steers values, never destinations: the URL, method, and
+      // headers come from the manifest on disk, and only declared arguments
+      // travel. The fingerprint binds this resolution, so approving runs
+      // exactly the destination shown — a manifest edited afterwards resolves
+      // differently and parks again.
+      const manifest = loadPluginManifests(workspaceRoot).plugins.find((plugin) => plugin.toolName === name)
+      if (!manifest) throw new Error(`Unknown tool: ${name}`)
+      const args = {}
+      for (const key of manifest.args) {
+        if (raw[key] !== undefined) args[key] = String(raw[key])
+      }
+      const url = new URL(manifest.url)
+      if (manifest.method === 'GET' || manifest.method === 'HEAD') {
+        for (const [key, value] of Object.entries(args)) url.searchParams.append(key, value)
+      }
+      const body = manifest.method === 'GET' || manifest.method === 'HEAD' ? undefined : canonicalJson(args)
+      return {
+        ok: true,
+        resolved: { tool: name, method: manifest.method, url: url.href, host: url.hostname.toLowerCase(), headerNames: Object.keys(manifest.headers).sort(), args, bodySha256: body === undefined ? null : createHash('sha256').update(body, 'utf8').digest('hex'), bodyHasSecrets: body !== undefined && findSecrets(body).length > 0 },
         sensitive: false,
       }
     }
@@ -316,6 +360,12 @@ export const permissionMatrix = [
     when: ({ resolution }) => resolution?.sensitive === true,
   },
   {
+    id: 'deny.architect-non-markdown',
+    decision: 'deny',
+    reason: 'Architects write markdown only: plans, specs, and docs. Code changes belong to Forge.',
+    when: ({ tool, resolution, agentId }) => tool?.name === 'workspace.write' && agentId === 'architect' && !/\.md$|\.markdown$/i.test(String(resolution?.resolved?.relative ?? '')),
+  },
+  {
     id: 'ask.question',
     decision: 'ask',
     reason: 'A question needs a human answer in every mode, including autopilot: nothing else can answer it.',
@@ -373,8 +423,8 @@ export const permissionMatrix = [
  * Decide one tool call. Unknown tools, unresolvable inputs, and sensitive paths
  * are refused outright; everything else falls through the table.
  */
-export function decidePermission({ mode = 'selective', tool, resolution, httpAllowlist = [] }) {
-  const context = { mode: PERMISSION_MODES.includes(mode) ? mode : 'guided', tool, resolution, httpAllowlist }
+export function decidePermission({ mode = 'selective', tool, resolution, httpAllowlist = [], agentId = null }) {
+  const context = { mode: PERMISSION_MODES.includes(mode) ? mode : 'guided', tool, resolution, httpAllowlist, agentId }
   const rule = permissionMatrix.find((candidate) => candidate.when(context))
   const reason = typeof rule.reason === 'function' ? rule.reason(context) : rule.reason
   return {

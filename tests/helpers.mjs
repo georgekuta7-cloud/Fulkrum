@@ -56,12 +56,12 @@ export async function withStore(callback) {
  */
 /**
  * @param {(context: any) => Promise<any>} callback
- * @param {{ workspaceRoot?: string, callProvider?: any, model?: any, pricing?: any, realModelCall?: boolean, serveUi?: boolean, distDir?: string }} [options]
+ * @param {{ workspaceRoot?: string, callProvider?: any, model?: any, pricing?: any, realModelCall?: boolean, serveUi?: boolean, distDir?: string, execution?: any, httpRequest?: any }} [options]
  */
-export async function withServer(callback, { workspaceRoot, callProvider, model, pricing, realModelCall = false, serveUi = false, distDir = 'dist' } = {}) {
+export async function withServer(callback, { workspaceRoot, callProvider, model, pricing, realModelCall = false, serveUi = false, distDir = 'dist', execution = null, httpRequest = null } = {}) {
   const directory = workspaceRoot ?? (await mkdtemp(path.join(tmpdir(), 'fulkrum-api-')))
   const store = new FulkrumStore(path.join(directory, 'fulkrum.sqlite'))
-  const toolBroker = new FulkrumToolBroker({ workspaceRoot: directory, httpAllowlist: [] })
+  const toolBroker = new FulkrumToolBroker({ workspaceRoot: directory, httpAllowlist: [], execution, httpRequest })
   const providerRegistry = createProviderRegistry(store)
   // A real caller builds the actual wire request — URL, headers, sampling — which
   // is what the provider tests need to inspect. Everything else is stubbed.
@@ -80,6 +80,7 @@ export async function withServer(callback, { workspaceRoot, callProvider, model,
     store,
     providerRegistry,
     pricing: activePricing,
+    workspaceRoot: directory,
     callModel: (provider, modelName, messages, options) => modelCall({ provider, model: modelName, messages, options }),
     checkBudget: async (runId) => { orchestrator.assertBudget(runId) },
   })

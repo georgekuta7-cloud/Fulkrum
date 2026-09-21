@@ -5,12 +5,16 @@ import { TopBar } from './components/TopBar'
 import type { CenterView, InspectorTab } from './components/TopBar'
 import { Sidebar } from './components/Sidebar'
 import { GraphCanvas } from './components/GraphCanvas'
+import { TimelinePanel } from './components/TimelinePanel'
 import { WorkerSheet } from './components/WorkerSheet'
 import { ApprovalDock } from './components/ApprovalDock'
 import { PlanPanel } from './components/PlanPanel'
 import { ActivityPanel } from './components/ActivityPanel'
 import { ArtifactsPanel, FilesPanel } from './components/FilesPanel'
 import { ChatPanel } from './components/ChatPanel'
+import { MarketplacePanel } from './components/MarketplacePanel'
+import { ArsenalPanel } from './components/ArsenalPanel'
+import { AutomationsPanel } from './components/AutomationsPanel'
 import { ContextRail } from './components/ContextRail'
 import { SettingsPanel } from './components/SettingsPanel'
 import { ErrorBoundary } from './ErrorBoundary'
@@ -54,7 +58,9 @@ export default function App() {
     tasks: bridge.tasks,
     toolCalls: bridge.toolCalls,
     byTask: bridge.byTask,
-  }), [bridge.run, bridge.plan, bridge.tasks, bridge.toolCalls, bridge.byTask])
+    routing: ((bridge.projectSettings ?? {}).routing as Record<string, string> | undefined) ?? {},
+    providers: bridge.providers,
+  }), [bridge.run, bridge.plan, bridge.tasks, bridge.toolCalls, bridge.byTask, bridge.projectSettings, bridge.providers])
 
   // The node a pending approval belongs to, so the decision surfaces on the
   // worker that is actually waiting — even if the person is looking elsewhere.
@@ -145,6 +151,7 @@ export default function App() {
         {bridge.booted && bridge.projects.length === 0 ? (
           <div className="app-body">
             <main className="center">
+              {view === 'marketplace' ? <MarketplacePanel bridge={bridge} /> : view === 'arsenal' ? <ArsenalPanel bridge={bridge} /> : view === 'automations' ? <AutomationsPanel bridge={bridge} /> : (
               <div className="panel-empty">
                 <h2>Start your first project</h2>
                 <p>Runs, plans, and approvals live inside a project, and nothing is seeded — what you see is what you made.</p>
@@ -162,6 +169,7 @@ export default function App() {
                   <button type="submit" className="primary" disabled={projectName.trim().length < 2}>Create project</button>
                 </form>
               </div>
+              )}
             </main>
           </div>
         ) : (
@@ -198,16 +206,42 @@ export default function App() {
                   {inspector === 'files' ? <FilesPanel bridge={bridge} /> : null}
                 </section>
               </>
+            ) : view === 'marketplace' ? (
+              <MarketplacePanel bridge={bridge} />
+            ) : view === 'arsenal' ? (
+              <ArsenalPanel bridge={bridge} />
+            ) : view === 'automations' ? (
+              <AutomationsPanel bridge={bridge} />
             ) : view === 'graph' ? (
               <div className="graph-wrap">
                 {graph.nodes.length ? (
                   <>
                     <p className="graph-hint">Click a worker to see what it is doing</p>
-                    <GraphCanvas nodes={graph.nodes} edges={graph.edges} selectedId={selected?.id ?? null} onSelect={(node: GraphNode) => setSelectedId(node.id)} />
-                    {selected ? <WorkerSheet bridge={bridge} node={selected} onClose={closeSheet} /> : null}
-                    {!selected && bridge.approval && !approvalNode ? (
-                      <div className="worker-sheet-fallback"><ApprovalDock bridge={bridge} /></div>
-                    ) : null}
+                    <button
+                      type="button"
+                      className={`timeline-toggle${bridge.timeline ? ' on' : ''}`}
+                      title="Scrub the run's file history"
+                      onClick={() => {
+                        if (bridge.timeline) bridge.clearTimeline()
+                        else {
+                          setSelectedId(null)
+                          void bridge.loadTimeline(bridge.events.length ? bridge.events[bridge.events.length - 1].sequence : 0)
+                        }
+                      }}
+                    >
+                      ◷ Timeline
+                    </button>
+                    <GraphCanvas nodes={graph.nodes} edges={graph.edges} selectedId={selected?.id ?? null} onSelect={(node: GraphNode) => { bridge.clearTimeline(); setSelectedId(node.id) }} />
+                    {bridge.timeline ? (
+                      <TimelinePanel bridge={bridge} maxSeq={bridge.events.length ? bridge.events[bridge.events.length - 1].sequence : 0} onClose={() => bridge.clearTimeline()} />
+                    ) : (
+                      <>
+                        {selected ? <WorkerSheet bridge={bridge} node={selected} onClose={closeSheet} /> : null}
+                        {!selected && bridge.approval && !approvalNode ? (
+                          <div className="worker-sheet-fallback"><ApprovalDock bridge={bridge} /></div>
+                        ) : null}
+                      </>
+                    )}
                   </>
                 ) : (
                   <div className="panel-empty">
@@ -221,7 +255,7 @@ export default function App() {
             )}
           </main>
 
-          {view === 'graph' ? <ChatPanel bridge={bridge} /> : <ContextRail bridge={bridge} />}
+          {view === 'marketplace' || view === 'arsenal' || view === 'automations' ? null : view === 'graph' ? <ChatPanel bridge={bridge} /> : <ContextRail bridge={bridge} />}
         </div>
         )}
 

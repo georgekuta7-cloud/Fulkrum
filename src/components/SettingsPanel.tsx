@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Activity, Coins, Cpu, Database, KeyRound, Moon, ShieldCheck, SlidersHorizontal, Sun, TriangleAlert, X, Zap } from 'lucide-react'
+import { Activity, Brain, Coins, Cpu, Database, KeyRound, Moon, ShieldCheck, SlidersHorizontal, Sun, TriangleAlert, X, Zap } from 'lucide-react'
 import type { Bridge } from '../hooks/useBridge'
 import type { AppSetting, Provider } from '../api/types'
 import { ProviderEditor } from '../ProviderEditor'
@@ -10,6 +10,7 @@ const groupTitles: Record<string, string> = {
   limits: 'Limits',
   providers: 'Provider behavior',
   budgets: 'Budgets',
+  arsenal: 'Skills & marketplace',
   security: 'Security',
   execution: 'Execution boundary',
 }
@@ -82,7 +83,9 @@ function SettingRow({ setting, onSave, onReset }: {
 
 /**
  * The drawer: whether the thing is healthy, what it will let a worker do, and what it
- * spends.
+ * spends. Playbooks, schedules, goals, and blueprints live under Automations now;
+ * skills and plugins under Store and Arsenal — the drawer keeps health,
+ * permissions, memory, and money, nothing else.
  *
  * Everything here answers a question the rest of the interface raises — why a call was
  * denied, why a provider is not used, whether the audit log still verifies, what has
@@ -121,7 +124,7 @@ function Section({ icon, title, note, children }: { icon: React.ReactNode; title
 }
 
 export function SettingsPanel({ bridge, theme, setTheme, onClose }: { bridge: Bridge; theme: 'dark' | 'light'; setTheme: (theme: 'dark' | 'light') => void; onClose: () => void }) {
-  const { status, providers, grants, usage, configReport, verifyAudit, backupNow, testProvider, saveProvider, addProvider, removeProvider, createGrant, revokeGrant, loadUsage } = bridge
+  const { status, providers, grants, learnings, projects, projectId, usage, configReport, verifyAudit, backupNow, testProvider, saveProvider, addProvider, removeProvider, createGrant, revokeGrant, deleteLearning, loadUsage } = bridge
   const [editing, setEditing] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [settingsError, setSettingsError] = useState('')
@@ -132,6 +135,7 @@ export function SettingsPanel({ bridge, theme, setTheme, onClose }: { bridge: Br
 
   // The spend summary is only worth fetching when someone is looking at it.
   useEffect(() => { void loadUsage(30) }, [loadUsage])
+
 
   const engine = status?.execution
 
@@ -339,6 +343,23 @@ export function SettingsPanel({ bridge, theme, setTheme, onClose }: { bridge: Br
             <button type="submit">Allow</button>
           </form>
           <p className="muted tiny">A command cannot be made standing: its arguments have no boundary. Deny rules still win over any grant.</p>
+        </Section>
+
+        <Section icon={<Brain size={14} />} title="Learnings" note={projects.find((project) => project.id === projectId)?.name ?? 'no project open'}>
+          {learnings.length ? (
+            <ul className="grant-list">
+              {learnings.map((learning) => (
+                <li key={learning.id}>
+                  <div className="grant-name">
+                    <strong>{learning.fact}</strong>
+                    <span className="muted tiny">{at(learning.createdAt)}{learning.sourceRunId ? ` · from run ${learning.sourceRunId.slice(0, 8)}` : ''}</span>
+                  </div>
+                  <button type="button" className="tiny-button" onClick={() => void deleteLearning(learning.id)}>forget</button>
+                </li>
+              ))}
+            </ul>
+          ) : <p className="muted">Nothing learned yet. Reviewed runs that produce evidence teach one to three facts each; the planner reads the recent ones.</p>}
+          <p className="muted tiny">Memory you can edit: forgetting removes the fact, and future plans stop seeing it.</p>
         </Section>
 
         <Section icon={<Coins size={14} />} title="Spend" note={usage ? `last ${usage.days} day(s)` : ''}>

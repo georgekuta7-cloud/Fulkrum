@@ -44,6 +44,42 @@ export const toolSchemas = {
       additionalProperties: false,
     },
   },
+  'workspace.map': {
+    kind: 'read',
+    description: 'Outline the workspace: exported symbols per code file, line counts otherwise. Call this before descending into files you have never seen, so orientation costs one call instead of a dozen reads.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Directory to map, relative to the workspace root. Defaults to the root.' },
+      },
+      additionalProperties: false,
+    },
+  },
+  'skills.find': {
+    kind: 'read',
+    description: 'Find installed skills and plugin tools for the task at hand. Skills return knowledge to read; plugins return tools you can call. Use it whenever no built-in tool fits.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'What you need, in your own words.' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  'task.query': {
+    kind: 'read',
+    description: 'Ask another role a question about its recorded work. The Head reads what that role proved and answers from the record — ask about findings, never for new work. Use it when you need something only a sibling task established.',
+    parameters: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'The one question to answer from the record.' },
+        role: { type: 'string', description: 'Which role to ask: research, builder, architect, editor, or debug.' },
+      },
+      required: ['question', 'role'],
+      additionalProperties: false,
+    },
+  },
   'workspace.write': {
     kind: 'write',
     description: 'Create or overwrite one UTF-8 text file inside the workspace. Requires approval outside autopilot, and the exact content is what gets approved.',
@@ -112,8 +148,8 @@ export function toolsForRole(role) {
   return (role?.tools ?? []).map(toolDefinition).filter(Boolean)
 }
 
-export function isToolAllowedForRole(role, name) {
-  return Boolean(role?.tools?.includes(name))
+export function isToolAllowedForRole(role, name, extraTools = []) {
+  return Boolean(role?.tools?.includes(name) || extraTools.includes(name))
 }
 
 /**
@@ -121,7 +157,20 @@ export function isToolAllowedForRole(role, name) {
  * broker. The broker still re-resolves and re-checks everything: this only turns
  * a malformed call into a clear message the model can act on.
  */
-export function validateToolArguments(name, args) {
+export function validateToolArguments(name, args, plugins = []) {
+  if (String(name).startsWith('plugin.')) {
+    // Plugin schemas live in manifests, not in the static table: every
+    // declared argument is a string, and nothing undeclared passes.
+    const manifest = (plugins ?? []).find((plugin) => plugin.toolName === name)
+    if (!manifest) return { ok: false, error: `Unknown tool: ${name}` }
+    if (args === null || typeof args !== 'object' || Array.isArray(args)) return { ok: false, error: 'Arguments must be a JSON object.' }
+    const problems = []
+    for (const [key, value] of Object.entries(args)) {
+      if (!manifest.args.includes(key)) problems.push(`Unexpected property: ${key}`)
+      else if (typeof value !== 'string') problems.push(`${key} must be a string`)
+    }
+    return problems.length ? { ok: false, error: `Invalid arguments for ${name}: ${problems.join('; ')}` } : { ok: true }
+  }
   const schema = toolSchemas[name]?.parameters
   if (!schema) return { ok: false, error: `Unknown tool: ${name}` }
   if (args === null || typeof args !== 'object' || Array.isArray(args)) return { ok: false, error: 'Arguments must be a JSON object.' }

@@ -9,7 +9,7 @@ import { money } from '../lib/tones'
  * person pulses instead of blending in.
  */
 
-const AVATAR: Record<string, string> = { you: '🧑', head: '🧠', research: '🔍', builder: '🔨' }
+const AVATAR: Record<string, string> = { you: '🧑', head: '🧠', research: '🔍', builder: '🔨', architect: '📐', editor: '✏️', debug: '🐛', reviewer: '🔎' }
 const STATE_LABEL: Record<string, string> = { idle: 'queued', working: 'working', waiting: 'needs you', done: 'done', failed: 'failed', blocked: 'blocked' }
 
 /** Trim a segment so it stops at the node boxes instead of running under them. */
@@ -71,6 +71,7 @@ export function GraphCanvas({ nodes, edges, selectedId, onSelect }: {
           <span className="graph-avatar">{AVATAR[node.agentId ?? node.kind] ?? '🤖'}</span>
           <span className="graph-name">{node.title}</span>
           <span className="graph-sub">{node.subtitle}</span>
+          {node.model ? <span className="graph-model" title="Who plays this role — change it in the worker sheet">{node.model}</span> : null}
           <span className={`graph-state ${node.state}`}>
           {STATE_LABEL[node.state] ?? node.state}
           {node.costUsd !== null && node.costUsd > 0 ? ` · ${money(node.costUsd, 2)}` : ''}

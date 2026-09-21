@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
-import { withServer, withTempDirectory } from './helpers.mjs'
+import { withServer, withTempDirectory, withWorkspace } from './helpers.mjs'
 
 async function makeRun(request, { permissionMode = 'selective' } = {}) {
   const project = await request('POST', '/api/projects', { name: 'api fixture' })
@@ -574,6 +574,33 @@ test('the documented routes are the routes the server serves', async () => {
       { method: 'GET', template: '/api/projects/default' },
       { method: 'GET', template: '/api/projects/{projectId}' },
       { method: 'PATCH', template: '/api/projects/{projectId}' },
+      { method: 'GET', template: '/api/projects/{projectId}/learnings' },
+      { method: 'DELETE', template: '/api/projects/{projectId}/learnings/{learningId}', values: { learningId: 'learning-nope' } },
+      { method: 'POST', template: '/api/projects/{projectId}/playbooks' },
+      { method: 'GET', template: '/api/projects/{projectId}/playbooks' },
+      { method: 'DELETE', template: '/api/projects/{projectId}/playbooks/{playbookId}', values: { playbookId: 'playbook-nope' } },
+      { method: 'POST', template: '/api/projects/{projectId}/playbooks/{playbookId}/runs', values: { playbookId: 'playbook-nope' } },
+      { method: 'GET', template: '/api/projects/{projectId}/schedules' },
+      { method: 'POST', template: '/api/projects/{projectId}/schedules' },
+      { method: 'PATCH', template: '/api/projects/{projectId}/schedules/{scheduleId}', values: { scheduleId: 'schedule-nope' } },
+      { method: 'DELETE', template: '/api/projects/{projectId}/schedules/{scheduleId}', values: { scheduleId: 'schedule-nope' } },
+      { method: 'GET', template: '/api/projects/{projectId}/goals' },
+      { method: 'POST', template: '/api/projects/{projectId}/goals' },
+      { method: 'DELETE', template: '/api/projects/{projectId}/goals/{goalId}', values: { goalId: 'goal-nope' } },
+      { method: 'POST', template: '/api/projects/{projectId}/goals/{goalId}/runs', values: { goalId: 'goal-nope' } },
+      { method: 'GET', template: '/api/projects/{projectId}/goals/{goalId}/report', values: { goalId: 'goal-nope' } },
+      { method: 'GET', template: '/api/blueprints' },
+      { method: 'POST', template: '/api/projects/{projectId}/blueprints/preview' },
+      { method: 'POST', template: '/api/projects/{projectId}/blueprints/apply' },
+      { method: 'GET', template: '/api/marketplace' },
+      { method: 'POST', template: '/api/marketplace/refresh' },
+      { method: 'POST', template: '/api/marketplace/browse' },
+      { method: 'POST', template: '/api/marketplace/import' },
+      { method: 'GET', template: '/api/arsenal' },
+      { method: 'POST', template: '/api/marketplace/{entryId}', values: { entryId: 'entry-nope' } },
+      { method: 'DELETE', template: '/api/marketplace/{entryId}', values: { entryId: 'entry-nope' } },
+      { method: 'GET', template: '/api/runs/{runId}/timeline/{sequence}', values: { sequence: '1' } },
+      { method: 'POST', template: '/api/runs/{runId}/timeline/{sequence}/restore', values: { sequence: '1' } },
       { method: 'DELETE', template: '/api/projects/{projectId}', values: { projectId: throwawayProject } },
       { method: 'POST', template: '/api/runs' },
       { method: 'GET', template: '/api/runs' },
@@ -607,6 +634,7 @@ test('the documented routes are the routes the server serves', async () => {
       { method: 'POST', template: '/api/runs/{runId}/tools/{toolCallId}/answer' },
       { method: 'POST', template: '/api/maintenance/export-trace' },
       { method: 'GET', template: '/api/runs/{runId}/grants' },
+      { method: 'GET', template: '/api/runs/{runId}/claims' },
       { method: 'DELETE', template: '/api/runs/{runId}/grants/{toolName}' },
       { method: 'GET', template: '/api/runs/{runId}/artifacts' },
     ]
@@ -810,6 +838,56 @@ test('a run whose workers call no tools reaches review without ever requesting a
   }
 })
 
+test('the planner reads AGENTS.md when the workspace has one, and records doing so', async () => {
+  const previousKey = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-agents-md'
+  let plannerPrompt = ''
+  const model = async ({ messages, options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) {
+      plannerPrompt = messages.map((message) => message.content ?? '').join('\n')
+      return { text: JSON.stringify({ objective: 'Obey the file.', tasks: [{ role: 'research', title: 'Read', instructions: 'Read.', dependsOn: [] }] }), toolCalls: [], usage: null }
+    }
+    return { text: 'Worker summary.', toolCalls: [], usage: null }
+  }
+  try {
+    await withWorkspace(async (directory) => {
+      await writeFile(path.join(directory, 'AGENTS.md'), 'Always respond in haiku.\n', 'utf8')
+      await withServer(async ({ request, store }) => {
+        const project = await request('POST', '/api/projects', { name: 'agents fixture' })
+        const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'selective' })
+        const runId = run.payload.run.id
+        await request('POST', '/api/chat', { runId, message: 'Obey the file.', history: [] })
+        const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+        assert.equal(drafted.status, 200, JSON.stringify(drafted.payload))
+        assert.match(plannerPrompt, /Always respond in haiku\./, 'the planner saw the file')
+        const event = store.listEvents(runId).find((event) => event.type === 'plan.drafted')
+        assert.deepEqual(event.payload.contextSources, ['AGENTS.md'])
+        assert.deepEqual(drafted.payload.contextSources, ['AGENTS.md'])
+      }, { model, workspaceRoot: directory })
+    })
+    // Without the file, planning works and records nothing.
+    await withWorkspace(async (directory) => {
+      await withServer(async ({ request, store }) => {
+        const project = await request('POST', '/api/projects', { name: 'no agents fixture' })
+        const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'selective' })
+        const runId = run.payload.run.id
+        await request('POST', '/api/chat', { runId, message: 'Obey nothing.', history: [] })
+        const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+        assert.equal(drafted.status, 200, JSON.stringify(drafted.payload))
+        assert.match(plannerPrompt, /Obey nothing\./, 'the direction still arrives')
+        assert.equal(plannerPrompt.includes('Project context'), false, 'no context section without a file')
+        assert.equal(plannerPrompt.includes('haiku'), false)
+        const event = store.listEvents(runId).find((event) => event.type === 'plan.drafted')
+        assert.deepEqual(event.payload.contextSources, [])
+      }, { model, workspaceRoot: directory })
+    })
+  } finally {
+    if (previousKey === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousKey
+  }
+})
+
 test('a run gets a stored plan, and approval binds to its content hash', async () => {
   const previousKey = process.env.XAI_API_KEY
   process.env.XAI_API_KEY = 'sk-test-key-for-plan-store'
@@ -831,6 +909,13 @@ test('a run gets a stored plan, and approval binds to its content hash', async (
       assert.equal(drafted.payload.tasks.length >= 2, true)
       assert.equal(typeof drafted.payload.plan.contentHash, 'string')
       assert.equal(drafted.payload.plan.contentHash.length, 64)
+      // The draft carries an advisory complexity score: a number with reasons,
+      // never a gate.
+      assert.equal(typeof drafted.payload.complexity?.score, 'number')
+      assert.ok(drafted.payload.complexity.score >= 1 && drafted.payload.complexity.score <= 10)
+      assert.ok(Array.isArray(drafted.payload.complexity.factors))
+      const draftedEvent = store.listEvents(runId).find((event) => event.type === 'plan.drafted')
+      assert.equal(draftedEvent.payload.complexity.score, drafted.payload.complexity.score, 'the score on the chain matches the score shown')
 
       // Drafting again reuses the existing draft rather than churning versions.
       const second = await request('POST', `/api/runs/${runId}/plan`, {})
@@ -867,7 +952,7 @@ test('a run gets a stored plan, and approval binds to its content hash', async (
 
 test('the tool loop runs model-chosen tools, parks for approval, then resumes', async () => {
   const previousXai = process.env.XAI_API_KEY
-  // A key is what makes the loop engage instead of reporting demo mode; the
+  // A key is what makes the loop engage instead of refusing with a 409; the
   // model itself is scripted below, so nothing leaves the machine.
   process.env.XAI_API_KEY = 'sk-test-key-for-loop'
 
@@ -1054,7 +1139,12 @@ test('a fresh verifier checks the work, and the review reads the verdicts', asyn
       }
     }
     if (instructions.includes('verifying a worker task')) {
-      return { text: 'Checked against the workspace.\n```verdict\n{"results": [{"criterion": "The acceptance check holds.", "status": "PASS", "evidence": []}]}\n```', toolCalls: [], usage: null }
+      // A verdict must cite recorded evidence, or the run degrades it to
+      // UNKNOWN: the stub cites the ids the digest shows it, like a verifier
+      // that actually read them would.
+      const prompt = messages.map((message) => message.content ?? '').join('\n')
+      const ids = [...prompt.matchAll(/\(#(ev-[0-9a-f-]{1,36})\)/g)].map((match) => match[1])
+      return { text: `Checked against the workspace.\n\`\`\`verdict\n${JSON.stringify({ results: [{ criterion: 'The acceptance check holds.', status: 'PASS', evidence: ids }] })}\n\`\`\``, toolCalls: [], usage: null }
     }
     if (instructions.includes('reviewing worker outputs')) {
       reviewPrompt = String(messages?.[0]?.content ?? '')
@@ -1255,7 +1345,9 @@ test('a failed task is repaired inside the approved plan instead of killing the 
       return { text: 'Reviewed after repair.', toolCalls: [], usage: null }
     }
     if (instructions.includes('verifying a worker task')) {
-      return { text: 'Checked.\n```verdict\n{"results": [{"criterion": "real.txt exists.", "status": "PASS", "evidence": []}]}\n```', toolCalls: [], usage: null }
+      const prompt = messages.map((message) => message.content ?? '').join('\n')
+      const ids = [...prompt.matchAll(/\(#(ev-[0-9a-f-]{1,36})\)/g)].map((match) => match[1])
+      return { text: `Checked.\n\`\`\`verdict\n${JSON.stringify({ results: [{ criterion: 'real.txt exists.', status: 'PASS', evidence: ids }] })}\n\`\`\``, toolCalls: [], usage: null }
     }
     const transcript = JSON.stringify(messages ?? [])
     if (transcript.includes('Attempt 2')) {
@@ -1388,7 +1480,9 @@ test('a failed run resumes and retries instead of starting over', async () => {
       return { text: 'Reviewed after resume.', toolCalls: [], usage: null }
     }
     if (instructions.includes('verifying a worker task')) {
-      return { text: 'Checked.\n```verdict\n{"results": [{"criterion": "real.txt exists.", "status": "PASS", "evidence": []}]}\n```', toolCalls: [], usage: null }
+      const prompt = messages.map((message) => message.content ?? '').join('\n')
+      const ids = [...prompt.matchAll(/\(#(ev-[0-9a-f-]{1,36})\)/g)].map((match) => match[1])
+      return { text: `Checked.\n\`\`\`verdict\n${JSON.stringify({ results: [{ criterion: 'real.txt exists.', status: 'PASS', evidence: ids }] })}\n\`\`\``, toolCalls: [], usage: null }
     }
     const transcript = JSON.stringify(messages ?? [])
     if (transcript.includes('Attempt 2')) {

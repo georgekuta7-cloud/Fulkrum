@@ -13,3 +13,4 @@ on purpose: the point is to record why, not to restate the code.
 | [0006](0006-node-sqlite.md) | `node:sqlite` instead of a native module |
 | [0007](0007-chain-records-hashes.md) | The audit chain records hashes of tool results |
 | [0008](0008-loopback-without-authentication.md) | The local API is loopback-only and unauthenticated |
+| [0009](0009-provable-work.md) | Work must be provable: claims, cited verdicts, approvals at both ends |

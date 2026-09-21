@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { extractPlanJson, planContentHash, planLayers, splitLayerForConcurrency, validatePlan } from '../server/plans.mjs'
+import { extractPlanJson, planContentHash, planLayers, planPrompt, scoreComplexity, splitLayerForConcurrency, validatePlan } from '../server/plans.mjs'
 import { compactTaskMessages } from '../server/orchestrator.mjs'
 import { agentRoles } from '../server/roles.mjs'
 
@@ -78,6 +78,40 @@ test('a layer splits into parallel readers and serialized writers', () => {
   const { readers, writers } = splitLayerForConcurrency(layer, agentRoles)
   assert.equal(readers.length, 2)
   assert.equal(writers.length, 1)
+})
+
+test('a narrow plan scores low, a sprawling one scores high, and the score is advisory', () => {
+  const narrow = scoreComplexity({ direction: 'Fix the typo.', plan: validPlan })
+  assert.ok(narrow.score < 7, `a two-task plan should score under 7, got ${narrow.score}`)
+  assert.ok(!narrow.factors.some((factor) => factor.includes('tasks') || factor.includes('broad scope') || factor.includes('chain')), 'a narrow plan carries none of the heavy factors')
+
+  const sprawling = scoreComplexity({
+    direction: 'Migrate everything to the new framework.',
+    plan: {
+      objective: 'Migrate everything.',
+      tasks: [
+        { role: 'research', title: 'Map it all', instructions: 'x'.repeat(600), dependsOn: [] },
+        { role: 'builder', title: 'Move part one', instructions: 'Move it.', dependsOn: [0] },
+        { role: 'builder', title: 'Move part two', instructions: 'Move it.', dependsOn: [1] },
+        { role: 'research', title: 'Verify all', instructions: 'Check everything.', dependsOn: [2] },
+        { role: 'builder', title: 'Rewrite the rest', instructions: 'Rewrite.', dependsOn: [3] },
+      ],
+    },
+  })
+  assert.ok(sprawling.score >= 7, `a five-task chained migration should score 7+, got ${sprawling.score}`)
+  assert.ok(sprawling.factors.some((factor) => factor.includes('tasks')), 'task count is a factor')
+  assert.ok(sprawling.factors.some((factor) => factor.includes('broad scope')), 'scope words are a factor')
+  assert.ok(sprawling.factors.some((factor) => factor.includes('chain')), 'dependency depth is a factor')
+  assert.ok(sprawling.score <= 10, 'the score clamps at 10')
+  assert.equal(scoreComplexity({ direction: '', plan: null }).score >= 1, true, 'even nothing scores at least 1')
+})
+
+test('project context joins the planner prompt, or stays out when empty', () => {
+  const bare = planPrompt({ direction: 'Do it.', workspaceRoot: 'the workspace root' })
+  assert.equal(bare.includes('Project context'), false)
+  const withContext = planPrompt({ direction: 'Do it.', workspaceRoot: 'the workspace root', projectContext: 'Always write tests.' })
+  assert.match(withContext, /Project context \(AGENTS\.md/)
+  assert.match(withContext, /Always write tests\./)
 })
 
 test('plan JSON is extracted from prose and fences', () => {

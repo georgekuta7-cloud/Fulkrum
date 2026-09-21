@@ -4,7 +4,10 @@ import path from 'node:path'
 import { configuredHttpAllowlist } from './networkPolicy.mjs'
 import { pinnedRequest } from './outboundHttp.mjs'
 import { decidePermission, fingerprintToolCall, isSensitivePath, resolveToolCall, resolveWorkspacePath } from './permissions.mjs'
+import { canonicalJson } from './canonicalJson.mjs'
+import { loadPluginManifests, searchPlugins } from './plugins.mjs'
 import { hashHeaderValues, redact } from './redaction.mjs'
+import { loadSkills, searchSkills } from './skills.mjs'
 
 const MAX_FILE_BYTES = 500_000
 // Read at use time, not import time: a value saved through the app applies live.
@@ -54,6 +57,9 @@ const toolDefinitions = [
   { name: 'workspace.list', kind: 'read', description: 'List entries inside the approved workspace.' },
   { name: 'workspace.read', kind: 'read', description: 'Read a UTF-8 text file inside the approved workspace.' },
   { name: 'workspace.search', kind: 'read', description: 'Search text files inside the approved workspace.' },
+  { name: 'skills.find', kind: 'read', description: 'Find installed skills and plugin tools for the task at hand.' },
+  { name: 'task.query', kind: 'read', description: 'Ask another role about its recorded work; answered from the ledger.' },
+  { name: 'workspace.map', kind: 'read', description: 'Outline code files inside the approved workspace.' },
   { name: 'workspace.write', kind: 'write', description: 'Write a UTF-8 text file inside the approved workspace.' },
   { name: 'run.ask', kind: 'ask', description: 'Ask the human a question and wait for the answer.' },
   { name: 'shell.exec', kind: 'shell', description: 'Run a command inside the sandboxed workspace container.' },
@@ -101,6 +107,107 @@ async function walkFiles(directory, root, results, query, rules) {
     } catch {
       // Binary or unreadable files are skipped by the search tool.
     }
+  }
+}
+
+const MAX_MAP_FILES = 120
+const MAX_MAP_SYMBOLS = 60
+
+/**
+ * An outline, not a parse. Regular expressions find exported symbols and
+ * top-level declarations in the languages the workspace usually holds; anything
+ * else gets a line count. A model that orients from this calls one tool instead
+ * of reading a dozen files, and a missed symbol costs a read, not a wrong plan.
+ */
+function outlineCode(relative, content) {
+  const symbols = []
+  const push = (kind, name, line) => {
+    if (symbols.length >= MAX_MAP_SYMBOLS || !name || symbols.some((symbol) => symbol.kind === kind && symbol.name === name)) return
+    symbols.push({ kind, name, line })
+  }
+  const extension = relative.split('.').pop()?.toLowerCase() ?? ''
+  const rawLines = content.split(/\r?\n/)
+  // A trailing newline is a line ending, not an extra line: without this every
+  // POSIX file reports one line more than it has.
+  if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop()
+  const lines = rawLines
+  if (['js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts'].includes(extension)) {
+    lines.forEach((line, index) => {
+      const lineNumber = index + 1
+      let match = line.match(/^\s*export\s+(?:async\s+)?(?:default\s+)?(?:function|class|const|let|var|interface|type|enum)\s+([A-Za-z_$][\w$]*)/)
+      if (match) return push(match[0].includes('class') ? 'class' : match[0].includes('function') ? 'function' : 'export', match[1], lineNumber)
+      match = line.match(/^\s*export\s*\{\s*([^}]+?)\s*\}(?:\s*from\b)?/)
+      if (match) {
+        for (const name of match[1].split(',').map((part) => part.trim().split(/\s+as\s+/).pop()).filter(Boolean)) push('export', name, lineNumber)
+        return
+      }
+      match = line.match(/^\s*(?:export\s+default\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/)
+      if (match) return push('function', match[1], lineNumber)
+      match = line.match(/^\s*(?:export\s+default\s+)?class\s+([A-Za-z_$][\w$]*)/)
+      if (match) return push('class', match[1], lineNumber)
+    })
+    return { language: extension, symbols, truncated: symbols.length >= MAX_MAP_SYMBOLS }
+  }
+  if (extension === 'py') {
+    lines.forEach((line, index) => {
+      const match = line.match(/^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)|^class\s+([A-Za-z_]\w*)/)
+      if (match) push(match[1] ? 'function' : 'class', match[1] ?? match[2], index + 1)
+    })
+    return { language: 'py', symbols, truncated: symbols.length >= MAX_MAP_SYMBOLS }
+  }
+  return { language: extension || 'text', symbols, truncated: false }
+}
+
+/**
+ * Same traversal rules as a search — skipped directories, ignored paths,
+ * credential files, links never followed, containment re-proved per directory —
+ * so the map cannot see a file the tools would refuse. Content is read only to
+ * be outlined; the receipt is names plus symbols, never raw bytes.
+ */
+async function mapFiles(directory, root, results, rules) {
+  if (results.length >= MAX_MAP_FILES) return
+  const entries = await fs.readdir(directory, { withFileTypes: true })
+  for (const entry of entries) {
+    if (results.length >= MAX_MAP_FILES) return
+    if (entry.isDirectory() && skippedDirectories.has(entry.name)) continue
+    const absolute = path.join(directory, entry.name)
+    const relative = path.relative(root, absolute).replaceAll('\\', '/')
+    if (isIgnored(relative, rules)) continue
+    if (!entry.isDirectory() && isSensitivePath(entry.name)) continue
+
+    if (entry.isDirectory()) {
+      // See walkFiles above: a junction reports as an ordinary directory on
+      // Windows, so containment is re-proved per directory, not just at the root.
+      const stats = await fs.lstat(absolute).catch(() => null)
+      if (!stats || stats.isSymbolicLink() || !stats.isDirectory()) continue
+      try {
+        resolveWorkspacePath(root, absolute)
+      } catch {
+        continue
+      }
+      await mapFiles(absolute, root, results, rules)
+      continue
+    }
+
+    // A reparse point can report as neither file nor directory; like the
+    // search walk, the map skips what it cannot classify rather than
+    // reporting a link as an unreadable file.
+    if (!entry.isFile()) continue
+
+    const stats = await fs.stat(absolute).catch(() => null)
+    if (!stats || stats.size > MAX_FILE_BYTES) {
+      if (stats) results.push({ path: relative, lines: null, bytes: stats.size, outline: 'too large to outline' })
+      continue
+    }
+    const content = await fs.readFile(absolute, 'utf8').catch(() => null)
+    if (content === null) {
+      results.push({ path: relative, lines: null, bytes: stats.size, outline: 'unreadable' })
+      continue
+    }
+    const parts = content.split(/\r?\n/)
+    if (parts.length > 0 && parts[parts.length - 1] === '') parts.pop()
+    const outline = outlineCode(relative, content)
+    results.push({ path: relative, lines: parts.length, bytes: stats.size, ...outline })
   }
 }
 
@@ -237,7 +344,7 @@ async function snapshotFile(absolutePath) {
 
 
 export class FulkrumToolBroker {
-  constructor({ workspaceRoot = process.env.FULKRUM_WORKSPACE_ROOT ?? process.cwd(), httpAllowlist = null, execution = null } = {}) {
+  constructor({ workspaceRoot = process.env.FULKRUM_WORKSPACE_ROOT ?? process.cwd(), httpAllowlist = null, execution = null, httpRequest = null } = {}) {
     // Normalized once, through the same resolver the tools use, so every path the
     // broker reports is relative to a real root. Otherwise a short-named or
     // symlinked workspace root makes result paths point outside themselves.
@@ -246,6 +353,10 @@ export class FulkrumToolBroker {
     this.workspaceRoot = resolveWorkspacePath(workspaceRoot, '.').resolved
     this.httpAllowlist = httpAllowlist
     this.execution = execution
+    // The HTTP sender, injectable for tests. Production always sends through
+    // the pinned layer; a stub proves manifest-to-request translation without
+    // pretending the network ran.
+    this.httpRequest = httpRequest ?? pinnedRequest
     // Reads are cached by path, size, and mtime: repeated reads across parallel
     // workers cost one disk read, and any modification — by a worker, a shell
     // command, or a human — changes the key and misses honestly.
@@ -279,7 +390,15 @@ export class FulkrumToolBroker {
   }
 
   get(name) {
-    return toolDefinitions.find((tool) => tool.name === name) ?? null
+    const known = toolDefinitions.find((tool) => tool.name === name)
+    if (known) return known
+    // Plugin tools are described from their manifests: the kind is always
+    // http, so the permission matrix treats them exactly like http.request.
+    if (String(name).startsWith('plugin.')) {
+      const manifest = loadPluginManifests(this.workspaceRoot).plugins.find((plugin) => plugin.toolName === name)
+      if (manifest) return { name: manifest.toolName, kind: 'http', description: manifest.description }
+    }
+    return null
   }
 
   /** Resolve a raw request into the exact call that would run. */
@@ -291,8 +410,8 @@ export class FulkrumToolBroker {
     return fingerprintToolCall(resolution)
   }
 
-  authorize({ mode, tool, resolution }) {
-    return decidePermission({ mode, tool, resolution, httpAllowlist: this.httpAllowlist ?? configuredHttpAllowlist() })
+  authorize({ mode, tool, resolution, agentId = null }) {
+    return decidePermission({ mode, tool, resolution, httpAllowlist: this.httpAllowlist ?? configuredHttpAllowlist(), agentId })
   }
 
   /**
@@ -359,6 +478,12 @@ export class FulkrumToolBroker {
       return { query, path: resolved.relative, results, clipped: results.length >= MAX_SEARCH_FILES }
     }
 
+    if (name === 'workspace.map') {
+      const files = []
+      await mapFiles(resolved.path, this.workspaceRoot, files, await readIgnoreRules(this.workspaceRoot))
+      return { path: resolved.relative, files, clipped: files.length >= MAX_MAP_FILES }
+    }
+
     if (name === 'workspace.write') {
       const content = String(input?.content ?? '')
       if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new Error(`File exceeds the ${MAX_FILE_BYTES}-byte write limit.`)
@@ -408,36 +533,73 @@ export class FulkrumToolBroker {
     }
 
     if (name === 'http.request') {
-      let method = String(resolved.method ?? 'GET').toUpperCase()
-      let requestHeaders = input?.headers && typeof input.headers === 'object' ? { ...input.headers } : {}
-      let body = input?.body === undefined ? null : JSON.stringify(input.body)
-      let currentUrl = resolved.url
-      let response = null
-      // Redirects are followed manually so every hop is validated and pinned on
-      // its own. Following automatically would let an allowed host bounce the
-      // request to a private address the first check already refused — and
-      // would forward credential headers and bodies wherever it points.
-      for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-        response = await pinnedRequest(currentUrl, { method, headers: requestHeaders, body, allowedHosts: this.httpAllowlist ?? configuredHttpAllowlist() })
-        if (hop === MAX_REDIRECTS && [301, 302, 303, 307, 308].includes(response.status) && response.headers.location) {
-          throw new Error('Too many redirects.')
-        }
-        const next = redirectHop({ method, headers: requestHeaders, body, currentUrl, status: response.status, location: response.headers.location })
-        if (!next) break
-        ;({ method, headers: requestHeaders, body, url: currentUrl } = next)
-      }
+      const method = String(resolved.method ?? 'GET').toUpperCase()
+      const requestHeaders = input?.headers && typeof input.headers === 'object' ? { ...input.headers } : {}
+      const body = input?.body === undefined ? null : JSON.stringify(input.body)
+      return this.fetchPinned({ method, headers: requestHeaders, body, url: resolved.url })
+    }
+
+    if (name === 'skills.find') {
+      const query = String(resolved.query ?? '').trim()
+      const skills = searchSkills(loadSkills(this.workspaceRoot), query)
+      const { plugins } = loadPluginManifests(this.workspaceRoot)
       return {
-        status: response.status,
-        ok: response.ok,
-        url: currentUrl,
-        bytes: response.bytes,
-        headers: response.headers,
-        body: clipped(response.text),
-        ...(response.truncated ? { truncated: true, note: 'The response was larger than the byte cap and was cut off rather than buffered.' } : {}),
+        query,
+        skills: skills.map((skill) => ({ type: 'skill', name: skill.name, description: skill.description, content: skill.content.slice(0, 2000) })),
+        plugins: searchPlugins(plugins, query).map((plugin) => ({ type: 'plugin', name: plugin.name, tool: plugin.toolName, description: plugin.description, method: plugin.method, url: plugin.url })),
       }
     }
 
+    if (name.startsWith('plugin.')) {
+      const manifest = loadPluginManifests(this.workspaceRoot).plugins.find((plugin) => plugin.toolName === name)
+      if (!manifest) throw new Error(`Unknown tool: ${name}`)
+      // The destination comes from the approved resolution, not a fresh
+      // build: the URL the fingerprint bound is the URL that moves, byte for
+      // byte, and the body is canonical for the same reason. Header values
+      // are the manifest's — never the model's — which is why only the
+      // manifest is read here.
+      const args = resolved?.args && typeof resolved.args === 'object' ? resolved.args : {}
+      const headers = { ...manifest.headers }
+      const url = typeof resolved?.url === 'string' ? resolved.url : manifest.url
+      const method = typeof resolved?.method === 'string' ? resolved.method : manifest.method
+      const body = method === 'GET' || method === 'HEAD' ? null : canonicalJson(args)
+      const fetched = await this.fetchPinned({ method, headers, body, url })
+      return { plugin: manifest.name, ...fetched }
+    }
+
     throw new Error(`Unknown tool: ${name}`)
+  }
+
+  /**
+   * One pinned request with manual redirect following, shared by http.request
+   * and plugin calls: every hop is validated and pinned on its own, so an
+   * allowed host cannot bounce the request to a private address the first
+   * check refused — and credential headers never forward.
+   */
+  async fetchPinned({ method, headers, body, url }) {
+    let currentMethod = method
+    let requestHeaders = headers
+    let requestBody = body
+    let currentUrl = url
+    let response = null
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+      response = await this.httpRequest(currentUrl, { method: currentMethod, headers: requestHeaders, body: requestBody, allowedHosts: this.httpAllowlist ?? configuredHttpAllowlist() })
+      if (hop === MAX_REDIRECTS && [301, 302, 303, 307, 308].includes(response.status) && response.headers.location) {
+        throw new Error('Too many redirects.')
+      }
+      const next = redirectHop({ method: currentMethod, headers: requestHeaders, body: requestBody, currentUrl, status: response.status, location: response.headers.location })
+      if (!next) break
+      ;({ method: currentMethod, headers: requestHeaders, body: requestBody, url: currentUrl } = next)
+    }
+    return {
+      status: response.status,
+      ok: response.ok,
+      url: currentUrl,
+      bytes: response.bytes,
+      headers: response.headers,
+      body: clipped(response.text),
+      ...(response.truncated ? { truncated: true, note: 'The response was larger than the byte cap and was cut off rather than buffered.' } : {}),
+    }
   }
 
   redact(value) {

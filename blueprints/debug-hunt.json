@@ -1,0 +1,14 @@
+{
+  "name": "Debug Hunt",
+  "version": "1",
+  "description": "Systematic fault-finding first: a strong debugger with hypotheses, everyone else cheap. For flaky tests and strange failures.",
+  "roles": {
+    "debug": { "reasoning": "high" },
+    "research": { "reasoning": "low" },
+    "builder": { "reasoning": "low" }
+  },
+  "defaults": {
+    "permissionMode": "selective"
+  },
+  "grants": []
+}

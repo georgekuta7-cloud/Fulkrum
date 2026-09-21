@@ -5,6 +5,11 @@ import { TopBar } from './TopBar'
 import { PlanPanel } from './PlanPanel'
 import { Sidebar } from './Sidebar'
 import { ChatFeed } from './ChatFeed'
+import { CastingLine } from './CastingLine'
+import { TimelinePanel } from './TimelinePanel'
+import { MarketplacePanel } from './MarketplacePanel'
+import { ArsenalPanel } from './ArsenalPanel'
+import { AutomationsPanel } from './AutomationsPanel'
 import type { Bridge } from '../hooks/useBridge'
 
 /**
@@ -16,7 +21,7 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
   return {
     projects: [], projectId: 'p1', runs: [], runId: 'run-1', run: null, tasks: [], messages: [], toolCalls: [], events: [],
     plan: null, artifacts: [], spend: { costUsd: 0, calls: 0, unpricedCalls: 0 }, byTask: [], estimate: null, audit: null,
-    providers: [], status: null, grants: [], configReport: null, usage: null, error: null, notice: null, streaming: null, approval: null,
+    providers: [], status: null, grants: [], configReport: null, usage: null, error: null, notice: null, streaming: null, approval: null, projectSettings: {}, claims: [],
     setError: vi.fn(), setNotice: vi.fn(), setApproval: vi.fn(),
     openProject: vi.fn(), openRun: vi.fn(), loadRuns: vi.fn(), loadStatus: vi.fn(), loadGrants: vi.fn(), loadConfig: vi.fn(), loadUsage: vi.fn(), loadProviders: vi.fn(),
     approveCall: vi.fn(), denyCall: vi.fn(), control: vi.fn(), chat: vi.fn(), draftPlan: vi.fn(), editPlan: vi.fn(),
@@ -248,6 +253,212 @@ describe('the chat feed', () => {
     expect(screen.getByText('Run review')).toBeInTheDocument()
     expect(screen.getByText('Both findings check out.')).toBeInTheDocument()
     expect(screen.getByText(/Full report/)).toBeInTheDocument()
+  })
+
+  it('lists the run claims on the review card, with what each one proved', () => {
+    render(<ChatFeed bridge={feedBridge({
+      events: [...feedBridge().events, { eventId: 'e4', runId: 'run-1', sequence: 4, type: 'run.review.ready', agentId: 'head', payload: { summary: 'Checked.' }, createdAt: 10 }] as any,
+      claims: [
+        { id: 'claim-1', runId: 'run-1', taskId: 't1', kind: 'finding', summary: 'The flow completes.', path: 'README.md', startLine: 1, endLine: null, sha256: null, evidenceId: 'ev-1', verdict: 'PASS', createdAt: 6 },
+        { id: 'claim-2', runId: 'run-1', taskId: 't1', kind: 'test', summary: 'npm test (exit 0)', path: null, startLine: null, endLine: null, sha256: null, evidenceId: null, verdict: null, createdAt: 7 },
+      ] as any,
+    })} />)
+
+    expect(screen.getByText(/1\/2 claims proven/)).toBeInTheDocument()
+    expect(screen.getByText('The flow completes.')).toBeInTheDocument()
+    expect(screen.getByText('npm test (exit 0)')).toBeInTheDocument()
+  })
+})
+
+describe('the casting line', () => {
+  const tasks = [
+    { role: 'research', title: 'Look', instructions: 'Look.', dependsOn: [] },
+    { role: 'builder', title: 'Write', instructions: 'Write.', dependsOn: [0] },
+  ] as any
+
+  it('names who plays each role, defaulting openly', () => {
+    render(<CastingLine bridge={makeBridge({
+      projectSettings: { routing: { research: 'Grok' } },
+      providers: [
+        { id: 'grok', label: 'Grok', model: 'grok-4' },
+        { id: 'openai', label: 'OpenAI', model: 'gpt-5' },
+      ] as any,
+    })} tasks={tasks} />)
+
+    expect(screen.getByText(/Scout → Grok · grok-4/)).toBeInTheDocument()
+    expect(screen.getByText(/Forge → default/)).toBeInTheDocument()
+  })
+})
+
+describe('the timeline panel', () => {
+  const timelineBridge = (overrides: Partial<Bridge> = {}) => makeBridge({
+    timeline: {
+      seq: 12,
+      files: [
+        { path: 'notes.txt', content: 'v1\n', truncated: false, unknown: null },
+        { path: 'gone.txt', content: null, truncated: false, unknown: 'deleted since' },
+      ],
+      gaps: ['gone.txt'],
+    },
+    ...overrides,
+  })
+
+  it('shows files as of the index, gaps by name, and restores on demand', () => {
+    const restoreTimelineFile = vi.fn()
+    render(<TimelinePanel bridge={timelineBridge({ restoreTimelineFile })} maxSeq={20} onClose={vi.fn()} />)
+
+    expect(screen.getByText(/event 12 of 20/)).toBeInTheDocument()
+    expect(screen.getByText('notes.txt')).toBeInTheDocument()
+    expect(screen.getByText(/unknown — deleted since/)).toBeInTheDocument()
+    expect(screen.getByText(/Gaps the records cannot prove/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }))
+    expect(restoreTimelineFile).toHaveBeenCalledWith('notes.txt')
+  })
+
+  it('says plainly when nothing was written yet', () => {
+    render(<TimelinePanel bridge={timelineBridge({ timeline: { seq: 1, files: [], gaps: [] } })} maxSeq={20} onClose={vi.fn()} />)
+    expect(screen.getByText(/No files written up to event 1/)).toBeInTheDocument()
+  })
+})
+
+const storeBridge = (overrides: Partial<Bridge> = {}) => makeBridge({
+  marketplace: { enabled: true, signed: false, fetchedAt: null, stale: true, entries: [] },
+  arsenal: { skills: [], plugins: [] },
+  registry: null,
+  loadMarketplaceState: vi.fn(), loadArsenalState: vi.fn(), refreshMarketplace: vi.fn(),
+  installMarketplaceEntry: vi.fn(), uninstallMarketplaceEntry: vi.fn(),
+  browseRegistry: vi.fn(), clearRegistry: vi.fn(), importMarketplaceSkill: vi.fn(),
+  ...overrides,
+})
+
+describe('the marketplace', () => {
+  const entries = [
+    { kind: 'skill', id: 'pdf-processing', version: '2.1.0', sha256: 'a'.repeat(64), url: null, description: 'Reads PDFs.', trust: 'community', author: 'example-org', findings: [{ severity: 'medium', signal: 'reaches the network' }] },
+    { kind: 'skill', id: 'tdd-autopilot', version: '1.0.0', sha256: 'b'.repeat(64), url: 'https://index.example/tdd.md', description: 'Red-green-refactor.', trust: 'verified' },
+  ]
+
+  it('shows trust side by side, flags scan notes, and installs on click', async () => {
+    const installMarketplaceEntry = vi.fn()
+    render(<MarketplacePanel bridge={storeBridge({
+      marketplace: { enabled: true, signed: false, fetchedAt: null, stale: false, entries: entries as any },
+      installMarketplaceEntry,
+    })} />)
+
+    expect(screen.getByText('pdf-processing')).toBeInTheDocument()
+    expect(screen.getByTitle('Signed by the registry index')).toBeInTheDocument()
+    expect(screen.getByTitle(/hash-pinned, not registry-signed/)).toBeInTheDocument()
+    expect(screen.getByText(/reaches the network/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getAllByRole('button', { name: /Install/ })[0])
+    expect(installMarketplaceEntry).toHaveBeenCalledWith('pdf-processing')
+  })
+
+  it('filters by search and trust, and stages an import from a URL', async () => {
+    const importMarketplaceSkill = vi.fn()
+    render(<MarketplacePanel bridge={storeBridge({
+      marketplace: { enabled: true, signed: false, fetchedAt: null, stale: false, entries: entries as any },
+      importMarketplaceSkill,
+    })} />)
+
+    fireEvent.change(screen.getByLabelText('Search marketplace'), { target: { value: 'tdd' } })
+    expect(screen.queryByText('pdf-processing')).not.toBeInTheDocument()
+    expect(screen.getByText('tdd-autopilot')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Verified' }))
+    expect(screen.getByText('tdd-autopilot')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Skill URL to import'), { target: { value: 'https://example.com/skill.md' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Stage for review' }))
+    expect(importMarketplaceSkill).toHaveBeenCalledWith({ url: 'https://example.com/skill.md' })
+  })
+})
+
+describe('the arsenal', () => {
+  it('lists installed skills and plugins, and uninstalls on click', () => {
+    const uninstallMarketplaceEntry = vi.fn()
+    render(<ArsenalPanel bridge={storeBridge({
+      arsenal: {
+        skills: [{ kind: 'skill', id: 'pdf-processing', version: null, description: 'Hand-placed.', updateAvailable: false }],
+        plugins: [{ kind: 'plugin', id: 'ocr', tool: 'plugin.ocr', version: '1.0.0', description: 'Reads images.', updateAvailable: true }],
+      },
+      uninstallMarketplaceEntry,
+    })} />)
+
+    expect(screen.getByText('pdf-processing')).toBeInTheDocument()
+    expect(screen.getByText('local-only')).toBeInTheDocument()
+    expect(screen.getByText('Update available')).toBeInTheDocument()
+
+    fireEvent.click(screen.getAllByRole('button', { name: /Uninstall/ })[0])
+    expect(uninstallMarketplaceEntry).toHaveBeenCalledWith('pdf-processing')
+  })
+
+  it('says plainly when nothing is installed yet', () => {
+    render(<ArsenalPanel bridge={storeBridge()} />)
+    expect(screen.getByText('Nothing installed yet')).toBeInTheDocument()
+  })
+})
+
+const automationsBridge = (overrides: Partial<Bridge> = {}) => makeBridge({
+  projects: [{ id: 'p1', name: 'Launch plan' }],
+  projectId: 'p1',
+  playbooks: [],
+  schedules: [],
+  goals: [],
+  blueprints: [],
+  plan: null,
+  loadPlaybooksFor: vi.fn(), loadSchedulesFor: vi.fn(), loadGoalsFor: vi.fn(), loadBlueprintsFor: vi.fn(),
+  savePlaybook: vi.fn().mockResolvedValue(null), instantiatePlaybook: vi.fn(), deletePlaybook: vi.fn(),
+  saveSchedule: vi.fn().mockResolvedValue(null), toggleSchedule: vi.fn(), deleteSchedule: vi.fn(),
+  createGoal: vi.fn().mockResolvedValue(null), deleteGoal: vi.fn(),
+  previewBlueprint: vi.fn(), applyBlueprint: vi.fn(),
+  ...overrides,
+})
+
+describe('automations', () => {
+  it('asks for a project before showing anything project-scoped', () => {
+    render(<AutomationsPanel bridge={automationsBridge({ projectId: null })} />)
+    expect(screen.getByText('Pick a project first')).toBeInTheDocument()
+  })
+
+  it('runs and deletes playbooks, pauses schedules, and starts goals', () => {
+    const instantiatePlaybook = vi.fn()
+    const toggleSchedule = vi.fn()
+    const createGoal = vi.fn().mockResolvedValue(null)
+    render(<AutomationsPanel bridge={automationsBridge({
+      playbooks: [{ id: 'pb1', projectId: 'p1', name: 'Deploy', contentHash: 'abc123def456', budgetUsd: 5, approvedAt: 1, createdAt: 1 }],
+      schedules: [{ id: 's1', projectId: 'p1', playbookId: 'pb1', everyMinutes: 360, budgetUsd: null, enabled: true, nextFireAt: Date.now() + 3600000, lastRunId: null, createdAt: 1 }],
+      goals: [],
+      blueprints: [],
+      instantiatePlaybook, toggleSchedule, createGoal,
+    })} />)
+
+    // Playbook card, its schedule card, and the schedule form's playbook option.
+    expect(screen.getAllByText('Deploy').length).toBe(3)
+    fireEvent.click(screen.getAllByRole('button', { name: 'run' })[0])
+    expect(instantiatePlaybook).toHaveBeenCalledWith('pb1')
+
+    fireEvent.click(screen.getByRole('button', { name: 'pause' }))
+    expect(toggleSchedule).toHaveBeenCalledWith('s1', false)
+
+    fireEvent.change(screen.getByLabelText('Goal name'), { target: { value: 'Ship it' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start goal' }))
+    expect(createGoal).toHaveBeenCalledWith('Ship it', '', '', null)
+  })
+
+  it('previews a blueprint diff before applying', async () => {
+    const previewBlueprint = vi.fn().mockResolvedValue({ routing: [{ role: 'builder', from: null, to: 'Grok' }], reasoning: [], defaults: [], grants: [] })
+    const applyBlueprint = vi.fn().mockResolvedValue(true)
+    render(<AutomationsPanel bridge={automationsBridge({
+      blueprints: [{ name: 'scout-heavy', version: '1.0.0', description: 'Scout hard.', source: 'builtin' }],
+      previewBlueprint, applyBlueprint,
+    })} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'preview' }))
+    expect(previewBlueprint).toHaveBeenCalledWith({ name: 'scout-heavy' })
+    const change = await screen.findByText(/would change/)
+    expect(change).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(applyBlueprint).toHaveBeenCalledWith({ name: 'scout-heavy' })
   })
 })
 

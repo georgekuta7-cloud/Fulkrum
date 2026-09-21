@@ -33,6 +33,9 @@ export const settings = [
   { name: 'FULKRUM_DB_PATH', group: 'storage', kind: 'path', default: '', description: 'Database file. Overrides FULKRUM_DATA_DIR.' },
   { name: 'FULKRUM_DATA_DIR', group: 'storage', kind: 'path', default: 'data', description: 'Directory holding the database, anchor log, and backups.' },
   { name: 'FULKRUM_WORKSPACE_ROOT', group: 'storage', kind: 'path', default: '', description: 'The only directory agent tools may touch. Defaults to the working directory.' },
+  { name: 'FULKRUM_SKILLS_DIR', group: 'storage', kind: 'path', default: '', description: 'Directory of SKILL.md knowledge packs injected into worker context by trigger. Empty means skills/ under the workspace root; "off" disables skills.' },
+  { name: 'FULKRUM_PLUGINS_DIR', group: 'storage', kind: 'path', default: '', description: 'Directory of JSON plugin manifests (declarative HTTP tools). Empty means plugins/ under the workspace root; "off" disables plugins.' },
+  { name: 'FULKRUM_BLUEPRINTS_DIR', group: 'storage', kind: 'path', default: '', description: 'Extra folder of team blueprint files, beside the builtins. Empty means builtins only.' },
   { name: 'FULKRUM_ANCHOR_FILE', group: 'storage', kind: 'string', default: 'audit-heads.log', description: 'Where chain-head anchors are appended, beside the database. "off" disables them.' },
   { name: 'FULKRUM_BACKUP_INTERVAL_HOURS', group: 'storage', kind: 'int', default: 24, min: 0, description: 'Take a backup at boot when the newest is older than this. 0 disables it.' },
   { name: 'FULKRUM_BACKUP_KEEP', group: 'storage', kind: 'int', default: 7, min: 1, description: 'How many backups to keep before rotating the oldest out.' },
@@ -63,6 +66,9 @@ export const settings = [
   { name: 'FULKRUM_BREAKER_THRESHOLD', group: 'providers', kind: 'int', default: 3, min: 1, description: 'Retryable failures in a row before a provider is skipped.' },
   { name: 'FULKRUM_BREAKER_COOLDOWN_MS', group: 'providers', kind: 'int', default: 30_000, min: 0, description: 'How long a skipped provider is left alone before one probe.' },
   { name: 'FULKRUM_FALLBACK_ROUTES', group: 'providers', kind: 'list', default: '', description: 'Ordered "Provider · model" routes tried when the primary fails.' },
+  { name: 'FULKRUM_MARKETPLACE_URL', group: 'arsenal', kind: 'string', default: '', description: 'Signed skills/plugins index to browse. Empty disables the marketplace; only content signed by FULKRUM_MARKETPLACE_KEY is accepted.' },
+  { name: 'FULKRUM_MARKETPLACE_KEY', group: 'arsenal', kind: 'string', default: '', description: 'Base64 ed25519 public key pinning the marketplace index. Empty means no index is trusted.' },
+  { name: 'FULKRUM_MARKETPLACE_SEED_DIR', group: 'arsenal', kind: 'string', default: '', description: 'Directory of builtin SKILL.md packs staged on first boot so the store opens non-empty. Empty uses the repo marketplace-seed; off disables seeding.' },
 
   // --- Budgets --------------------------------------------------------------
   { name: 'FULKRUM_RUN_BUDGET_USD', group: 'budgets', kind: 'money', default: 0, min: 0, description: 'Default ceiling per run. 0 means no ceiling.' },

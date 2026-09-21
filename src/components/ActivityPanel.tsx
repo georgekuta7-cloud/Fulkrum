@@ -37,7 +37,17 @@ const label = (event: RunEvent): { title: string; detail?: string; tone: string 
     case 'approval.standing': return { title: 'Standing grant created', detail: String(payload.label ?? ''), tone: 'ok' }
     case 'approval.revoked': return { title: `${payload.toolName} grant revoked`, detail: '', tone: 'idle' }
     case 'artifact.revert.requested': return { title: `Reverting ${payload.path}`, detail: '', tone: 'warn' }
+    case 'run.snapshot': return { title: `Checkpoint · ${payload.path}`, detail: 'restorable to before this write', tone: 'plan' }
+    case 'timeline.restored': return { title: `Restored ${payload.path}`, detail: `to its state at event ${payload.seq ?? '?'}`, tone: 'warn' }
+    case 'timeline.restore.failed': return { title: `Restore refused · ${payload.path}`, detail: String(payload.reason ?? ''), tone: 'bad' }
+    case 'claims.recorded': return { title: `${(payload.claims ?? []).length} claim(s) recorded`, detail: 'assertions with evidence behind them', tone: 'plan' }
+    case 'task.query.answered': return { title: `${payload.from} asked ${payload.to}`, detail: String(payload.question ?? '').slice(0, 140), tone: 'idle' }
+    case 'learning.recorded': return { title: 'Learned', detail: String(payload.fact ?? '').slice(0, 160), tone: 'ok' }
+    case 'check.run': return { title: `Check ${payload.command}`, detail: payload.error ? `failed: ${String(payload.error).slice(0, 100)}` : `exit ${payload.exitCode} in ${payload.durationMs}ms`, tone: payload.error ? 'bad' : 'ok' }
     case 'run.provider.fallback': return { title: 'Provider fallback', detail: `${payload.from} → ${payload.to}`, tone: 'warn' }
+    case 'run.routing': return { title: 'Casting recorded', detail: Object.entries(payload.routing ?? {}).map(([role, route]) => `${role} → ${route}`).join('; ') || 'defaults', tone: 'idle' }
+    case 'run.casting.advised': return { title: `Casting advice · ${payload.role}`, detail: String(payload.suggestion ?? payload.reason ?? ''), tone: 'warn' }
+    case 'run.route.escalated': return { title: `${payload.role} escalated`, detail: `${payload.from ?? 'default'} → ${payload.to} after ${payload.afterFailures} failure(s)`, tone: 'busy' }
     case 'run.budget.exceeded': return { title: 'Budget reached', detail: String(payload.error ?? ''), tone: 'bad' }
     case 'run.budget.changed': return { title: 'Budget changed', detail: `now $${payload.budgetUsd ?? 'none'}`, tone: 'idle' }
     case 'run.command.stopped': return { title: 'Running command stopped', detail: 'the run was cancelled', tone: 'warn' }
@@ -55,14 +65,24 @@ const label = (event: RunEvent): { title: string; detail?: string; tone: string 
 }
 
 export function ActivityPanel({ bridge }: { bridge: Bridge }) {
-  const { events, streaming, tasks } = bridge
+  const { events, streaming, tasks, timeline } = bridge
   const [filter, setFilter] = useState<'all' | 'tools' | 'decisions'>('all')
   const [follow, setFollow] = useState(true)
   const endRef = useRef<HTMLDivElement | null>(null)
+  const feedRef = useRef<HTMLOListElement | null>(null)
 
   useEffect(() => {
     if (follow) endRef.current?.scrollIntoView({ block: 'end' })
   }, [events.length, streaming?.text, follow])
+
+  // The timeline scrubber drives the feed: scrubbing seeks the event the
+  // files are shown as of, so the two views cannot disagree about "when".
+  useEffect(() => {
+    if (!timeline) return
+    const row = feedRef.current?.querySelector(`[data-sequence="${timeline.seq}"]`) as HTMLElement | null
+    // jsdom has no scrollIntoView; the guard keeps the effect test-safe.
+    if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' })
+  }, [timeline])
 
   const visible = events.filter((event) => {
     if (filter === 'tools') return event.type.startsWith('tool.') || event.type.startsWith('approval.')
@@ -82,11 +102,11 @@ export function ActivityPanel({ bridge }: { bridge: Bridge }) {
         <span className="muted tiny">{events.length} event(s)</span>
       </div>
 
-      <ol className="feed">
+      <ol className="feed" ref={feedRef}>
         {visible.map((event) => {
           const { title, detail, tone } = label(event)
           return (
-            <li className={`feed-item ${tone}`} key={event.eventId}>
+            <li className={`feed-item ${tone}${timeline && event.sequence === timeline.seq ? ' pinned' : ''}`} key={event.eventId} data-sequence={event.sequence}>
               <span className="feed-icon">{event.type.startsWith('approval') ? <ShieldCheck size={13} /> : event.type.startsWith('tool') ? <Zap size={13} /> : agentIcon(event.agentId)}</span>
               <div className="feed-body">
                 <span className="feed-title">{title}{event.agentId ? <span className="muted"> · {event.agentId}</span> : null}</span>

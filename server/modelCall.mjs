@@ -118,7 +118,7 @@ export function buildRequest(protocol, { baseUrl, model, messages, tools = [], i
   const endpoint = String(baseUrl).replace(/\/$/, '')
   // Model-native reasoning, in the dialect this protocol speaks. Empty when the
   // level is unset or the model does not reason, so the spread is always safe.
-  const effort = reasoningPayload(protocol, model, reasoning)
+  const effort = reasoningPayload(protocol, model, reasoning, maxTokens())
 
   if (protocol === 'anthropic') {
     return {
@@ -648,11 +648,5 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
     return streaming ? payload : parseResponse(provider.protocol, payload)
   }
 
-  /** Text-only convenience wrapper for chat and plan generation. */
-  const callText = async (provider, model, messages, instructions) => {
-    const response = await callModel(provider, model, messages, { instructions })
-    return response.text
-  }
-
-  return { callModel, callText, buildRequest, breaker }
+  return { callModel, buildRequest, breaker }
 }

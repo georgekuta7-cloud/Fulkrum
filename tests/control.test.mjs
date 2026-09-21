@@ -116,8 +116,8 @@ test('transitions are refused from states that cannot make them', async () => {
 test('interrupted and budget-stopped runs still resume — that is what resume is for', async () => {
   process.env.XAI_API_KEY = 'sk-test-key-for-resume'
   // A run with a key parks on a real write approval, so it is still executing when
-  // the test pauses and resumes it. A keyless demo run finishes in milliseconds,
-  // which is why this fixture needs the key.
+  // the test pauses and resumes it. Without a key the run cannot start at all,
+  // which is why this fixture needs one.
   const model = async ({ options }) => {
     const instructions = String(options?.instructions ?? '')
     if (instructions.includes('You plan work')) return { text: planJson, toolCalls: [], usage: null }

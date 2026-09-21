@@ -1,8 +1,43 @@
+import { useState } from 'react'
 import { X } from 'lucide-react'
 import type { Bridge } from '../hooks/useBridge'
 import type { GraphNode } from '../lib/runGraph'
-import { roleLabel } from '../lib/runGraph'
+import { resolveRouteDisplay, roleLabel } from '../lib/runGraph'
 import { ApprovalDock } from './ApprovalDock'
+
+function RouteEditor({ bridge, role, current, label = 'plays as' }: { bridge: Bridge; role: string; current: string | null; label?: string }) {
+  const [draft, setDraft] = useState(current ?? '')
+  const [saving, setSaving] = useState(false)
+  const save = async () => {
+    setSaving(true)
+    try {
+      await bridge.saveRouting(role, draft)
+    } finally {
+      setSaving(false)
+    }
+  }
+  return (
+    <div className="sheet-row">
+      <span className="sheet-key">{label}</span>
+      <input
+        value={draft}
+        list={`providers-for-${role}`}
+        placeholder="default provider"
+        title="Type `Provider` or `Provider · model`. Empty clears back to the default."
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => { if (event.key === 'Enter') void save() }}
+      />
+      <datalist id={`providers-for-${role}`}>
+        {bridge.providers.map((provider) => (
+          <option key={provider.id} value={`${provider.label} · ${provider.model}`} />
+        ))}
+      </datalist>
+      <button type="button" className="tiny-button" disabled={saving || draft.trim() === (current ?? '')} onClick={() => void save()}>
+        {saving ? 'Saving…' : 'Cast'}
+      </button>
+    </div>
+  )
+}
 import { ReasoningSelect } from './ReasoningSelect'
 import type { AgentId } from '../api/types'
 
@@ -42,6 +77,22 @@ export function WorkerSheet({ bridge, node, onClose }: { bridge: Bridge; node: G
       </div>
 
       <div className="worker-sheet-body">
+        {agentId && (node.kind === 'task' || node.kind === 'head') ? (
+          <RouteEditor
+            bridge={bridge}
+            role={agentId}
+            current={resolveRouteDisplay(((bridge.projectSettings ?? {}).routing as Record<string, string> | undefined) ?? {}, bridge.providers, agentId)}
+          />
+        ) : null}
+        {node.kind === 'head' ? (
+          <RouteEditor
+            bridge={bridge}
+            role="reviewer"
+            label="reviews as"
+            current={resolveRouteDisplay(((bridge.projectSettings ?? {}).routing as Record<string, string> | undefined) ?? {}, bridge.providers, 'reviewer')}
+          />
+        ) : null}
+
         {direction ? (
           <div className="sheet-row">
             <span className="sheet-key">direction</span>

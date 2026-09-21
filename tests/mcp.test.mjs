@@ -30,7 +30,7 @@ test('the server identifies itself and lists only the read tools', async () => {
 
     const tools = await call(server, 'tools/list', {})
     const names = tools.result.tools.map((tool) => tool.name).sort()
-    assert.deepEqual(names, ['run_report', 'workspace_list', 'workspace_read', 'workspace_search'])
+    assert.deepEqual(names, ['run_report', 'skills_find', 'workspace_list', 'workspace_map', 'workspace_read', 'workspace_search'])
     for (const tool of tools.result.tools) {
       assert.equal(typeof tool.inputSchema.type, 'string', `${tool.name} carries a schema`)
     }

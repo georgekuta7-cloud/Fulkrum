@@ -1,38 +1,8 @@
 import { createHash } from 'node:crypto'
 import { canonicalJson } from './canonicalJson.mjs'
 
-export const planRoles = ['research', 'builder']
+export const planRoles = ['research', 'builder', 'architect', 'editor', 'debug']
 export const maxPlanTasks = 8
-
-/**
- * The plan format the Head AI has to produce, and the same shape the demo
- * fallback builds. One schema, so the stored artifact is identical whether a
- * model or a template produced it.
- */
-export const planSchema = {
-  type: 'object',
-  properties: {
-    objective: { type: 'string', description: 'One sentence describing the outcome this plan delivers.' },
-    tasks: {
-      type: 'array',
-      minItems: 1,
-      maxItems: maxPlanTasks,
-      items: {
-        type: 'object',
-        properties: {
-          role: { type: 'string', enum: planRoles, description: 'research reads and reports; builder produces artifacts.' },
-          title: { type: 'string' },
-          instructions: { type: 'string', description: 'What this worker must do, in one or two sentences.' },
-          acceptanceCheck: { type: 'string', description: 'How a reviewer can tell this task succeeded.' },
-          dependsOn: { type: 'array', items: { type: 'integer' }, description: 'Zero-based indices of tasks that must finish first.' },
-        },
-        required: ['role', 'title', 'instructions'],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ['objective', 'tasks'],
-}
 
 export function validatePlan(candidate) {
   const problems = []
@@ -76,6 +46,49 @@ export function validatePlan(candidate) {
 /** The hash an approval is bound to. */
 export function planContentHash(plan) {
   return createHash('sha256').update(canonicalJson({ objective: plan.objective, tasks: plan.tasks }), 'utf8').digest('hex')
+}
+
+const SCOPE_WORDS = ['all', 'entire', 'every', 'whole', 'migrate', 'refactor', 'rewrite', 'redesign', 'overhaul']
+const scopeWordIn = (text) => SCOPE_WORDS.find((word) => new RegExp(`\\b${word}\\b`, 'i').test(text ?? '')) ?? null
+
+/**
+ * How much plan is in this plan, 1–10. A heuristic in the TaskMaster shape:
+ * broad scope and deep chains score high, narrow work scores low. Advisory
+ * only — it is rendered on the approval surface so the human can ask for a
+ * sharper plan, and never gates anything: a score is information, not policy.
+ */
+export function scoreComplexity({ direction = '', plan }) {
+  const factors = []
+  let score = 3
+  // Normalized for the layering, which expects validated plans; the scorer
+  // must survive whatever it is handed, because it runs on draft output.
+  const tasks = Array.isArray(plan?.tasks) ? plan.tasks.map((task) => ({ ...task, dependsOn: Array.isArray(task?.dependsOn) ? task.dependsOn : [] })) : []
+
+  if (tasks.length > 3) {
+    score += Math.min(tasks.length - 3, 3)
+    factors.push(`${tasks.length} tasks`)
+  }
+  const depth = Math.max(planLayers(tasks).length - 1, 0)
+  if (depth >= 2) {
+    score += 1
+    factors.push(`dependency chain ${depth + 1} deep`)
+  }
+  if (tasks.some((task) => String(task?.instructions ?? '').length > 500)) {
+    score += 1
+    factors.push('long task instructions')
+  }
+  const scopeWord = scopeWordIn(plan?.objective) ?? scopeWordIn(direction)
+  if (scopeWord) {
+    score += 1
+    factors.push(`broad scope: "${scopeWord}"`)
+  }
+  const roles = new Set(tasks.map((task) => task?.role).filter(Boolean))
+  if (roles.size > 1 && tasks.some((task) => (task?.dependsOn ?? []).length > 0)) {
+    score += 1
+    factors.push('cross-role handoffs')
+  }
+
+  return { score: Math.min(Math.max(score, 1), 10), factors }
 }
 
 /** Group tasks into the order they can run: each layer depends only on earlier layers. */
@@ -123,12 +136,12 @@ export function extractPlanJson(text) {
   }
 }
 
-export function planPrompt({ direction, workspaceRoot, maxTasks = maxPlanTasks }) {
+export function planPrompt({ direction, workspaceRoot, maxTasks = maxPlanTasks, projectContext = '' }) {
   return `Turn this direction into a plan for a small agent team.
 
 Direction:
 ${direction}
-
+${projectContext ? `\nProject context (AGENTS.md — follow it):\n${projectContext}\n` : ``}
 Produce at most ${maxTasks} tasks. Use the "research" role for read-only investigation and the "builder" role for work that produces artifacts. Keep the plan narrow: the first release should prove one outcome. Set dependsOn to the zero-based indices of tasks that must finish first.
 
 Rules:

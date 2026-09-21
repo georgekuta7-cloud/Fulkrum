@@ -204,6 +204,9 @@ const clipLine = (value, maximum = 220) => {
  * What a dependent task actually receives: the summary plus evidence pointers
  * and artifact pointers, bounded to FULKRUM_HANDOFF_MAX_CHARS. Full transcripts
  * stay in the audit log and the evidence ledger; the prompt carries references.
+ * This is the Boomerang rule — a child returns summary + evidence ids +
+ * verdict, never its tool log — and tests/boomerang.test.mjs fails if raw
+ * tool output ever crosses a handoff.
  */
 /** A verdict block names one result per acceptance criterion, and nothing else decides the overall. */
 export function validateVerdictBlock(candidate) {
@@ -281,7 +284,10 @@ export function buildTaskHandoffDigest({ summary, evidence = [], artifacts = [],
     lines.push(`Evidence (${records.length}):`)
     for (const record of records) {
       const where = record.path ? ` — ${record.path}${record.startLine ? `:${record.startLine}${record.endLine ? `-${record.endLine}` : ''}` : ''}` : ''
-      const id = record.id ? ` (#${String(record.id).slice(0, 12)})` : ''
+      // Full ids, not truncated: the digest is a machine channel, and
+      // verifiers cite these ids in verdicts. A truncated id cites nothing
+      // that exists, which silently degrades every cited verdict to UNKNOWN.
+      const id = record.id ? ` (#${record.id})` : ''
       lines.push(clipLine(`- [${record.kind}] ${record.summary}${where}${id}`))
     }
   }

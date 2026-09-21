@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildGraph, taskLayers } from './runGraph'
+import { buildGraph, resolveRouteDisplay, taskLayers } from './runGraph'
 import type { Plan, Run, Task, ToolCall } from '../api/types'
 
 const run = (status: string): Run => ({
@@ -70,6 +70,22 @@ describe('buildGraph', () => {
     // Two tasks in different layers share the center line.
     expect(scout?.x).toBe(50)
     expect(forge?.x).toBe(50)
+  })
+
+  it('shows who plays each role, verbatim when the route is stale', () => {
+    const providers = [
+      { id: 'grok', label: 'Grok', model: 'grok-4' },
+      { id: 'openai', label: 'OpenAI', model: 'gpt-5' },
+    ]
+    expect(resolveRouteDisplay({}, providers, 'research')).toBe(null)
+    expect(resolveRouteDisplay({ research: 'grok' }, providers, 'research')).toBe('Grok · grok-4')
+    expect(resolveRouteDisplay({ research: 'Grok · grok-4-fast' }, providers, 'research')).toBe('Grok · grok-4-fast')
+    expect(resolveRouteDisplay({ research: 'openai' }, providers, 'research')).toBe('OpenAI · gpt-5')
+    expect(resolveRouteDisplay({ research: 'retired-vendor' }, providers, 'research')).toBe('retired-vendor')
+
+    const { nodes } = buildGraph({ run: run('executing'), plan: plan(), tasks, toolCalls: noCalls, byTask: [], routing: { research: 'grok' }, providers })
+    expect(nodes.find((node) => node.id === 'task-1')?.model).toBe('Grok · grok-4')
+    expect(nodes.find((node) => node.id === 'task-2')?.model).toBe(null)
   })
 
   it('carries per-task cost onto the node', () => {

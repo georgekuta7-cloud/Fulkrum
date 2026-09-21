@@ -54,6 +54,7 @@ function runFromRow(row) {
     budgetUsd: row.budget_usd === null || row.budget_usd === undefined ? null : Number(row.budget_usd),
     budgetExceededAt: row.budget_exceeded_at === null || row.budget_exceeded_at === undefined ? null : Number(row.budget_exceeded_at),
     ownerId: row.owner_id ?? null,
+    goalId: row.goal_id ?? null,
     heartbeatAt: row.heartbeat_at === null || row.heartbeat_at === undefined ? null : Number(row.heartbeat_at),
     leaseExpiresAt: row.lease_expires_at === null || row.lease_expires_at === undefined ? null : Number(row.lease_expires_at),
     interruptedAt: row.interrupted_at === null || row.interrupted_at === undefined ? null : Number(row.interrupted_at),
@@ -137,7 +138,7 @@ function taskFromRow(row) {
   }
 }
 
-export const evidenceKinds = ['finding', 'artifact', 'test', 'question', 'decision']
+export const evidenceKinds = ['finding', 'artifact', 'test', 'question', 'decision', 'receipt']
 
 function evidenceFromRow(row) {
   return {
@@ -163,6 +164,23 @@ function verdictFromRow(row) {
     overall: row.overall,
     results: parseJson(row.results_json, []),
     checkedBy: row.checked_by ?? null,
+    createdAt: Number(row.created_at),
+  }
+}
+
+function claimFromRow(row) {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    taskId: row.task_id,
+    kind: row.kind,
+    summary: row.summary ?? '',
+    path: row.path ?? null,
+    startLine: row.start_line === null || row.start_line === undefined ? null : Number(row.start_line),
+    endLine: row.end_line === null || row.end_line === undefined ? null : Number(row.end_line),
+    sha256: row.sha256 ?? null,
+    evidenceId: row.evidence_id ?? null,
+    verdict: row.verdict ?? null,
     createdAt: Number(row.created_at),
   }
 }
@@ -392,10 +410,17 @@ export class FulkrumStore {
     return Number(result.changes) > 0
   }
 
-  createRun({ projectId, id = `run-${randomUUID()}`, mode = 'plan', permissionMode = 'selective', ownerId = null }) {
+  createRun({ projectId, id = `run-${randomUUID()}`, mode = 'plan', permissionMode = 'selective', ownerId = null, goalId = null }) {
     if (!this.getProject(projectId)) throw new Error(`Project not found: ${projectId}`)
+    if (goalId !== null && goalId !== undefined) {
+      const goal = this.database.prepare('SELECT id, project_id FROM goals WHERE id = ?').get(goalId)
+      if (!goal || goal.project_id !== projectId) throw new Error('Goal not found in this project.')
+    }
     const now = Date.now()
-    this.database.prepare('INSERT INTO runs(id, project_id, status, mode, permission_mode, owner_id, heartbeat_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, projectId, 'planning', mode, permissionMode, ownerId, ownerId ? now : null, now, now)
+    this.database.prepare('INSERT INTO runs(id, project_id, status, mode, permission_mode, owner_id, goal_id, heartbeat_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, projectId, 'planning', mode, permissionMode, ownerId, goalId ?? null, ownerId ? now : null, now, now)
+    if (goalId !== null && goalId !== undefined) {
+      this.database.prepare('INSERT OR IGNORE INTO goal_runs(goal_id, run_id, created_at) VALUES(?, ?, ?)').run(goalId, id, now)
+    }
     return this.getRun(id)
   }
 
@@ -602,15 +627,6 @@ export class FulkrumStore {
     return this.database.prepare('SELECT * FROM run_events WHERE run_id = ? AND sequence > ? ORDER BY sequence ASC').all(runId, afterSequence).map(eventFromRow)
   }
 
-  /**
-   * Recompute the chain and report the first event that does not match, plus
-   * whether the recorded head is still present.
-   *
-   * Events written before hash chaining existed carry no hash. Those cannot be
-   * verified, so they are counted separately rather than reported as tampering:
-   * claiming a legacy event is intact would be as dishonest as claiming it was
-   * altered.
-   */
   /** What a cached verification was computed from: cheap to read, moves on any change that matters. */
   chainCacheKey(runId) {
     // The database files themselves are the tripwire: any committed write —
@@ -636,6 +652,15 @@ export class FulkrumStore {
     ].join('|')
   }
 
+  /**
+   * Recompute the chain and report the first event that does not match, plus
+   * whether the recorded head is still present.
+   *
+   * Events written before hash chaining existed carry no hash. Those cannot be
+   * verified, so they are counted separately rather than reported as tampering:
+   * claiming a legacy event is intact would be as dishonest as claiming it was
+   * altered.
+   */
   verifyEventChain(runId) {
     const key = this.chainCacheKey(runId)
     const cached = this.chainCache.get(runId)
@@ -982,6 +1007,43 @@ export class FulkrumStore {
   }
 
   /**
+   * Claims: the typed half of a completion, stored beside the evidence rows
+   * they came from. A claim names what the worker asserted; the verdict (set
+   * only by a cited verdict, never by default) says whether it held.
+   */
+  recordRunClaim({ runId, taskId, kind, summary, path = null, startLine = null, endLine = null, sha256 = null, evidenceId = null, id = `claim-${randomUUID()}` }) {
+    if (!['finding', 'artifact', 'test'].includes(kind)) throw new Error(`Unknown claim kind: ${kind}`)
+    const text = typeof summary === 'string' ? summary.trim() : ''
+    if (!text) throw new Error('A claim needs a non-empty summary.')
+    const line = (value) => (value === null || value === undefined ? null : Number(value))
+    const now = Date.now()
+    this.database.prepare('INSERT INTO run_claims(id, run_id, task_id, kind, summary, path, start_line, end_line, sha256, evidence_id, verdict, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, runId, taskId, kind, text.slice(0, 2000), path, line(startLine), line(endLine), sha256, evidenceId, null, now)
+    const row = this.database.prepare('SELECT * FROM run_claims WHERE id = ?').get(id)
+    return row ? claimFromRow(row) : null
+  }
+
+  listRunClaims(runId) {
+    return this.database.prepare('SELECT * FROM run_claims WHERE run_id = ? ORDER BY created_at ASC').all(runId).map(claimFromRow)
+  }
+
+  listTaskClaims(taskId) {
+    return this.database.prepare('SELECT * FROM run_claims WHERE task_id = ? ORDER BY created_at ASC').all(taskId).map(claimFromRow)
+  }
+
+  /**
+   * Set a claim's verdict — called only from cited verdict results, so a
+   * verdict always names the evidence it judged. Latest wins: a repair that
+   * re-verifies updates what the earlier attempt concluded.
+   */
+  setClaimVerdict(id, verdict) {
+    if (!['PASS', 'FAIL', 'UNKNOWN'].includes(verdict)) throw new Error(`Unknown verdict: ${verdict}`)
+    this.database.prepare('UPDATE run_claims SET verdict = ? WHERE id = ?').run(verdict, id)
+    const row = this.database.prepare('SELECT * FROM run_claims WHERE id = ?').get(id)
+    return row ? claimFromRow(row) : null
+  }
+
+  /**
    * The verdict a fresh verifier reached about one task. Recorded separately
    * from the task row so verification can never be confused with the work it
    * judges: the builder writes results, the verifier writes verdicts.
@@ -997,6 +1059,29 @@ export class FulkrumStore {
   getTaskVerdict(taskId) {
     const row = this.database.prepare('SELECT * FROM task_verdicts WHERE task_id = ? ORDER BY created_at DESC LIMIT 1').get(taskId)
     return row ? verdictFromRow(row) : null
+  }
+
+  listTaskVerdicts(taskId) {
+    return this.database.prepare('SELECT * FROM task_verdicts WHERE task_id = ? ORDER BY created_at ASC').all(taskId).map(verdictFromRow)
+  }
+
+  recordLearning({ projectId, fact, sourceRunId = null, id = `learning-${randomUUID()}` }) {
+    const text = typeof fact === 'string' ? fact.trim().slice(0, 500) : ''
+    if (!text) throw new Error('A learning needs a non-empty fact.')
+    const existing = this.database.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)
+    if (!existing) throw new Error(`Project not found: ${projectId}`)
+    const now = Date.now()
+    this.database.prepare('INSERT INTO project_learnings(id, project_id, fact, source_run_id, created_at) VALUES(?, ?, ?, ?, ?)').run(id, projectId, text, sourceRunId, now)
+    return { id, projectId, fact: text, sourceRunId, createdAt: now }
+  }
+
+  listProjectLearnings(projectId, limit = 50) {
+    return this.database.prepare('SELECT * FROM project_learnings WHERE project_id = ? ORDER BY created_at DESC LIMIT ?').all(projectId, Math.max(Number(limit) || 50, 1))
+      .map((row) => ({ id: row.id, projectId: row.project_id, fact: row.fact ?? '', sourceRunId: row.source_run_id ?? null, createdAt: Number(row.created_at) }))
+  }
+
+  deleteLearning(id) {
+    return Number(this.database.prepare('DELETE FROM project_learnings WHERE id = ?').run(id).changes) > 0
   }
 
   createToolCall({ runId, agentId = null, name, kind, input = {}, rawInput = null, resolved = null, fingerprint = null, idempotencyKey = null, status = 'requested', ruleId = null, warnings = [], id = `tool-${randomUUID()}` }) {
@@ -1314,6 +1399,167 @@ export class FulkrumStore {
   approvePlan(planId) {
     this.database.prepare("UPDATE plans SET status = 'approved', approved_at = ? WHERE id = ?").run(Date.now(), planId)
     return this.getPlan(planId)
+  }
+
+  /**
+   * Playbooks: approved plans, reusable. Only an approved plan can become one —
+   * automating a draft nobody signed off on is the failure this table exists
+   * to prevent. The hash travels with the template so instantiation can prove
+   * it is still the bytes that were approved.
+   */
+  createPlaybook({ projectId, name, plan, budgetUsd = null, skills = [], id = `playbook-${randomUUID()}` }) {
+    const title = typeof name === 'string' ? name.trim().slice(0, 200) : ''
+    if (!title) throw new Error('A playbook needs a name.')
+    if (!plan || plan.plan?.status !== 'approved') throw new Error('Only an approved plan can become a playbook.')
+    if (!this.getProject(projectId)) throw new Error(`Project not found: ${projectId}`)
+    const pins = Array.isArray(skills) ? skills : []
+    for (const pin of pins) {
+      if (!pin || typeof pin.id !== 'string' || typeof pin.sha256 !== 'string') throw new Error('Skill pins need an id and a sha256.')
+    }
+    const planJson = JSON.stringify({ objective: plan.plan.objective, tasks: plan.tasks.map((task) => ({ role: task.role, title: task.title, instructions: task.instructions, acceptanceCheck: task.acceptanceCheck ?? '', dependsOn: task.dependsOn ?? [] })) })
+    const now = Date.now()
+    this.database.prepare('INSERT INTO playbooks(id, project_id, name, plan_json, content_hash, budget_usd, approved_at, created_at, skills_json) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, projectId, title, planJson, plan.plan.contentHash, budgetUsd, plan.plan.approvedAt ?? now, now, JSON.stringify(pins))
+    return this.getPlaybook(id)
+  }
+
+  getPlaybook(id) {
+    const row = this.database.prepare('SELECT * FROM playbooks WHERE id = ?').get(id)
+    if (!row) return null
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      name: row.name,
+      skills: parseJson(row.skills_json ?? '[]', []),
+      plan: parseJson(row.plan_json, null),
+      contentHash: row.content_hash,
+      budgetUsd: row.budget_usd === null || row.budget_usd === undefined ? null : Number(row.budget_usd),
+      approvedAt: row.approved_at === null || row.approved_at === undefined ? null : Number(row.approved_at),
+      createdAt: Number(row.created_at),
+    }
+  }
+
+  listPlaybooks(projectId) {
+    return this.database.prepare('SELECT * FROM playbooks WHERE project_id = ? ORDER BY created_at DESC').all(projectId).map((row) => this.getPlaybook(row.id))
+  }
+
+  deletePlaybook(id) {
+    return Number(this.database.prepare('DELETE FROM playbooks WHERE id = ?').run(id).changes) > 0
+  }
+
+  /**
+   * Schedules fire playbooks on an interval; goals group runs under one
+   * objective and one shared budget. Neither invents authority: a schedule
+   * can only fire a playbook whose hash still matches, and a goal shares a
+   * ceiling, never a chain.
+   */
+  createSchedule({ projectId, playbookId, everyMinutes, budgetUsd = null, enabled = true, id = `schedule-${randomUUID()}` }) {
+    if (!this.getProject(projectId)) throw new Error(`Project not found: ${projectId}`)
+    const playbook = this.getPlaybook(playbookId)
+    if (!playbook || playbook.projectId !== projectId) throw new Error('Playbook not found in this project.')
+    if (budgetUsd !== null && budgetUsd !== undefined && (!Number.isFinite(Number(budgetUsd)) || Number(budgetUsd) <= 0)) {
+      throw new Error('A schedule budget must be a positive number or null.')
+    }
+    const ceiling = budgetUsd === null || budgetUsd === undefined ? null : Number(budgetUsd)
+    const minutes = Number(everyMinutes)
+    if (!Number.isFinite(minutes) || minutes < 1 || minutes > 43200) throw new Error('Schedule interval must be 1 to 43200 minutes.')
+    const now = Date.now()
+    this.database.prepare('INSERT INTO schedules(id, project_id, playbook_id, every_minutes, budget_usd, enabled, next_fire_at, last_run_id, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, projectId, playbookId, Math.floor(minutes), ceiling, enabled ? 1 : 0, now + Math.floor(minutes) * 60_000, null, now)
+    return this.getSchedule(id)
+  }
+
+  getSchedule(id) {
+    const row = this.database.prepare('SELECT * FROM schedules WHERE id = ?').get(id)
+    if (!row) return null
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      playbookId: row.playbook_id,
+      everyMinutes: Number(row.every_minutes),
+      budgetUsd: row.budget_usd === null || row.budget_usd === undefined ? null : Number(row.budget_usd),
+      enabled: Number(row.enabled) === 1,
+      nextFireAt: Number(row.next_fire_at),
+      lastRunId: row.last_run_id ?? null,
+      createdAt: Number(row.created_at),
+    }
+  }
+
+  listSchedules(projectId) {
+    return this.database.prepare('SELECT * FROM schedules WHERE project_id = ? ORDER BY created_at DESC').all(projectId).map((row) => this.getSchedule(row.id))
+  }
+
+  listDueSchedules(now) {
+    return this.database.prepare('SELECT * FROM schedules WHERE enabled = 1 AND next_fire_at <= ? ORDER BY next_fire_at ASC').all(now).map((row) => this.getSchedule(row.id))
+  }
+
+  updateSchedule(id, patch = {}) {
+    const current = this.getSchedule(id)
+    if (!current) throw new Error(`Schedule not found: ${id}`)
+    const enabled = patch.enabled === undefined ? current.enabled : Boolean(patch.enabled)
+    let budgetUsd = current.budgetUsd
+    if (patch.budgetUsd !== undefined) {
+      budgetUsd = patch.budgetUsd === null ? null : Number(patch.budgetUsd)
+      if (budgetUsd !== null && (!Number.isFinite(budgetUsd) || budgetUsd <= 0)) throw new Error('A schedule budget must be a positive number or null.')
+    }
+    this.database.prepare('UPDATE schedules SET enabled = ?, budget_usd = ? WHERE id = ?').run(enabled ? 1 : 0, budgetUsd, id)
+    return this.getSchedule(id)
+  }
+
+  markScheduleFired(id, { runId = null, now = Date.now() } = {}) {
+    const current = this.getSchedule(id)
+    if (!current) return null
+    this.database.prepare('UPDATE schedules SET last_run_id = ?, next_fire_at = ? WHERE id = ?').run(runId, now + current.everyMinutes * 60_000, id)
+    return this.getSchedule(id)
+  }
+
+  deleteSchedule(id) {
+    return Number(this.database.prepare('DELETE FROM schedules WHERE id = ?').run(id).changes) > 0
+  }
+
+  createGoal({ projectId, name, objective = '', acceptance = '', budgetUsd = null, id = `goal-${randomUUID()}` }) {
+    const title = typeof name === 'string' ? name.trim().slice(0, 200) : ''
+    if (!title) throw new Error('A goal needs a name.')
+    if (!this.getProject(projectId)) throw new Error(`Project not found: ${projectId}`)
+    if (budgetUsd !== null && budgetUsd !== undefined && (!Number.isFinite(Number(budgetUsd)) || Number(budgetUsd) <= 0)) {
+      throw new Error('A goal budget must be a positive number or null.')
+    }
+    const now = Date.now()
+    this.database.prepare('INSERT INTO goals(id, project_id, name, objective, acceptance, budget_usd, status, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, projectId, title, String(objective ?? '').slice(0, 2000), String(acceptance ?? '').slice(0, 2000), budgetUsd ?? null, 'open', now)
+    return this.getGoal(id)
+  }
+
+  getGoal(id) {
+    const row = this.database.prepare('SELECT * FROM goals WHERE id = ?').get(id)
+    if (!row) return null
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      name: row.name,
+      objective: row.objective ?? '',
+      acceptance: row.acceptance ?? '',
+      budgetUsd: row.budget_usd === null || row.budget_usd === undefined ? null : Number(row.budget_usd),
+      status: row.status,
+      createdAt: Number(row.created_at),
+    }
+  }
+
+  listGoals(projectId) {
+    return this.database.prepare('SELECT * FROM goals WHERE project_id = ? ORDER BY created_at DESC').all(projectId).map((row) => this.getGoal(row.id))
+  }
+
+  deleteGoal(id) {
+    return Number(this.database.prepare('DELETE FROM goals WHERE id = ?').run(id).changes) > 0
+  }
+
+  listGoalRuns(goalId) {
+    return this.database.prepare('SELECT r.* FROM runs r JOIN goal_runs g ON g.run_id = r.id WHERE g.goal_id = ? ORDER BY r.created_at ASC').all(goalId).map(runFromRow)
+  }
+
+  goalSpend(goalId) {
+    const runs = this.listGoalRuns(goalId)
+    return runs.reduce((total, run) => total + this.spendForRun(run.id).costUsd, 0)
   }
 
   /** Create the execution rows for a plan, reusing any that already exist. */

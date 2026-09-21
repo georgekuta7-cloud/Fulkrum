@@ -10,7 +10,7 @@ import { money, statusTone } from '../lib/tones'
  * because a control you use twice a day does not deserve permanent pixels.
  */
 
-export type CenterView = 'graph' | 'chat'
+export type CenterView = 'graph' | 'chat' | 'marketplace' | 'arsenal' | 'automations'
 export type InspectorTab = 'plan' | 'activity' | 'artifacts' | 'files'
 
 function SpendBreakdown({ bridge }: { bridge: Bridge }) {
@@ -70,7 +70,21 @@ export function TopBar({ bridge, view, onViewChange, onOpenInspector, onOpenSett
   }, [menuOpen, spendOpen])
 
   if (!run) {
-    return <header className="topbar"><span className="muted">fulkrum</span></header>
+    // The store and the arsenal belong to the workspace, not to a run — a
+    // fresh install with no runs yet must still reach them.
+    return (
+      <header className="topbar">
+        <span className="muted">fulkrum</span>
+        <span className="topbar-spacer" />
+        <div className="view-toggle" role="tablist" aria-label="Center view">
+          <button type="button" role="tab" aria-selected={view === 'marketplace'} className={view === 'marketplace' ? 'on' : ''} onClick={() => onViewChange('marketplace')}>📦 Store</button>
+          <button type="button" role="tab" aria-selected={view === 'arsenal'} className={view === 'arsenal' ? 'on' : ''} onClick={() => onViewChange('arsenal')}>🗡️ Arsenal</button>
+          <button type="button" role="tab" aria-selected={view === 'automations'} className={view === 'automations' ? 'on' : ''} onClick={() => onViewChange('automations')}>🔁 Automations</button>
+        </div>
+        <button type="button" className="icon" onClick={onOpenSettings} title="Settings"><Settings2 size={16} /></button>
+        <button type="button" className="icon" onClick={onToggleTheme} title="Toggle theme">{theme === 'dark' ? <Moon size={14} /> : <Sun size={14} />}</button>
+      </header>
+    )
   }
 
   const done = tasks.filter((task) => task.status === 'completed').length
@@ -108,8 +122,10 @@ export function TopBar({ bridge, view, onViewChange, onOpenInspector, onOpenSett
         <button type="button" role="tab" aria-selected={view === 'chat'} className={view === 'chat' ? 'on' : ''} onClick={() => onViewChange('chat')}>
           💬 Chat {approval ? <span className="attn-dot" title="A decision is waiting" /> : null}
         </button>
+        <button type="button" role="tab" aria-selected={view === 'marketplace'} className={view === 'marketplace' ? 'on' : ''} onClick={() => onViewChange('marketplace')}>📦 Store</button>
+        <button type="button" role="tab" aria-selected={view === 'arsenal'} className={view === 'arsenal' ? 'on' : ''} onClick={() => onViewChange('arsenal')}>🗡️ Arsenal</button>
+        <button type="button" role="tab" aria-selected={view === 'automations'} className={view === 'automations' ? 'on' : ''} onClick={() => onViewChange('automations')}>🔁 Automations</button>
       </div>
-
       <div className="menu-wrap">
         <button type="button" className="icon topbar-menu-button" onClick={() => { setMenuOpen((open) => !open); setSpendOpen(false) }} aria-expanded={menuOpen} title="Run controls and views">
           <MoreHorizontal size={16} />

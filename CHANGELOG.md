@@ -6,6 +6,64 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **The marketplace is a real store.** 📦 Store and 🗡️ Arsenal are top-level
+  views, reachable with no run open. The store lists signed index entries next
+  to community imports with the trust difference badged, not fine-printed;
+  each card shows scan findings, license, compatibility, and download signals.
+  Skills stage from a `SKILL.md` URL or local directory (validated against the
+  Agent Skills spec, heuristically scanned, hash-pinned) or surface by
+  browsing a public registry listing — staging is review, the Install button
+  is the approval. Three builtin packs (`tdd-autopilot`, `debug-hunt`,
+  `scout-research`) seed the store on first boot, and the arsenal shows what
+  workers can use with update state and one-click uninstall that revokes
+  scoped grants.
+- **Automations has its own room.** 🔁 Automations gathers playbooks, schedules,
+  goals, and blueprints — project-scoped, card-shelved, create forms inline —
+  out of the settings drawer, which keeps health, permissions, memory, and
+  money. The drawer shrinks by a third; nothing it lost went further than one
+  click away.
+- **The run is a living map.** The main screen graphs you, the Head, and one
+  node per plan task in dependency layers, with animated traffic on active
+  edges. Clicking a worker opens what it is doing — task, handoff, tool calls,
+  live text — and approvals land inside the waiting worker's sheet. A Graph /
+  Chat toggle centers the conversation with a context rail beside it.
+- **The chat narrates the work.** Messages interleave with plan cards (inline
+  approve and redraft), per-task work cards showing tool calls with +/− stats,
+  live thinking lines, and a review card that closes with the verdict.
+- **Time travel.** A timeline scrubber reconstructs the run's written files at
+  any event index — every undo hash-verified, every gap named instead of
+  guessed. Restoring writes old bytes through the same approval path as any
+  write.
+- **Skills, plugins, and a marketplace.** Markdown knowledge packs inject by
+  trigger; declarative HTTP manifests run fixed destinations through the pinned
+  path and the matrix; a signed index distributes both, installs pin hashes,
+  and uninstalls revoke scoped grants. Bots discover it all via `skills.find`.
+- **Playbooks, schedules, goals, blueprints.** Approved plans save as reusable
+  playbooks whose runs inherit the approval; schedules fire them on intervals;
+  goals group runs under one shared ceiling; blueprints apply team setups
+  through a previewed diff that can never silently elevate.
+- **Learnings and AGENTS.md.** The planner reads workspace context and recent
+  learnings; reviewed runs that produced evidence teach up to three durable
+  facts each, editable and deletable in settings.
+- **More roles, cast like a team.** Architect (markdown-only, matrix-enforced),
+  Editor (three steps, one write per turn), and Debugger join Scout and Forge.
+  The approval surface shows who plays whom; casting never touches the plan
+  hash. Repeated failures and exhausted budgets emit casting advice, and
+  declared escalation policies re-route a role mid-run, on the record.
+- **Workers ask each other through the ledger.** `task.query` lets a worker
+  question a sibling role; the Head answers from recorded evidence and says
+  when the answer is not there. Readers keep reading while a human question
+  pends; writers still park.
+- **Claims are objects.** Worker evidence becomes typed claims linked to their
+  rows; verdicts must cite recorded evidence or degrade to UNKNOWN; shell
+  commands and post-write checks land as receipts the verifier cites. The
+  review reports approved outcomes against proven ones.
+- **Post-write checks and repo maps.** Projects can declare a check command
+  that runs in the container after every write, recorded as a receipt. The
+  `workspace.map` tool outlines code files so orientation costs one call.
+- **Complexity scores and checkpoints.** Drafts carry a 1–10 advisory score on
+  the approval surface. Every modifying write leaves a checkpoint event
+  pointing at its superseded bytes; restores go through approval.
 - **Tasks hand off evidence, not transcripts.** A worker ends its summary with a
   fenced evidence block — findings with paths, artifacts with hashes, test
   receipts, open questions — validated like a plan and stored in a ledger.

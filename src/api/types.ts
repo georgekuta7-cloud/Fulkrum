@@ -51,6 +51,7 @@ export type Run = {
   mode: string
   permissionMode: string
   planId?: string | null
+  goalId?: string | null
   planVersion: number
   budgetUsd: number | null
   interruptionReason?: string | null
@@ -90,6 +91,7 @@ export type Plan = {
   fallbackReason?: string | null
   created?: boolean
   demo?: boolean
+  complexity?: { score: number; factors: string[] } | null
 }
 
 export type RunEvent = {
@@ -211,6 +213,21 @@ export type ConfigReport = {
   providers: Array<{ id: string; label: string; envKey: string; configured: boolean; hasKey: boolean; keySource: string | null }>
 }
 
+export type Claim = {
+  id: string
+  runId: string
+  taskId: string
+  kind: 'finding' | 'artifact' | 'test'
+  summary: string
+  path: string | null
+  startLine: number | null
+  endLine: number | null
+  sha256: string | null
+  evidenceId: string | null
+  verdict: 'PASS' | 'FAIL' | 'UNKNOWN' | null
+  createdAt: number
+}
+
 export type AppSetting = {
   name: string
   group: string
@@ -222,4 +239,35 @@ export type AppSetting = {
   source: 'env' | 'db' | 'default'
   restartRequired: boolean
   problem: string | null
+}
+
+export type MarketplaceFinding = {
+  severity: 'high' | 'medium'
+  signal: string
+}
+
+export type MarketplaceEntry = {
+  kind: string
+  id: string
+  version: string
+  sha256: string | null
+  url: string | null
+  description: string
+  trust: 'verified' | 'community'
+  license?: string
+  compatibility?: string
+  allowedTools?: string
+  author?: string
+  findings?: MarketplaceFinding[]
+  signals?: { downloads: number; stars: number }
+  provenance?: { source: string; fetchedAt: number }
+}
+
+export type ArsenalItem = {
+  kind: string
+  id: string
+  tool?: string
+  version: string | null
+  description: string
+  updateAvailable: boolean
 }

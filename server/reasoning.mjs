@@ -48,16 +48,30 @@ const anthropicBudget = { minimal: 1024, low: 2048, medium: 8192, high: 16384 }
  * Translate a level into the fields a protocol's request body understands.
  * Returns an object to spread into the body, or an empty object when the level
  * is unset or the model does not reason — the caller spreads it unconditionally.
+ *
+ * `maxOutputTokens` guards the budgeted dialects: Anthropic requires a thinking
+ * budget strictly below `max_tokens`, so the budget is clamped to leave the
+ * answer room, and `max_tokens` is raised above the budget so the two never
+ * contradict. Without it the provider default ladder is used untouched.
  */
-export function reasoningPayload(protocol, model, level) {
+export function reasoningPayload(protocol, model, level, maxOutputTokens = null) {
   const normalized = normalizeReasoningLevel(level)
   if (!normalized || !reasoningCapable(model)) return {}
+  const budget = anthropicBudget[normalized] ?? anthropicBudget.medium
   if (protocol === 'anthropic') {
-    return { thinking: { type: 'enabled', budget_tokens: anthropicBudget[normalized] ?? anthropicBudget.medium } }
+    // Leave headroom for the answer. Without a ceiling the ladder is used
+    // untouched; with one, a budget that fits leaves max_tokens alone, and a
+    // budget that does not is capped to half the ceiling while the ceiling is
+    // lifted past it — so the two never ask for the impossible.
+    const ceiling = typeof maxOutputTokens === 'number' && maxOutputTokens > 0 ? maxOutputTokens : null
+    if (ceiling === null) return { thinking: { type: 'enabled', budget_tokens: budget } }
+    const headroom = Math.max(Math.floor(ceiling / 2), 1024)
+    if (budget <= headroom) return { thinking: { type: 'enabled', budget_tokens: budget } }
+    return { thinking: { type: 'enabled', budget_tokens: headroom }, max_tokens: Math.max(ceiling, headroom + 4096) }
   }
   if (protocol === 'google') {
     // Gemini reads a numeric budget; reuse the same ladder.
-    return { thinkingConfig: { thinkingBudget: anthropicBudget[normalized] ?? anthropicBudget.medium } }
+    return { thinkingConfig: { thinkingBudget: budget } }
   }
   // openai-compatible: grok and gpt-5 both take an effort word.
   return { reasoning_effort: normalized }

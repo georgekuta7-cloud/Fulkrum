@@ -17,8 +17,26 @@ export type GraphNode = {
   subtitle: string
   state: GraphNodeState
   costUsd: number | null
+  /** Who plays this role, e.g. "Grok · grok-4" — null when unrouted. */
+  model: string | null
   x: number
   y: number
+}
+
+export type RouteProvider = { id: string; label: string; model: string }
+
+/**
+ * What the casting says, in words. A route is `Label` or `Label · model`;
+ * anything unresolvable is shown verbatim rather than hidden, so a stale route
+ * is visible instead of silently wrong.
+ */
+export function resolveRouteDisplay(routing: Record<string, string>, providers: RouteProvider[], role: string): string | null {
+  const route = (routing[role] ?? '').trim()
+  if (!route) return null
+  const [label, model] = route.split('·').map((part) => part.trim())
+  const provider = providers.find((entry) => entry.id === (label ?? '').toLowerCase() || entry.label.toLowerCase() === (label ?? '').toLowerCase())
+  if (!provider) return route
+  return model ? `${provider.label} · ${model}` : `${provider.label} · ${provider.model}`
 }
 
 export type GraphEdge = {
@@ -31,7 +49,7 @@ export type GraphEdge = {
 
 export type GraphModel = { nodes: GraphNode[]; edges: GraphEdge[] }
 
-const ROLE_LABEL: Record<string, string> = { research: 'Scout', builder: 'Forge', head: 'Head AI' }
+const ROLE_LABEL: Record<string, string> = { research: 'Scout', builder: 'Forge', head: 'Head AI', architect: 'Architect', editor: 'Editor', debug: 'Debugger', reviewer: 'Reviewer' }
 export const roleLabel = (role: string) => ROLE_LABEL[role] ?? role
 
 /** Dependency depth: a task with no deps sits in layer 0, everything else one past its deepest prerequisite. */
@@ -64,8 +82,10 @@ export function buildGraph(input: {
   tasks: Task[]
   toolCalls: ToolCall[]
   byTask: Array<{ taskId: string | null; agentId: string | null; costUsd: number }>
+  routing?: Record<string, string>
+  providers?: RouteProvider[]
 }): GraphModel {
-  const { run, plan, tasks, toolCalls, byTask } = input
+  const { run, plan, tasks, toolCalls, byTask, routing = {}, providers = [] } = input
   const nodes: GraphNode[] = []
   const edges: GraphEdge[] = []
   if (!run) return { nodes, edges }
@@ -74,9 +94,9 @@ export function buildGraph(input: {
   const waitingCall = toolCalls.find((call) => call.status === 'approval_required')
   const waitingAgent = waitingCall?.agentId ?? null
 
-  nodes.push({ id: 'you', kind: 'you', agentId: null, title: 'You', subtitle: plan?.plan.status === 'approved' ? `approved plan v${plan.plan.version}` : 'in control', state: 'idle', costUsd: null, x: 50, y: 9 })
+  nodes.push({ id: 'you', kind: 'you', agentId: null, title: 'You', subtitle: plan?.plan.status === 'approved' ? `approved plan v${plan.plan.version}` : 'in control', state: 'idle', costUsd: null, model: null, x: 50, y: 9 })
   const headWorking = runLive || waitingAgent !== null
-  nodes.push({ id: 'head', kind: 'head', agentId: 'head', title: 'Head AI', subtitle: run.status === 'review' ? 'review ready' : headWorking ? 'supervising' : run.status.replaceAll('_', ' '), state: run.status === 'review' ? 'done' : headWorking ? 'working' : 'idle', costUsd: null, x: 50, y: 27 })
+  nodes.push({ id: 'head', kind: 'head', agentId: 'head', title: 'Head AI', subtitle: run.status === 'review' ? 'review ready' : headWorking ? 'supervising' : run.status.replaceAll('_', ' '), state: run.status === 'review' ? 'done' : headWorking ? 'working' : 'idle', costUsd: null, model: resolveRouteDisplay(routing, providers, 'head'), x: 50, y: 27 })
 
   edges.push({ id: 'e-you-head', from: 'you', to: 'head', label: 'direction', tone: runLive ? 'flow' : 'plain' })
 
@@ -121,6 +141,7 @@ export function buildGraph(input: {
         subtitle: `${planTask.title}${task?.stepCount ? ` · step ${task.stepCount}` : ''}`,
         state,
         costUsd: cost,
+        model: resolveRouteDisplay(routing, providers, task?.agentId ?? planTask.role),
         x,
         y,
       })

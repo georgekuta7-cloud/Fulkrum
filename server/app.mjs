@@ -6,16 +6,23 @@ import { buildArtifacts } from './artifacts.mjs'
 import { createZip } from './zip.mjs'
 import { canonicalJson } from './canonicalJson.mjs'
 import { settingReport } from './config.mjs'
-import { buildRunReport, reportToMarkdown } from './runReport.mjs'
+import { buildGoalReport, buildRunReport, reportToMarkdown } from './runReport.mjs'
+import { parseInterval } from './schedules.mjs'
 import { diffHunks } from './diff.mjs'
 import { findInjectionAttempts } from './injection.mjs'
 import { formatSseFrame } from './sse.mjs'
 import { maybeExportTrace } from './otel.mjs'
 import { BudgetExceededError } from './orchestrator.mjs'
 import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
-import { PERMISSION_MODES, fingerprintToolCall, permissionMatrix, standingScopeFor, validateStandingScope } from './permissions.mjs'
+import { PERMISSION_MODES, fingerprintToolCall, permissionMatrix, resolveWorkspacePath, standingScopeFor, validateStandingScope } from './permissions.mjs'
 import { scanArguments } from './redaction.mjs'
-import { planContentHash, validatePlan } from './plans.mjs'
+import { planContentHash, scoreComplexity, validatePlan } from './plans.mjs'
+import { PlaybookError, instantiatePlaybookRun } from './playbooks.mjs'
+import { verifySkillPins } from './marketplace.mjs'
+import { applyBlueprint, listBlueprints, previewBlueprint, readBlueprint, validateBlueprint } from './blueprints.mjs'
+import { reconstructAt } from './timeline.mjs'
+import { assertEntryId, installMarketplaceEntry, listInstalledArsenal, marketplaceEnabled, readMarketplaceCache, refreshMarketplace, uninstallMarketplaceEntry } from './marketplace.mjs'
+import { fetchRegistryCatalog, importSkillFromDirectory, importSkillFromUrl, mergeCatalogs, readLocalCatalog, stageCommunityEntry } from './marketplace-import.mjs'
 import { PlanDraftError } from './planService.mjs'
 import { agentRoles } from './roles.mjs'
 import { resolveReasoning } from './reasoning.mjs'
@@ -37,6 +44,7 @@ class HttpError extends Error {
 
 const problemTitles = {
   400: 'Bad request',
+  402: 'Budget reached',
   403: 'Forbidden',
   404: 'Not found',
   405: 'Method not allowed',
@@ -323,6 +331,12 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       const safeOutput = toolBroker.redact(output)
       store.updateToolCall(toolCall.id, { status: 'completed', output: safeOutput })
       store.appendEvent({ runId, type: 'tool.completed', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, name: toolCall.name, ...store.summarizeOutput(safeOutput), approved } })
+      if (toolCall.name === 'workspace.write' && typeof safeOutput.previousSha256 === 'string') {
+        // Same snapshot as the worker path: a restorable past with a pointer
+        // to the pre-write snapshot. Direct writes get them too, so the
+        // timeline is uniform no matter who wrote.
+        store.appendEvent({ runId, type: 'run.snapshot', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, path: safeOutput.path, previousSha256: safeOutput.previousSha256 } })
+      }
       const injectionAttempts = findInjectionAttempts(safeOutput)
       if (injectionAttempts.length) {
         store.appendEvent({ runId, type: 'tool.output.suspicious', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, name: toolCall.name, patterns: injectionAttempts, note: 'Tool output contained text aimed at the model. It is data, and was treated as data.' } })
@@ -373,7 +387,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
   const submitToolCall = async ({ runId, run, name, input, agentId = 'head', idempotencyKey = null }) => {
     const tool = toolBroker.get(name)
     const resolution = toolBroker.resolve(name, input)
-    const decision = toolBroker.authorize({ mode: run?.permissionMode, tool, resolution })
+    const decision = toolBroker.authorize({ mode: run?.permissionMode, tool, resolution, agentId })
     // A standing grant is consulted only when the decision was already "ask": it
     // softens a prompt and can never override a refusal.
     const standing = decision.decision === 'ask' && resolution.ok ? store.findStandingGrant({ toolName: name, resolved: resolution.resolved }) : null
@@ -683,6 +697,378 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         return
       }
 
+      const projectLearningsMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/learnings(?:\/([^/]+))?$/)
+      if (projectLearningsMatch) {
+        const projectId = decodeURIComponent(projectLearningsMatch[1])
+        const learnId = projectLearningsMatch[2] ? decodeURIComponent(projectLearningsMatch[2]) : null
+        if (!store.getProject(projectId)) {
+          sendJson(response, 404, { error: 'Project not found.' })
+          return
+        }
+        if (request.method === 'GET' && !learnId) {
+          sendJson(response, 200, { learnings: store.listProjectLearnings(projectId) })
+          return
+        }
+        if (request.method === 'DELETE' && learnId) {
+          // A learning can only be deleted from its own project: memory you
+          // cannot scope is memory you cannot trust.
+          const owned = store.listProjectLearnings(projectId).some((learning) => learning.id === learnId)
+          if (!owned) {
+            sendJson(response, 404, { error: 'Learning not found in this project.' })
+            return
+          }
+          store.deleteLearning(learnId)
+          sendJson(response, 200, { removed: learnId, learnings: store.listProjectLearnings(projectId) })
+          return
+        }
+        sendJson(response, 405, { error: 'Use GET to list learnings or DELETE to remove one.' })
+        return
+      }
+
+      const projectPlaybooksMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/playbooks(?:\/([^/]+)(?:\/runs)?)?$/)
+      if (projectPlaybooksMatch) {
+        const projectId = decodeURIComponent(projectPlaybooksMatch[1])
+        const playbookId = projectPlaybooksMatch[2] ? decodeURIComponent(projectPlaybooksMatch[2]) : null
+        const isRuns = requestUrl.pathname.endsWith('/runs')
+        if (!store.getProject(projectId)) {
+          sendJson(response, 404, { error: 'Project not found.' })
+          return
+        }
+        // Save: only an approved plan can become a playbook. Automating a
+        // draft nobody signed off on is the failure this table exists to
+        // prevent, so drafts are refused rather than upgraded.
+        if (request.method === 'POST' && !playbookId) {
+          try {
+            const body = await readJson(request)
+            const run = body.runId ? store.getRun(String(body.runId)) : null
+            if (!run || run.projectId !== projectId) {
+              sendJson(response, 404, { error: 'Run not found in this project.' })
+              return
+            }
+            const plan = run.planId ? store.getPlan(run.planId) : null
+            if (!plan || plan.plan.status !== 'approved') {
+              sendJson(response, 409, { error: 'Only an approved plan can become a playbook. Approve it first.' })
+              return
+            }
+            const pins = Array.isArray(body.skills) ? body.skills : []
+            const drifted = verifySkillPins({ workspaceRoot: toolBroker.workspaceRoot, pins })
+            if (drifted.length) {
+              sendJson(response, 400, { error: `Cannot pin skills that are not installed as given: ${drifted.join(', ')}.` })
+              return
+            }
+            const playbook = store.createPlaybook({ projectId, name: body.name, plan, budgetUsd: run.budgetUsd ?? null, skills: pins.map((pin) => ({ id: pin.id, sha256: String(pin.sha256).toLowerCase() })) })
+            sendJson(response, 201, { playbook })
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : 'Could not save the playbook.' })
+          }
+          return
+        }
+        if (request.method === 'GET' && !playbookId) {
+          sendJson(response, 200, { playbooks: store.listPlaybooks(projectId) })
+          return
+        }
+        if (request.method === 'DELETE' && playbookId && !isRuns) {
+          const playbook = store.getPlaybook(playbookId)
+          if (!playbook || playbook.projectId !== projectId) {
+            sendJson(response, 404, { error: 'Playbook not found in this project.' })
+            return
+          }
+          store.deletePlaybook(playbookId)
+          sendJson(response, 200, { removed: playbookId, playbooks: store.listPlaybooks(projectId) })
+          return
+        }
+        // Instantiate: the run inherits the approval because it IS the
+        // approved bytes — the hash is recomputed and must match, or the
+        // template drifted and the run refuses instead of riding a stale yes.
+        // Instantiate: shared with the scheduler, so a fired schedule and a
+        // clicked button run the same bytes through the same hash check.
+        if (request.method === 'POST' && playbookId && isRuns) {
+          try {
+            const body = await readJson(request)
+            const routing = body.routing ?? store.getProject(projectId)?.project?.settings?.routing ?? {}
+            const { run, plan } = instantiatePlaybookRun({ store, orchestrator, projectId, playbookId, permissionMode: body.permissionMode ?? 'selective', routing, workspaceRoot: toolBroker.workspaceRoot, goalId: body.goalId ?? null })
+            sendJson(response, 201, { run, plan })
+          } catch (error) {
+            const status = error instanceof PlaybookError ? error.status : 400
+            sendJson(response, status, { error: error instanceof Error ? error.message : 'Could not start the playbook run.' })
+          }
+          return
+        }
+        sendJson(response, 405, { error: 'Use GET to list, POST to save or run, DELETE to remove.' })
+        return
+      }
+
+      const projectSchedulesMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/schedules(?:\/([^/]+))?$/)
+      if (projectSchedulesMatch) {
+        const projectId = decodeURIComponent(projectSchedulesMatch[1])
+        const scheduleId = projectSchedulesMatch[2] ? decodeURIComponent(projectSchedulesMatch[2]) : null
+        if (!store.getProject(projectId)) {
+          sendJson(response, 404, { error: 'Project not found.' })
+          return
+        }
+        if (request.method === 'GET' && !scheduleId) {
+          sendJson(response, 200, { schedules: store.listSchedules(projectId) })
+          return
+        }
+        if (request.method === 'POST' && !scheduleId) {
+          try {
+            const body = await readJson(request)
+            const everyMinutes = parseInterval(body.every)
+            if (!everyMinutes) {
+              sendJson(response, 400, { error: 'Schedule on an interval like "every 30m", "every 6h", or "every 1d".' })
+              return
+            }
+            const schedule = store.createSchedule({ projectId, playbookId: body.playbookId, everyMinutes, budgetUsd: body.budgetUsd ?? null, enabled: body.enabled ?? true })
+            sendJson(response, 201, { schedule })
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : 'Could not create the schedule.' })
+          }
+          return
+        }
+        if (!scheduleId) {
+          sendJson(response, 405, { error: 'Use GET to list or POST to create a schedule.' })
+          return
+        }
+        const schedule = store.getSchedule(scheduleId)
+        if (!schedule || schedule.projectId !== projectId) {
+          sendJson(response, 404, { error: 'Schedule not found in this project.' })
+          return
+        }
+        if (request.method === 'PATCH') {
+          try {
+            const body = await readJson(request)
+            sendJson(response, 200, { schedule: store.updateSchedule(scheduleId, { enabled: body.enabled, budgetUsd: body.budgetUsd }) })
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : 'Could not update the schedule.' })
+          }
+          return
+        }
+        if (request.method === 'DELETE') {
+          store.deleteSchedule(scheduleId)
+          sendJson(response, 200, { removed: scheduleId, schedules: store.listSchedules(projectId) })
+          return
+        }
+        sendJson(response, 405, { error: 'Use GET, PATCH, or DELETE on a schedule.' })
+        return
+      }
+
+      const projectGoalsMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/goals(?:\/([^/]+)(?:\/(runs|report))?)?$/)
+      if (projectGoalsMatch) {
+        const projectId = decodeURIComponent(projectGoalsMatch[1])
+        const goalId = projectGoalsMatch[2] ? decodeURIComponent(projectGoalsMatch[2]) : null
+        const sub = projectGoalsMatch[3] ?? null
+        if (!store.getProject(projectId)) {
+          sendJson(response, 404, { error: 'Project not found.' })
+          return
+        }
+        if (request.method === 'GET' && !goalId) {
+          sendJson(response, 200, { goals: store.listGoals(projectId).map((goal) => ({ ...goal, spendUsd: store.goalSpend(goal.id), runCount: store.listGoalRuns(goal.id).length })) })
+          return
+        }
+        if (request.method === 'POST' && !goalId) {
+          try {
+            const body = await readJson(request)
+            const goal = store.createGoal({ projectId, name: body.name, objective: body.objective, acceptance: body.acceptance, budgetUsd: body.budgetUsd ?? null })
+            sendJson(response, 201, { goal })
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : 'Could not create the goal.' })
+          }
+          return
+        }
+        if (!goalId) {
+          sendJson(response, 405, { error: 'Use GET to list or POST to create a goal.' })
+          return
+        }
+        const goal = store.getGoal(goalId)
+        if (!goal || goal.projectId !== projectId) {
+          sendJson(response, 404, { error: 'Goal not found in this project.' })
+          return
+        }
+        if (request.method === 'GET' && sub === 'report') {
+          sendJson(response, 200, buildGoalReport({ store, goalId }))
+          return
+        }
+        if (request.method === 'POST' && sub === 'runs') {
+          try {
+            const body = await readJson(request)
+            if (goal.budgetUsd !== null && store.goalSpend(goalId) >= goal.budgetUsd) {
+              sendJson(response, 402, { error: `Goal "${goal.name}" reached its $${goal.budgetUsd.toFixed(2)} budget.` })
+              return
+            }
+            const run = store.createRun({ projectId, permissionMode: body.permissionMode ?? 'selective', goalId })
+            sendJson(response, 201, { run })
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : 'Could not start the goal run.' })
+          }
+          return
+        }
+        if (request.method === 'DELETE' && !sub) {
+          store.deleteGoal(goalId)
+          sendJson(response, 200, { removed: goalId, goals: store.listGoals(projectId) })
+          return
+        }
+        sendJson(response, 405, { error: 'Use GET report, POST runs, or DELETE on a goal.' })
+        return
+      }
+
+      if (request.method === 'GET' && requestUrl.pathname === '/api/blueprints') {
+        sendJson(response, 200, { blueprints: listBlueprints() })
+        return
+      }
+
+      if (request.method === 'GET' && requestUrl.pathname === '/api/marketplace') {
+        // Signed entries carry the registry's vouch; community entries carry
+        // provenance, a scan, and a pin. Staged bytes never leave the server —
+        // the listing is for deciding, the POST install is for approving.
+        const signed = marketplaceEnabled() ? readMarketplaceCache() : null
+        const { entries: local } = readLocalCatalog()
+        const entries = mergeCatalogs(signed?.entries ?? [], local).map((entry) => {
+          const { staged: _staged, ...publicEntry } = entry
+          return publicEntry
+        })
+        sendJson(response, 200, {
+          enabled: marketplaceEnabled() || entries.length > 0,
+          signed: marketplaceEnabled(),
+          entries,
+          fetchedAt: signed?.fetchedAt ?? null,
+          stale: marketplaceEnabled() && !signed,
+        })
+        return
+      }
+
+      if (request.method === 'POST' && requestUrl.pathname === '/api/marketplace/browse') {
+        // Read a public registry listing without staging anything: browsing
+        // changes nothing, so it needs no approval. Importing a pick does.
+        try {
+          const body = await readJson(request)
+          const registry = String(body.registry ?? '').trim()
+          if (!registry) {
+            sendJson(response, 400, { error: 'Give a registry URL to browse.' })
+            return
+          }
+          const catalog = await fetchRegistryCatalog(registry)
+          sendJson(response, 200, catalog)
+        } catch (error) {
+          sendJson(response, 502, { error: error instanceof Error ? error.message : 'Could not read the registry.' })
+        }
+        return
+      }
+
+      if (request.method === 'POST' && requestUrl.pathname === '/api/marketplace/import') {
+        // Stage one skill for review: validated against the Agent Skills spec,
+        // heuristically scanned, hash-pinned. Staging is not installing — the
+        // bytes sit in the local catalog until a human POSTs the install.
+        try {
+          const body = await readJson(request)
+          const url = String(body.url ?? '').trim()
+          const localPath = String(body.localPath ?? '').trim()
+          if (!url && !localPath) {
+            sendJson(response, 400, { error: 'Give a skill URL or a localPath to a directory holding SKILL.md.' })
+            return
+          }
+          const draft = url ? await importSkillFromUrl(url) : importSkillFromDirectory(localPath)
+          stageCommunityEntry(draft)
+          const { staged: _staged, ...publicDraft } = draft
+          sendJson(response, 201, { staged: publicDraft })
+        } catch (error) {
+          sendJson(response, 422, { error: error instanceof Error ? error.message : 'Could not import the skill.' })
+        }
+        return
+      }
+
+      if (request.method === 'POST' && requestUrl.pathname === '/api/marketplace/refresh') {
+        try {
+          const fresh = await refreshMarketplace()
+          sendJson(response, 200, { entries: fresh.entries, fetchedAt: fresh.fetchedAt, problems: fresh.problems ?? [] })
+        } catch (error) {
+          sendJson(response, 502, { error: error instanceof Error ? error.message : 'Could not refresh the marketplace.' })
+        }
+        return
+      }
+
+      if (request.method === 'GET' && requestUrl.pathname === '/api/arsenal') {
+        const signed = marketplaceEnabled() ? readMarketplaceCache() : null
+        const { entries: local } = readLocalCatalog()
+        const index = mergeCatalogs(signed?.entries ?? [], local)
+        sendJson(response, 200, { ...listInstalledArsenal({ workspaceRoot: toolBroker.workspaceRoot, index }) })
+        return
+      }
+
+      const marketplaceInstallMatch = requestUrl.pathname.match(/^\/api\/marketplace\/([^/]+)$/)
+      if (marketplaceInstallMatch) {
+        const id = decodeURIComponent(marketplaceInstallMatch[1])
+        try {
+          assertEntryId(id)
+        } catch {
+          sendJson(response, 404, { error: 'Unknown marketplace entry.' })
+          return
+        }
+        if (request.method === 'POST') {
+          // The POST is the approval: a human clicked install. The hash pins
+          // what was reviewed, and plugins re-validate through the same gate
+          // as hand-written manifests. Signed and community entries install
+          // through the same pin — the difference is who vouched, not the check.
+          try {
+            const signed = marketplaceEnabled() ? readMarketplaceCache() : null
+            const { entries: local } = readLocalCatalog()
+            const entry = mergeCatalogs(signed?.entries ?? [], local).find((item) => item.id === id)
+            if (!entry) {
+              sendJson(response, 404, { error: 'Unknown marketplace entry. Refresh the index or import it first.' })
+              return
+            }
+            const installed = await installMarketplaceEntry({ workspaceRoot: toolBroker.workspaceRoot, entry })
+            sendJson(response, 201, installed)
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : 'Could not install.' })
+          }
+          return
+        }
+        if (request.method === 'DELETE') {
+          const signed = marketplaceEnabled() ? readMarketplaceCache() : null
+          const { entries: local } = readLocalCatalog()
+          const removed = uninstallMarketplaceEntry({ workspaceRoot: toolBroker.workspaceRoot, store, id })
+          sendJson(response, 200, { ...removed, arsenal: listInstalledArsenal({ workspaceRoot: toolBroker.workspaceRoot, index: mergeCatalogs(signed?.entries ?? [], local) }) })
+          return
+        }
+        sendJson(response, 405, { error: 'Use POST to install or DELETE to uninstall.' })
+        return
+      }
+
+      const projectBlueprintsMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/blueprints\/(preview|apply)$/)
+      if (projectBlueprintsMatch) {
+        const projectId = decodeURIComponent(projectBlueprintsMatch[1])
+        const action = projectBlueprintsMatch[2]
+        if (!store.getProject(projectId)) {
+          sendJson(response, 404, { error: 'Project not found.' })
+          return
+        }
+        try {
+          const body = await readJson(request)
+          // A name references a filed blueprint; an object previews inline
+          // JSON (for trying a candidate before saving it as a file).
+          const candidate = body.blueprint ?? (typeof body.name === 'string' ? readBlueprint(body.name)?.blueprint : undefined)
+          if (!candidate) {
+            sendJson(response, 404, { error: 'Unknown blueprint. List /api/blueprints for what is filed.' })
+            return
+          }
+          const validation = validateBlueprint(candidate)
+          if (!validation.ok) {
+            sendJson(response, 400, { error: `That blueprint cannot be used: ${validation.problems.join(' ')}`, problems: validation.problems })
+            return
+          }
+          if (action === 'preview') {
+            sendJson(response, 200, { diff: previewBlueprint({ store, projectId, blueprint: validation.blueprint }) })
+            return
+          }
+          const applied = applyBlueprint({ store, toolBroker, projectId, blueprint: validation.blueprint })
+          sendJson(response, 200, { applied, settings: store.getProject(projectId)?.project?.settings ?? {} })
+          return
+        } catch (error) {
+          sendJson(response, 400, { error: error instanceof Error ? error.message : 'Could not apply the blueprint.' })
+          return
+        }
+      }
+
       if (request.method === 'DELETE' && projectMatch) {
         const projectId = decodeURIComponent(projectMatch[1])
         const detail = store.getProject(projectId)
@@ -713,7 +1099,29 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
             sendJson(response, 404, { error: 'Project not found.' })
             return
           }
-          sendJson(response, 201, { run: store.createRun({ projectId: body.projectId, mode: body.mode, permissionMode: body.permissionMode }) })
+          // A goal shares a budget ceiling across its runs: a new member run
+          // is refused once the goal has spent its budget. Overshoot is at
+          // most one run — the same guarantee run and daily ceilings make per
+          // call — because spend is only known after calls return.
+          if (body.goalId !== undefined && body.goalId !== null) {
+            const goal = store.getGoal(String(body.goalId))
+            if (!goal || goal.projectId !== body.projectId) {
+              sendJson(response, 404, { error: 'Goal not found in this project.' })
+              return
+            }
+            if (goal.budgetUsd !== null && store.goalSpend(goal.id) >= goal.budgetUsd) {
+              sendJson(response, 402, { error: `Goal "${goal.name}" reached its $${goal.budgetUsd.toFixed(2)} budget.` })
+              return
+            }
+          }
+          // Blueprinted defaults apply where the caller said nothing: the
+          // permission mode and the budget a blueprint set for this project.
+          const runDefaults = store.getProject(body.projectId)?.project?.settings?.defaults ?? {}
+          const created = store.createRun({ projectId: body.projectId, mode: body.mode, permissionMode: body.permissionMode ?? runDefaults.permissionMode ?? 'selective', goalId: body.goalId ?? null })
+          if (runDefaults.budgetUsd !== undefined && runDefaults.budgetUsd !== null) {
+            store.updateRun(created.id, { budgetUsd: Number(runDefaults.budgetUsd) })
+          }
+          sendJson(response, 201, { run: store.getRun(created.id) })
         } catch (error) {
           sendJson(response, error instanceof HttpError ? error.status : 400, { error: error instanceof Error ? error.message : 'Invalid run.' })
         }
@@ -1059,7 +1467,12 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         }
         if (request.method === 'GET') {
           const plan = store.getLatestPlanForRun(runId)
-          sendJson(response, plan ? 200 : 404, plan ? { ...plan, roles: agentRoles } : { error: 'This run has no plan yet.' })
+          if (!plan) {
+            sendJson(response, 404, { error: 'This run has no plan yet.' })
+            return
+          }
+          const direction = store.listMessages(runId).filter((message) => message.role === 'user').at(-1)?.content ?? ''
+          sendJson(response, 200, { ...plan, roles: agentRoles, complexity: scoreComplexity({ direction, plan: { objective: plan.plan.objective, tasks: plan.tasks } }) })
           return
         }
         if (request.method === 'PATCH') {
@@ -1096,8 +1509,10 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
             planVersion: edited.plan.version,
             ...(['review', 'interrupted'].includes(run.status) ? { status: 'planning' } : {}),
           })
-          store.appendEvent({ runId, type: 'plan.edited', agentId: 'head', payload: { planId: edited.plan.id, version: edited.plan.version, hash: edited.plan.contentHash, tasks: edited.tasks.length, replacedVersion: current.plan.version, replacedHash: current.plan.contentHash } })
-          sendJson(response, 200, { plan: edited.plan, tasks: edited.tasks, replacedVersion: current.plan.version })
+          const direction = store.listMessages(runId).filter((message) => message.role === 'user').at(-1)?.content ?? ''
+          const complexity = scoreComplexity({ direction, plan: { objective: edited.plan.objective, tasks: edited.tasks } })
+          store.appendEvent({ runId, type: 'plan.edited', agentId: 'head', payload: { planId: edited.plan.id, version: edited.plan.version, hash: edited.plan.contentHash, tasks: edited.tasks.length, replacedVersion: current.plan.version, replacedHash: current.plan.contentHash, complexity } })
+          sendJson(response, 200, { plan: edited.plan, tasks: edited.tasks, replacedVersion: current.plan.version, complexity })
           return
         }
 
@@ -1106,7 +1521,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           const routing = body.routing ?? store.getProject(run.projectId)?.project?.settings?.routing ?? {}
           try {
             const drafted = await planService.ensureDraft(run, { regenerate: body.regenerate === true, routing })
-            sendJson(response, 200, { ...drafted.plan, created: Boolean(drafted.created) })
+            sendJson(response, 200, { ...drafted.plan, created: Boolean(drafted.created), complexity: drafted.complexity ?? null, contextSources: drafted.contextSources ?? [] })
           } catch (error) {
             // Drafting can only fail for honest reasons — no key, no direction,
             // an unusable model reply, a blown budget — and each carries the
@@ -1224,7 +1639,10 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           if (plan.plan.status !== 'approved') {
             // Three writes that only make sense together: a crash between them
             // would leave an approved plan the run never pointed at, with no event
-            // to explain it.
+            // to explain it. This emits plan.approved as the approval record;
+            // the transition below emits it again as the execution-started
+            // record (a re-approval from review emits only the latter, since
+            // nothing new was granted). Two events, two facts.
             store.transaction(() => {
               store.approvePlan(plan.plan.id)
               store.updateRun(runId, { planId: plan.plan.id, planVersion: plan.plan.version })
@@ -1247,7 +1665,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           // produced an *executing* run with no approved plan, from which pause →
           // resume worked forever after. An interrupted run that never got as far as
           // approving a plan (planning → interrupted, no plan id) is in the same
-          // boat: `ensurePlan` would quietly attach a demo plan and start it.
+          // boat: `ensurePlan` would quietly start it with no approved plan.
           const plan = run.planId ? store.getPlan(run.planId) : store.getLatestPlanForRun(runId)
           if (!plan || plan.plan.status !== 'approved') {
             sendJson(response, 409, { error: 'That run has no approved plan to resume. Approve a plan first.' })
@@ -1324,7 +1742,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
             return
           }
           const tool = toolBroker.get(toolCall.name)
-          const authorization = toolBroker.authorize({ mode: run.permissionMode, tool, resolution: edited })
+          const authorization = toolBroker.authorize({ mode: run.permissionMode, tool, resolution: edited, agentId: toolCall.agentId })
           if (!authorization.allowed && !authorization.requiresApproval) {
             sendJson(response, 403, { error: authorization.reason, rule: authorization.ruleId })
             return
@@ -1492,6 +1910,17 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         return
       }
 
+      const runClaimsMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/claims$/)
+      if (request.method === 'GET' && runClaimsMatch) {
+        const runId = decodeURIComponent(runClaimsMatch[1])
+        if (!store.getRun(runId)) {
+          sendJson(response, 404, { error: 'Run not found.' })
+          return
+        }
+        sendJson(response, 200, { claims: store.listRunClaims(runId) })
+        return
+      }
+
       const runGrantMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/grants\/([^/]+)$/)
       if (request.method === 'DELETE' && runGrantMatch) {
         const runId = decodeURIComponent(runGrantMatch[1])
@@ -1503,6 +1932,76 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         const revoked = store.revokeApprovalGrant(runId, toolName)
         if (revoked) store.appendEvent({ runId, type: 'approval.revoked', agentId: 'head', payload: { toolName, source: 'user' } })
         sendJson(response, revoked ? 200 : 404, revoked ? { revoked: toolName, grants: store.listApprovalGrants(runId) } : { error: 'No active grant for that tool.' })
+        return
+      }
+
+      const runTimelineMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/timeline\/([^/]+)(\/restore)?$/)
+      if (runTimelineMatch) {
+        const runId = decodeURIComponent(runTimelineMatch[1])
+        const seq = Number(decodeURIComponent(runTimelineMatch[2]))
+        const restoring = Boolean(runTimelineMatch[3])
+        const run = store.getRun(runId)
+        if (!run) {
+          sendJson(response, 404, { error: 'Run not found.' })
+          return
+        }
+        if (!Number.isInteger(seq) || seq < 0) {
+          sendJson(response, 400, { error: 'Timeline position must be an event sequence number.' })
+          return
+        }
+        if (request.method === 'GET' && !restoring) {
+          sendJson(response, 200, reconstructAt({ store, workspaceRoot: toolBroker.workspaceRoot, runId, seq }))
+          return
+        }
+        if (request.method === 'POST' && restoring) {
+          try {
+            const body = await readJson(request)
+            const relative = String(body.path ?? '')
+            if (!relative) {
+              sendJson(response, 400, { error: 'A file path is required.' })
+              return
+            }
+            // Defense in depth: candidates are matched against normalized
+            // in-workspace paths below, which already excludes escapes — but
+            // the request path itself is contained first, so a future
+            // refactor of the lookup cannot open it.
+            try {
+              resolveWorkspacePath(toolBroker.workspaceRoot, relative)
+            } catch {
+              sendJson(response, 400, { error: 'That path is not inside the workspace.' })
+              return
+            }
+            // The newest restorable write at or before the index: its snapshot
+            // is what comes back. Anything else — created files, pruned or
+            // truncated snapshots — refuses with the reason, like revert does.
+            const completedSeq = new Map()
+            for (const event of store.listEvents(runId)) {
+              if (event.type === 'tool.completed' && event.payload?.toolCallId) completedSeq.set(event.payload.toolCallId, event.sequence)
+            }
+            const candidate = store.listToolCalls(runId)
+              .filter((call) => call.name === 'workspace.write' && call.status === 'completed' && call.resolved?.relative === relative && (completedSeq.get(call.id) ?? Infinity) <= seq)
+              .sort((a, b) => (completedSeq.get(b.id) ?? 0) - (completedSeq.get(a.id) ?? 0))[0]
+            const previous = candidate?.output?.previousContent
+            if (!candidate || typeof previous !== 'string') {
+              sendJson(response, 409, { error: candidate?.output?.previousTruncated ? 'The previous contents were too large to keep, so this change cannot be undone from here.' : 'Nothing restorable for that file at that point in time.' })
+              return
+            }
+            // The chain records outcomes, not intentions: restored lands only
+            // when the write actually ran, and a refusal lands as its own
+            // event rather than silence.
+            const outcome = await submitToolCall({ runId, run, name: 'workspace.write', input: { path: relative, content: previous }, agentId: 'head' })
+            if (outcome.status === 200) {
+              store.appendEvent({ runId, type: 'timeline.restored', agentId: 'head', payload: { toolCallId: candidate.id, path: relative, seq, previousSha256: candidate.output.previousSha256 ?? null } })
+            } else {
+              store.appendEvent({ runId, type: 'timeline.restore.failed', agentId: 'head', payload: { toolCallId: candidate.id, path: relative, seq, reason: outcome.payload?.error ?? 'The restore did not run.' } })
+            }
+            sendJson(response, outcome.status, { ...outcome.payload, restored: outcome.status === 200, path: relative, seq })
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : 'Could not restore.' })
+          }
+          return
+        }
+        sendJson(response, 405, { error: 'Use GET to view the timeline or POST restore to restore a file.' })
         return
       }
 

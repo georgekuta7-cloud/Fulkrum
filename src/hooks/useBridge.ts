@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, api, openRunStream } from '../api/client'
-import type { AgentId, AppSetting, Artifact, ConfigReport, Estimate, FileHistoryEntry, Plan, Project, Provider, ReasoningLevel, Run, RunEvent, SearchResults, Spend, StandingGrant, Status, Task, ToolCall, TreeNode, Usage } from '../api/types'
+import { roleLabel } from '../lib/runGraph'
+import type { AgentId, AppSetting, ArsenalItem, Artifact, Claim, ConfigReport, Estimate, FileHistoryEntry, MarketplaceEntry, Plan, Project, Provider, ReasoningLevel, Run, RunEvent, SearchResults, Spend, StandingGrant, Status, Task, ToolCall, TreeNode, Usage } from '../api/types'
 
 /**
  * Everything the interface reads, and the actions it takes, in one place.
@@ -18,6 +19,9 @@ export type Approval = { toolCall: ToolCall; rule: string | null; warnings: Arra
 export function useBridge() {
   const [projects, setProjects] = useState<Project[]>([])
   const [projectId, setProjectId] = useState<string | null>(null)
+  // The open project's settings (routing, reasoning, checks): the casting the
+  // graph and plan card display, and what saveRouting edits.
+  const [projectSettings, setProjectSettings] = useState<Record<string, unknown>>({})
   // A history list holds summaries; the open run is fetched in full.
   const [runs, setRuns] = useState<Run[]>([])
   const [runId, setRunId] = useState<string | null>(null)
@@ -28,6 +32,7 @@ export function useBridge() {
   const [events, setEvents] = useState<RunEvent[]>([])
   const [plan, setPlan] = useState<Plan | null>(null)
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
+  const [claims, setClaims] = useState<Claim[]>([])
   const [spend, setSpend] = useState<Spend>(emptySpend)
   const [byTask, setByTask] = useState<Array<{ taskId: string | null; title: string | null; agentId: string | null; costUsd: number; calls: number; unpricedCalls: number }>>([])
   const [estimate, setEstimate] = useState<Estimate | null>(null)
@@ -35,6 +40,15 @@ export function useBridge() {
   const [providers, setProviders] = useState<Provider[]>([])
   const [status, setStatus] = useState<Status | null>(null)
   const [grants, setGrants] = useState<StandingGrant[]>([])
+  const [learnings, setLearnings] = useState<Array<{ id: string; projectId: string; fact: string; sourceRunId: string | null; createdAt: number }>>([])
+  const [playbooks, setPlaybooks] = useState<Array<{ id: string; projectId: string; name: string; contentHash: string; budgetUsd: number | null; approvedAt: number | null; createdAt: number }>>([])
+  const [schedules, setSchedules] = useState<Array<{ id: string; projectId: string; playbookId: string; everyMinutes: number; budgetUsd: number | null; enabled: boolean; nextFireAt: number; lastRunId: string | null; createdAt: number }>>([])
+  const [goals, setGoals] = useState<Array<{ id: string; projectId: string; name: string; objective: string; acceptance: string; budgetUsd: number | null; status: string; createdAt: number; spendUsd?: number; runCount?: number }>>([])
+  const [blueprints, setBlueprints] = useState<Array<{ name: string; version: string; description: string; source: string }>>([])
+  const [timeline, setTimeline] = useState<{ seq: number; files: Array<{ path: string; content: string | null; truncated: boolean; unknown: string | null }>; gaps: string[] } | null>(null)
+  const [marketplace, setMarketplace] = useState<{ enabled: boolean; signed: boolean; entries: MarketplaceEntry[]; fetchedAt: number | null; stale: boolean }>({ enabled: false, signed: false, entries: [], fetchedAt: null, stale: false })
+  const [arsenal, setArsenal] = useState<{ skills: ArsenalItem[]; plugins: ArsenalItem[] }>({ skills: [], plugins: [] })
+  const [registry, setRegistry] = useState<{ candidates: MarketplaceEntry[]; skipped: string[]; fetchedAt: number } | null>(null)
   const [configReport, setConfigReport] = useState<ConfigReport | null>(null)
   const [appSettings, setAppSettings] = useState<AppSetting[]>([])
   const [usage, setUsage] = useState<Usage | null>(null)
@@ -107,6 +121,12 @@ export function useBridge() {
     return payload
   }, [])
 
+  const loadClaims = useCallback(async (id: string) => {
+    const payload = await api.get<{ claims: Claim[] }>(`/api/runs/${encodeURIComponent(id)}/claims`).catch(() => null)
+    if (payload && runIdRef.current === id) setClaims(payload.claims ?? [])
+    return payload
+  }, [])
+
   const loadEstimate = useCallback(async (id: string) => {
     const payload = await api.get<Estimate>(`/api/runs/${encodeURIComponent(id)}/estimate`).catch(() => null)
     if (runIdRef.current === id) setEstimate(payload)
@@ -129,6 +149,64 @@ export function useBridge() {
     const payload = await api.get<{ grants: StandingGrant[]; history: any[] }>('/api/grants').catch(() => ({ grants: [], history: [] }))
     setGrants(payload.grants ?? [])
     return payload
+  }, [])
+
+  const loadLearnings = useCallback(async (forProject: string | null) => {
+    if (!forProject) {
+      setLearnings([])
+      return []
+    }
+    const payload = await api.get<{ learnings: Array<{ id: string; projectId: string; fact: string; sourceRunId: string | null; createdAt: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/learnings`).catch(() => null)
+    if (payload) setLearnings(payload.learnings ?? [])
+    return payload?.learnings ?? []
+  }, [])
+
+  const loadPlaybooksFor = useCallback(async (forProject: string | null) => {
+    if (!forProject) {
+      setPlaybooks([])
+      return []
+    }
+    const payload = await api.get<{ playbooks: Array<{ id: string; projectId: string; name: string; contentHash: string; budgetUsd: number | null; approvedAt: number | null; createdAt: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/playbooks`).catch(() => null)
+    if (payload) setPlaybooks(payload.playbooks ?? [])
+    return payload?.playbooks ?? []
+  }, [])
+
+  const loadSchedulesFor = useCallback(async (forProject: string | null) => {
+    if (!forProject) {
+      setSchedules([])
+      return []
+    }
+    const payload = await api.get<{ schedules: Array<{ id: string; projectId: string; playbookId: string; everyMinutes: number; budgetUsd: number | null; enabled: boolean; nextFireAt: number; lastRunId: string | null; createdAt: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/schedules`).catch(() => null)
+    if (payload) setSchedules(payload.schedules ?? [])
+    return payload?.schedules ?? []
+  }, [])
+
+  const loadBlueprintsFor = useCallback(async () => {
+    const payload = await api.get<{ blueprints: Array<{ name: string; version: string; description: string; source: string }> }>('/api/blueprints').catch(() => null)
+    if (payload) setBlueprints(payload.blueprints ?? [])
+    return payload?.blueprints ?? []
+  }, [])
+
+  const loadMarketplaceState = useCallback(async () => {
+    const payload = await api.get<{ enabled: boolean; signed: boolean; entries: MarketplaceEntry[]; fetchedAt: number | null; stale: boolean }>('/api/marketplace').catch(() => null)
+    if (payload) setMarketplace({ enabled: payload.enabled, signed: payload.signed ?? false, entries: payload.entries ?? [], fetchedAt: payload.fetchedAt, stale: payload.stale })
+    return payload
+  }, [])
+
+  const loadArsenalState = useCallback(async () => {
+    const payload = await api.get<{ skills: ArsenalItem[]; plugins: ArsenalItem[] }>('/api/arsenal').catch(() => null)
+    if (payload) setArsenal({ skills: payload.skills ?? [], plugins: payload.plugins ?? [] })
+    return payload
+  }, [])
+
+  const loadGoalsFor = useCallback(async (forProject: string | null) => {
+    if (!forProject) {
+      setGoals([])
+      return []
+    }
+    const payload = await api.get<{ goals: Array<{ id: string; projectId: string; name: string; objective: string; acceptance: string; budgetUsd: number | null; status: string; createdAt: number; spendUsd?: number; runCount?: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/goals`).catch(() => null)
+    if (payload) setGoals(payload.goals ?? [])
+    return payload?.goals ?? []
   }, [])
 
   const loadConfig = useCallback(async () => {
@@ -159,8 +237,10 @@ export function useBridge() {
       if (event.type === 'tool.completed' || event.type === 'artifact.revert') await loadArtifacts(id)
       if (event.type === 'plan.drafted' || event.type === 'plan.edited') await loadEstimate(id)
     }
+    if (event.type === 'claims.recorded' || event.type === 'task.completed') await loadClaims(id)
+    if (event.type === 'run.review.ready' || event.type === 'learning.recorded') await loadLearnings(projectId)
     if (event.type === 'approval.requested' || event.type === 'tool.denied' || event.type === 'approval.granted' || event.type === 'approval.standing') await loadGrants()
-  }, [loadArtifacts, loadEstimate, loadGrants, loadPlan, loadRun, loadTrace])
+  }, [loadArtifacts, loadClaims, loadEstimate, loadGrants, loadLearnings, loadPlan, loadRun, loadTrace, projectId])
 
   // The dock is a queue derived from the run's own state, not the last event that
   // happened to mention an approval: on load, or after a reconnect, whatever is
@@ -224,17 +304,31 @@ export function useBridge() {
     runIdRef.current = id
     setApproval(null)
     setArtifacts([])
+    setClaims([])
+    setTimeline(null)
     setSpend(emptySpend)
     setByTask([])
     setStreaming(null)
-    await Promise.all([loadRun(id), loadPlan(id), loadTrace(id), loadArtifacts(id), loadEstimate(id)])
+    await Promise.all([loadRun(id), loadPlan(id), loadTrace(id), loadArtifacts(id), loadClaims(id), loadEstimate(id)])
     await syncApprovalQueue(id)
     watchRun(id)
-  }, [loadArtifacts, loadEstimate, loadPlan, loadRun, loadTrace, syncApprovalQueue, watchRun])
+  }, [loadArtifacts, loadClaims, loadEstimate, loadPlan, loadRun, loadTrace, syncApprovalQueue, watchRun])
 
   /** The newest run for a project, or a new one when there is none to resume. */
+  const loadProjectSettings = useCallback(async (forProject: string) => {
+    const payload = await api.get<{ project: { settings?: Record<string, unknown> } }>(`/api/projects/${encodeURIComponent(forProject)}`).catch(() => null)
+    const settings = payload?.project?.settings ?? {}
+    setProjectSettings(settings)
+    return settings
+  }, [])
+
   const openProject = useCallback(async (forProject: string, { permissionMode = 'selective', preferRun = null }: { permissionMode?: string; preferRun?: string | null } = {}) => {
     setProjectId(forProject)
+    await loadProjectSettings(forProject)
+    await loadLearnings(forProject)
+    await loadPlaybooksFor(forProject)
+    await loadSchedulesFor(forProject)
+    await loadGoalsFor(forProject)
     const list = await loadRuns(forProject)
     const target = (preferRun ? list.find((candidate) => candidate.id === preferRun) : null)
       ?? list.find((candidate) => !['cancelled', 'completed', 'failed'].includes(candidate.status))
@@ -247,14 +341,14 @@ export function useBridge() {
     await loadRuns(forProject)
     await openRun(created.run.id)
     return created.run.id
-  }, [loadRuns, openRun])
+  }, [loadGoalsFor, loadLearnings, loadPlaybooksFor, loadProjectSettings, loadRuns, loadSchedulesFor, openRun])
 
   // ------------------------------------------------------------------ startup
 
   useEffect(() => {
     void (async () => {
       try {
-        const [list] = await Promise.all([loadProjects(), loadProviders(), loadStatus(), loadGrants(), loadConfig(), loadSettings()])
+        const [list] = await Promise.all([loadProjects(), loadProviders(), loadStatus(), loadGrants(), loadConfig(), loadSettings(), loadBlueprintsFor()])
         const first = list[0]
         if (first) await openProject(first.id)
       } catch (caught) {
@@ -445,6 +539,183 @@ export function useBridge() {
       await api.delete(`/api/grants/${encodeURIComponent(id)}`)
       await loadGrants()
     },
+    async deleteLearning(id: string) {
+      if (!projectId) return
+      await api.delete(`/api/projects/${encodeURIComponent(projectId)}/learnings/${encodeURIComponent(id)}`)
+      await loadLearnings(projectId)
+      setNotice('Forgotten. Future plans will not see it.')
+    },
+    async savePlaybook(name: string) {
+      if (!projectId || !runId) return null
+      try {
+        const saved = await api.post<{ playbook: { id: string } }>(`/api/projects/${encodeURIComponent(projectId)}/playbooks`, { name, runId })
+        await loadPlaybooksFor(projectId)
+        setNotice(`Playbook saved. Re-running it inherits this approval.`)
+        return saved.playbook
+      } catch (caught) {
+        report(caught, 'The playbook could not be saved. Only an approved plan can become one.')
+        return null
+      }
+    },
+    async instantiatePlaybook(id: string) {
+      if (!projectId) return null
+      try {
+        const started = await api.post<{ run: Run }>(`/api/projects/${encodeURIComponent(projectId)}/playbooks/${encodeURIComponent(id)}/runs`, {})
+        await loadRuns(projectId)
+        await openRun(started.run.id)
+        setNotice('Playbook running under its inherited approval.')
+        return started.run
+      } catch (caught) {
+        report(caught, 'The playbook could not start.')
+        return null
+      }
+    },
+    async deletePlaybook(id: string) {
+      if (!projectId) return
+      await api.delete(`/api/projects/${encodeURIComponent(projectId)}/playbooks/${encodeURIComponent(id)}`)
+      await loadPlaybooksFor(projectId)
+    },
+    async saveSchedule(playbookId: string, every: string, budgetUsd: number | null) {
+      if (!projectId) return null
+      try {
+        const saved = await api.post<{ schedule: { id: string } }>(`/api/projects/${encodeURIComponent(projectId)}/schedules`, { playbookId, every, budgetUsd })
+        await loadSchedulesFor(projectId)
+        setNotice('Scheduled. It fires while the bridge runs.')
+        return saved.schedule
+      } catch (caught) {
+        report(caught, 'The schedule could not be saved. Use an interval like "every 6h".')
+        return null
+      }
+    },
+    async toggleSchedule(id: string, enabled: boolean) {
+      if (!projectId) return
+      await api.patch(`/api/projects/${encodeURIComponent(projectId)}/schedules/${encodeURIComponent(id)}`, { enabled })
+      await loadSchedulesFor(projectId)
+    },
+    async deleteSchedule(id: string) {
+      if (!projectId) return
+      await api.delete(`/api/projects/${encodeURIComponent(projectId)}/schedules/${encodeURIComponent(id)}`)
+      await loadSchedulesFor(projectId)
+    },
+    async createGoal(name: string, objective: string, acceptance: string, budgetUsd: number | null) {
+      if (!projectId) return null
+      try {
+        const created = await api.post<{ goal: { id: string } }>(`/api/projects/${encodeURIComponent(projectId)}/goals`, { name, objective, acceptance, budgetUsd })
+        await loadGoalsFor(projectId)
+        setNotice(budgetUsd ? `Goal started. Runs under it share a $${Number(budgetUsd).toFixed(2)} ceiling.` : 'Goal started. Runs under it are grouped, with no shared ceiling.')
+        return created.goal
+      } catch (caught) {
+        report(caught, 'The goal could not be created.')
+        return null
+      }
+    },
+    async deleteGoal(id: string) {
+      if (!projectId) return
+      await api.delete(`/api/projects/${encodeURIComponent(projectId)}/goals/${encodeURIComponent(id)}`)
+      await loadGoalsFor(projectId)
+    },
+    async refreshMarketplace() {
+      try {
+        const fresh = await api.post<{ entries: unknown[]; fetchedAt: number }>('/api/marketplace/refresh', {})
+        await loadMarketplaceState()
+        setNotice(`Marketplace refreshed: ${fresh.entries.length} entries.`)
+        return fresh
+      } catch (caught) {
+        report(caught, 'The marketplace could not be refreshed.')
+        return null
+      }
+    },
+    async installMarketplaceEntry(id: string) {
+      try {
+        const installed = await api.post<{ installed: { kind: string; id: string; version: string }; permissions: { tools: string[]; hosts: string[] } }>(`/api/marketplace/${encodeURIComponent(id)}`, {})
+        await Promise.all([loadMarketplaceState(), loadArsenalState()])
+        const permissions = [...installed.permissions.tools, ...installed.permissions.hosts].filter(Boolean).join(', ')
+        setNotice(`Installed ${installed.installed.id} v${installed.installed.version}${permissions ? ` (${permissions})` : ''}.`)
+        return installed
+      } catch (caught) {
+        report(caught, 'That entry could not be installed.')
+        return null
+      }
+    },
+    async uninstallMarketplaceEntry(id: string) {
+      await api.delete(`/api/marketplace/${encodeURIComponent(id)}`)
+      await Promise.all([loadMarketplaceState(), loadArsenalState()])
+      setNotice(`Removed ${id} and revoked its scoped grants.`)
+    },
+    async browseRegistry(registryUrl: string) {
+      try {
+        const catalog = await api.post<{ candidates: MarketplaceEntry[]; skipped: string[]; fetchedAt: number }>('/api/marketplace/browse', { registry: registryUrl })
+        setRegistry(catalog)
+        return catalog
+      } catch (caught) {
+        report(caught, 'That registry could not be read.')
+        return null
+      }
+    },
+    clearRegistry() {
+      setRegistry(null)
+    },
+    async importMarketplaceSkill(input: { url?: string; localPath?: string }) {
+      try {
+        const result = await api.post<{ staged: MarketplaceEntry }>('/api/marketplace/import', input)
+        await loadMarketplaceState()
+        const findings = result.staged.findings ?? []
+        const flagged = findings.filter((finding) => finding.severity === 'medium').length
+        setNotice(`Staged ${result.staged.id} v${result.staged.version} for review${flagged ? ` (${flagged} thing${flagged === 1 ? '' : 's'} worth a look)` : ''}. Install it when ready.`)
+        return result
+      } catch (caught) {
+        report(caught, 'That skill could not be staged.')
+        return null
+      }
+    },
+    async loadTimeline(seq: number) {
+      if (!runId) return null
+      const payload = await api.get<{ seq: number; files: Array<{ path: string; content: string | null; truncated: boolean; unknown: string | null }>; gaps: string[] }>(`/api/runs/${encodeURIComponent(runId)}/timeline/${seq}`).catch(() => null)
+      if (payload) setTimeline(payload)
+      return payload
+    },
+    clearTimeline() {
+      setTimeline(null)
+    },
+    async restoreTimelineFile(relPath: string) {
+      if (!runId || timeline === null) return null
+      try {
+        const restored = await api.post<{ restored?: boolean; path?: string }>(`/api/runs/${encodeURIComponent(runId)}/timeline/${timeline.seq}/restore`, { path: relPath })
+        if (restored.restored) {
+          setNotice(`${relPath} restored to its state at event ${timeline.seq}.`)
+          await Promise.all([loadArtifacts(runId), loadRuns(projectId)])
+        } else {
+          setNotice('The restore parked for approval — decide in the dock.')
+          await loadRuns(projectId)
+        }
+        return restored
+      } catch (caught) {
+        report(caught, 'That file could not be restored from the timeline.')
+        return null
+      }
+    },
+    async previewBlueprint(ref: { name?: string; blueprint?: unknown }) {
+      if (!projectId) return null
+      try {
+        const preview = await api.post<{ diff: unknown }>(`/api/projects/${encodeURIComponent(projectId)}/blueprints/preview`, ref)
+        return preview.diff
+      } catch (caught) {
+        report(caught, 'That blueprint cannot be previewed.')
+        return null
+      }
+    },
+    async applyBlueprint(ref: { name?: string; blueprint?: unknown }) {
+      if (!projectId) return null
+      try {
+        const applied = await api.post<{ applied: unknown }>(`/api/projects/${encodeURIComponent(projectId)}/blueprints/apply`, ref)
+        await Promise.all([loadProjectSettings(projectId), loadGrants()])
+        setNotice('Blueprint applied. Grants went through the normal path — nothing was silently elevated.')
+        return applied.applied
+      } catch (caught) {
+        report(caught, 'That blueprint could not be applied.')
+        return null
+      }
+    },
     async verifyAudit() {
       const result = await api.post<{ record: any }>('/api/maintenance/verify')
       await loadStatus()
@@ -484,17 +755,36 @@ export function useBridge() {
       setNotice('A copy of the database was written.')
       return result
     },
+    async saveRouting(role: string, route: string) {
+      if (!projectId) return false
+      // Settings replace wholesale, so the current object is read first and
+      // merged: a routing edit must never drop checks, reasoning, or anything
+      // else the project carries. Casting is not plan content, so no
+      // re-approval follows — but the change is an event on the run's chain
+      // the next time the run starts, like any routing change.
+      try {
+        const current = await loadProjectSettings(projectId)
+        const routing = { ...((current.routing as Record<string, string> | undefined) ?? {}), [role]: route.trim() }
+        const updated = await api.patch<{ project: { settings?: Record<string, unknown> } }>(`/api/projects/${encodeURIComponent(projectId)}`, { settings: { ...current, routing } })
+        setProjectSettings(updated.project?.settings ?? { ...current, routing })
+        setNotice(`${roleLabel(role)} now runs on ${route.trim() || 'the default provider'}.`)
+        return true
+      } catch (caught) {
+        report(caught, 'The routing could not be saved.')
+        return false
+      }
+    },
     search: (query: string) => api.get<SearchResults>(`/api/search?q=${encodeURIComponent(query)}`),
     tree: (path = '.', depth = 2) => api.get<{ path: string; entries: TreeNode[] }>(`/api/workspace/tree?path=${encodeURIComponent(path)}&depth=${depth}`),
     fileHistory: (path: string) => api.get<{ path: string; calls: FileHistoryEntry[] }>(`/api/workspace/history?path=${encodeURIComponent(path)}`),
     reloadRuns: () => loadRuns(projectId),
-  }), [approval, loadArtifacts, loadConfig, loadEstimate, loadGrants, loadProjects, loadProviders, loadRun, loadRuns, loadStatus, messages, openProject, openRun, projectId, projects, report, runId])
+  }), [approval, loadArsenalState, loadArtifacts, loadConfig, loadEstimate, loadGoalsFor, loadGrants, loadLearnings, loadMarketplaceState, loadPlaybooksFor, loadProjectSettings, loadProjects, loadProviders, loadRun, loadRuns, loadSchedulesFor, loadStatus, messages, openProject, openRun, projectId, projects, report, runId, timeline])
 
   return {
-    projects, projectId, runs, runId, run, tasks, messages, toolCalls, events, plan, artifacts, spend, byTask, estimate, audit,
-    providers, status, grants, configReport, usage, error, notice, streaming, approval, booted, appSettings,
+    projects, projectId, runs, runId, run, tasks, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, estimate, audit,
+    providers, status, grants, learnings, playbooks, schedules, goals, blueprints, marketplace, arsenal, registry, timeline, configReport, usage, error, notice, streaming, approval, booted, appSettings, projectSettings,
     setError, setNotice, setApproval,
-    openProject, openRun, loadRuns, loadStatus, loadGrants, loadConfig, loadUsage, loadProviders, loadSettings,
+    openProject, openRun, loadRuns, loadStatus, loadGrants, loadConfig, loadUsage, loadProviders, loadSettings, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadMarketplaceState, loadArsenalState, loadBlueprintsFor,
     ...actions,
     approveWithKeyboard: (scope: 'once' | 'run' | 'always') => actions.approveCall(scope),
   }

@@ -4,6 +4,7 @@ import type { Bridge } from '../hooks/useBridge'
 import type { RunEvent, Task } from '../api/types'
 import { money } from '../lib/tones'
 import { roleLabel } from '../lib/runGraph'
+import { CastingLine } from './CastingLine'
 
 /**
  * The chat is the run narrated: what you asked, the plan it made, what each
@@ -24,8 +25,9 @@ type FeedItem =
 const KIND_ORDER: Record<FeedItem['kind'], number> = { message: 0, plan: 1, task: 2, review: 3 }
 
 function PlanCard({ bridge }: { bridge: Bridge }) {
-  const { plan, run, estimate, control, draftPlan } = bridge
+  const { plan, run, estimate, control, draftPlan, events } = bridge
   if (!plan) return null
+  const contextSources = events.filter((event) => event.type === 'plan.drafted').at(-1)?.payload?.contextSources ?? []
   const approvable = plan.plan.status === 'draft' && run && ['planning', 'review', 'interrupted'].includes(run.status)
   return (
     <div className="chat-plan-card">
@@ -34,6 +36,15 @@ function PlanCard({ bridge }: { bridge: Bridge }) {
         <strong>Plan v{plan.plan.version} · {plan.plan.objective}</strong>
         <span className={`status-chip ${plan.plan.status === 'approved' ? 'ok' : 'plan'}`}>{plan.plan.status}</span>
         <span className="chat-hash" title="Approval binds to this content hash">{plan.plan.contentHash.slice(0, 8)}…</span>
+      </div>
+      {plan.complexity && plan.complexity.score >= 7 ? (
+        <div className="chat-plan-complexity" title={plan.complexity.factors.join('; ')}>
+          ⚠ {plan.complexity.score}/10 — a broad plan. Consider a sharper direction before approving.
+        </div>
+      ) : null}
+      <div className="chat-plan-casting">
+        <CastingLine bridge={bridge} tasks={plan.tasks} />
+        {contextSources.length ? <span className="muted tiny"> · read {contextSources.join(', ')}</span> : null}
       </div>
       <div className="chat-plan-tasks">
         {plan.tasks.map((task, index) => (
@@ -74,7 +85,7 @@ function WorkCard({ bridge, task, startedAt, endedAt }: { bridge: Bridge; task: 
   return (
     <div className={`chat-work ${live ? 'live' : ''}`}>
       <button type="button" className="chat-work-head" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
-        <span>{task.agentId === 'research' ? '🔍' : task.agentId === 'builder' ? '🔨' : '🤖'}</span>
+        <span>{{ research: '🔍', builder: '🔨', architect: '📐', editor: '✏️', debug: '🐛' }[task.agentId ?? ''] ?? '🤖'}</span>
         <span>
           <strong>{roleLabel(task.agentId)}</strong> {live ? 'is working' : task.status === 'completed' ? 'worked' : task.status}
           {durationMs !== null ? ` for ${(durationMs / 1000).toFixed(1)}s` : ''} · {calls.length} tool call{calls.length === 1 ? '' : 's'}
@@ -112,16 +123,38 @@ function WorkCard({ bridge, task, startedAt, endedAt }: { bridge: Bridge; task: 
 
 function ReviewCard({ bridge, event }: { bridge: Bridge; event: RunEvent }) {
   const { artifacts, spend, run } = bridge
+  const claims = bridge.claims ?? []
+  const proven = claims.filter((claim) => claim.verdict === 'PASS').length
+  const proof = (event.payload?.proof ?? null) as { predicted?: string[]; verdicts?: { pass: number; fail: number; unknown: number }; claims?: { total: number; proven: number; failed: number } } | null
   return (
     <div className="chat-review">
       <div className="chat-review-head">
         <span className="sheet-call-ic ok">✓</span>
         <strong>Run review</strong>
         <span className="status-chip ok">verified</span>
+        {claims.length ? <span className="muted tiny">{proven}/{claims.length} claims proven</span> : null}
         <span style={{ flex: 1 }} />
         <span className="mono muted tiny">{money(spend.costUsd, 4)}</span>
       </div>
+      {proof && proof.predicted?.length ? (
+        <p className="chat-review-proof" title={proof.predicted.join('; ')}>
+          {proof.predicted.length} approved outcome{proof.predicted.length === 1 ? '' : 's'} · {proof.claims?.proven ?? proven} proven · verdicts {proof.verdicts?.pass ?? 0} pass / {proof.verdicts?.fail ?? 0} fail / {proof.verdicts?.unknown ?? 0} unknown
+        </p>
+      ) : null}
       <p className="chat-review-summary">{String(event.payload?.summary ?? '')}</p>
+      {claims.length ? (
+        <div className="chat-review-claims">
+          {claims.map((claim) => (
+            <div className="chat-work-line" key={claim.id}>
+              <span className={`sheet-call-ic ${claim.verdict === 'PASS' ? 'ok' : claim.verdict === 'FAIL' ? 'bad' : 'busy'}`}>
+                {claim.verdict === 'PASS' ? '✓' : claim.verdict === 'FAIL' ? '✕' : '?'}
+              </span>
+              <span>{claim.summary}{claim.path ? <code> {claim.path}{claim.startLine ? `:${claim.startLine}` : ''}</code> : null}</span>
+              <span className="chat-work-stat">{claim.kind}{claim.verdict ? ` · ${claim.verdict}` : ''}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
       {artifacts.length ? (
         <div className="chat-review-files">
           {artifacts.map((artifact) => (

@@ -31,6 +31,18 @@ test('anthropic reasoning becomes a thinking budget', () => {
   assert.deepEqual(reasoningPayload('anthropic', 'claude-opus-4-1', 'medium'), { thinking: { type: 'enabled', budget_tokens: 8192 } })
 })
 
+test('an anthropic budget never contradicts the output ceiling', () => {
+  // A high setting against the default 4096 ceiling is capped under it, and the
+  // ceiling is lifted past the budget so the two never ask for the impossible.
+  const high = reasoningPayload('anthropic', 'claude-opus-4-1', 'high', 4096)
+  assert.equal(high.thinking.budget_tokens <= high.max_tokens, true)
+  assert.equal(high.thinking.budget_tokens, 2048)
+
+  const low = reasoningPayload('anthropic', 'claude-opus-4-1', 'low', 4096)
+  assert.equal(low.thinking.budget_tokens, 2048)
+  assert.equal('max_tokens' in low, false, 'a budget under the ceiling leaves max_tokens alone')
+})
+
 test('google reasoning becomes a thinking budget', () => {
   assert.deepEqual(reasoningPayload('google', 'gemini-2.5-pro', 'low'), { thinkingConfig: { thinkingBudget: 2048 } })
 })

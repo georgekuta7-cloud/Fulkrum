@@ -51,6 +51,27 @@ export function buildRunReport({ store, runId }) {
   }
 }
 
+/**
+ * A goal, written up: the objective, the member runs with what each cost and
+ * whether its chain still verifies, and the shared budget against the total.
+ * Member chains are listed, never merged — per-run chains stay load-bearing.
+ */
+export function buildGoalReport({ store, goalId }) {
+  const goal = store.getGoal(goalId)
+  if (!goal) return null
+  const runs = store.listGoalRuns(goalId).map((run) => {
+    const spend = store.spendForRun(run.id)
+    const audit = store.verifyEventChain(run.id)
+    return { id: run.id, status: run.status, costUsd: spend.costUsd, calls: spend.calls, unpricedCalls: spend.unpricedCalls, auditOk: audit.ok, createdAt: run.createdAt, updatedAt: run.updatedAt }
+  })
+  const total = runs.reduce((sum, run) => sum + run.costUsd, 0)
+  return {
+    goal: { id: goal.id, name: goal.name, objective: goal.objective, acceptance: goal.acceptance, status: goal.status, createdAt: goal.createdAt },
+    runs,
+    spend: { totalCostUsd: total, budgetUsd: goal.budgetUsd, remainingUsd: goal.budgetUsd === null ? null : goal.budgetUsd - total },
+  }
+}
+
 /** The report as Markdown: the form a person reads. */
 export function reportToMarkdown(report) {
   const lines = []

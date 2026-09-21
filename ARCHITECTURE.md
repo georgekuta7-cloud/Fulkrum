@@ -31,11 +31,11 @@ process that is holding the runs.
 | `app.mjs` | The HTTP surface: routing, origin checks, request caps, static UI, SSE. |
 | `index.mjs` | Boot: settings, store, wiring, leases, shutdown ordering, fatal handlers. |
 | `config.mjs` | Every environment variable, its default, and its validation. |
-| `store.mjs` | All persistence: migrations, the event chain, spans, spend, plans, tool calls, grants. |
+| `store.mjs` | All persistence: migrations, the event chain, spans, spend, plans, tool calls, grants, claims, learnings, playbooks, schedules, goals. |
 | `orchestrator.mjs` | Runs a plan: scheduling, the bounded agent loop, budget gates, approvals, the head review. |
 | `planService.mjs` / `plans.mjs` | Drafting a plan, parsing one, hashing it, ordering its tasks into layers. |
 | `permissions.mjs` | Path resolution and the permission matrix — the single policy table. |
-| `toolBroker.mjs` | The six tools, argument resolution, write snapshots, search. |
+| `toolBroker.mjs` | The ten built-in tools plus `plugin.*` manifests, argument resolution, write snapshots, search. |
 | `execution.mjs` | The container boundary: engine detection, argv, limits, timeouts. |
 | `networkPolicy.mjs` / `outboundHttp.mjs` | Address validation (CIDR tables) and pinned, byte-capped HTTP. |
 | `modelCall.mjs` | Three provider protocols, auth styles, sampling policy, retries, the breaker. |
@@ -45,6 +45,9 @@ process that is holding the runs.
 | `artifacts.mjs` / `diff.mjs` | What a run changed, and the diff of each write. |
 | `runReport.mjs` / `apiDocs.mjs` | The written-up run, and the API contract. |
 | `recovery.mjs` / `backup.mjs` / `verifyAudit.mjs` | Restart reconciliation, copies, and chain verification. |
+| `skills.mjs` / `plugins.mjs` / `marketplace.mjs` | Knowledge packs, declarative HTTP tool manifests, and the signed index that distributes them. |
+| `playbooks.mjs` / `schedules.mjs` / `blueprints.mjs` | Approved-plan reuse with hash checks, interval firing, and team setups as files. |
+| `timeline.mjs` / `reasoning.mjs` / `settings.mjs` | Hash-verified workspace reconstruction, per-protocol reasoning levels, live settings. |
 
 ## The run state machine
 
@@ -129,13 +132,17 @@ The audit log is append-only and hash-chained, and it records its own vocabulary
 
 | Group | Types |
 | --- | --- |
-| Run | `run.plan.loaded`, `run.plan.attached`, `run.paused`, `run.resumed`, `run.cancelled`, `run.interrupted`, `run.failed`, `run.review.ready`, `run.route.invalid`, `run.provider.fallback`, `run.checkpoint` |
-| Budget | `run.budget.exceeded`, `run.budget.unmeasurable` |
-| Plan | `plan.drafted`, `plan.rejected`, `plan.approved`, `plan.approval.rejected` |
+| Run | `run.plan.loaded`, `run.paused`, `run.resumed`, `run.cancelled`, `run.interrupted`, `run.failed`, `run.review.ready`, `run.routing`, `run.route.invalid`, `run.route.escalated`, `run.provider.fallback`, `run.checkpoint`, `run.snapshot`, `run.permission.changed`, `run.forked`, `run.command.stopped`, `run.casting.advised`, `head.review.started`, `timeline.restored`, `timeline.restore.failed` |
+| Budget | `run.budget.changed`, `run.budget.exceeded`, `run.budget.unmeasurable` |
+| Plan | `plan.drafted`, `plan.rejected`, `plan.approved`, `plan.approval.rejected`, `plan.edited` |
 | Task | `task.started`, `task.completed`, `task.cancelled`, `task.skipped`, `task.resumed`, `task.retry`, `task.failed`, `task.verified`, `task.completion.invalid`, `task.context.compacted`, `worker.handoff` |
-| Tool | `tool.requested`, `tool.started`, `tool.completed`, `tool.failed`, `tool.denied`, `tool.output.suspicious` |
-| Approval | `approval.requested`, `approval.granted`, `approval.revoked` |
+| Tool | `tool.requested`, `tool.started`, `tool.completed`, `tool.failed`, `tool.denied`, `tool.arguments.suspicious`, `tool.output.suspicious` |
+| Approval | `approval.requested`, `approval.granted`, `approval.revoked`, `approval.standing` |
 | Message | `message.user`, `message.assistant` |
+| Claims | `claims.recorded` |
+| Questions | `task.query.answered` |
+| Checks | `check.run` |
+| Learning | `learning.recorded` |
 
 Each event commits to the hash of the one before it, and the head is anchored both
 in a row and in `audit-heads.log` beside the database — see `SECURITY.md` for what
