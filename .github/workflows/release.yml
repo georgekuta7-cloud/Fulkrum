@@ -13,6 +13,7 @@ jobs:
   release:
     name: Publish the runner image and the release
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -23,6 +24,7 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+      - run: npm run test:ui
       - run: npm run build
 
       # The image is part of the execution boundary, so a release publishes the
@@ -48,11 +50,8 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
-            --notes "$(cat <<'NOTES'
-          See CHANGELOG.md for what changed in this version.
+            --notes "See CHANGELOG.md for what changed in this version.
 
           The execution boundary for this release is published at
-          `${{ steps.image.outputs.digest }}` — pin `FULKRUM_RUNNER_IMAGE` to that
-          digest to run exactly what was tested here.
-          NOTES
-          )"
+          \`${{ steps.image.outputs.digest }}\` — pin \`FULKRUM_RUNNER_IMAGE\` to that
+          digest to run exactly what was tested here."

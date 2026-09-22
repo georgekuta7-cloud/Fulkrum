@@ -74,7 +74,10 @@ export function toEnginePath(target, { inWsl = false } = {}) {
  * a boundary lives here, so a test can assert it rather than trust it.
  */
 export function containerArgs({ argv, workspaceRoot, workdir = '.', image = defaultImage, network = 'none', inWsl = false, name = 'fulkrum-preview', memory = '2g', cpus = '2', pidsLimit = 256, runtimeUser = fallbackRuntimeUser, userNamespace = '', nofile = defaultNofile, runtime = '' }) {
-  const containerDir = workdir.startsWith('/') ? workdir : `${containerWorkdir}/${workdir}`.replace(/\/+$/, '')
+  // Normalize backslashes: a Windows-style `src\utils` would produce an
+  // invalid `--workdir /workspace/src\utils` inside a Linux container.
+  const normalizedWorkdir = String(workdir).replaceAll('\\', '/')
+  const containerDir = normalizedWorkdir.startsWith('/') ? normalizedWorkdir : `${containerWorkdir}/${normalizedWorkdir}`.replace(/\/+$/, '')
   return [
     'run',
     // A user-space kernel (gVisor's runsc) interposes syscalls between the
@@ -292,7 +295,10 @@ export function createExecutionRuntime({
       } catch (error) {
         const rawMessage = error instanceof Error ? error.message : 'The command failed.'
         const killed = Boolean(error?.killed) || /timed out/i.test(rawMessage)
-        if (killed) {
+        // maxBuffer errors also set error.killed; distinguishing them prevents
+        // "output too large" from being reported as "timed out".
+        const maxBufferExceeded = /maxBuffer/i.test(rawMessage) || Boolean(error?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER')
+        if (killed || maxBufferExceeded) {
           // A killed container can outlive the client, so remove it explicitly.
           try {
             await invoke(candidate, ['rm', '--force', name], { timeout: 15_000, windowsHide: true })
@@ -307,6 +313,9 @@ export function createExecutionRuntime({
         const stdout = clip(error?.stdout ?? '')
         const exitCode = typeof error?.code === 'number' ? ` (exit ${error.code})` : ''
         const detail = [stderr, withoutCommand].filter(Boolean).join('\n')
+        if (maxBufferExceeded) {
+          throw new Error(`The command produced more than ${maxOutputBytes} bytes of output and was stopped.${detail ? `\n${detail}` : ''}`)
+        }
         if (killed) {
           throw new Error(`The command exceeded ${timeout}ms and its container was stopped.${detail ? `\n${detail}` : ''}`)
         }

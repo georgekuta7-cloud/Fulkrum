@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { realpathSync, statSync } from 'node:fs'
+import { lstatSync, realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { canonicalJson } from './canonicalJson.mjs'
 import { hostMatches } from './networkPolicy.mjs'
@@ -82,15 +82,22 @@ export function resolveWorkspacePath(workspaceRoot, candidate, { forWrite = fals
     if (realAncestor) assertInsideWorkspace(root, realAncestor)
   }
 
+  // lstat does not follow a link, so a symlink is visible as a symlink and a
+  // dangling link is visible at all. statSync would follow it and either land
+  // outside the workspace or throw on a missing target, and the isSymbolicLink
+  // branch below would never run.
   const stats = (() => {
     try {
-      return statSync(resolved)
+      return lstatSync(resolved)
     } catch {
       return null
     }
   })()
 
-  if (stats?.isSymbolicLink?.() || (stats && !stats.isFile() && !stats.isDirectory())) {
+  if (stats?.isSymbolicLink?.()) {
+    throw new Error('Symbolic links are not available to agent tools.')
+  }
+  if (stats && !stats.isFile() && !stats.isDirectory()) {
     throw new Error('Only regular files and directories are available to agent tools.')
   }
 

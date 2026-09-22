@@ -12,7 +12,8 @@
 
     /* Not strict yet: the server is untyped JavaScript, and the value here is
        catching misspelled identifiers, wrong argument counts, and unknown
-       properties rather than annotating everything. Strictness can follow. */
+       properties rather than annotating everything. Strictness can follow
+       incrementally — strictNullChecks first, then strictFunctionTypes. */
     "strict": false,
     "noImplicitAny": false,
     "noUnusedLocals": true,

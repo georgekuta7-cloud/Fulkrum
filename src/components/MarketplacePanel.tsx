@@ -125,7 +125,7 @@ export function MarketplacePanel({ bridge }: { bridge: Bridge }) {
             </button>
           ))}
         </div>
-        <button type="button" className="icon" title="Re-fetch the signed index" onClick={() => void bridge.refreshMarketplace()}>
+        <button type="button" className="icon" title="Re-fetch the signed index" aria-label="Refresh marketplace" onClick={() => void bridge.refreshMarketplace()}>
           <RefreshCw size={14} />
         </button>
       </div>
@@ -156,7 +156,7 @@ export function MarketplacePanel({ bridge }: { bridge: Bridge }) {
         <div className="deny-row">
           <input value={registryUrl} placeholder="https://… registry listing (ClawHub-compatible JSON)" onChange={(event) => setRegistryUrl(event.target.value)} aria-label="Registry URL to browse" />
           <button type="button" disabled={busy || !registryUrl.trim()} onClick={() => void doBrowse()}>Browse</button>
-          {bridge.registry ? <button type="button" className="icon" onClick={() => bridge.clearRegistry()} title="Clear registry results">✕</button> : null}
+          {bridge.registry ? <button type="button" className="icon" onClick={() => bridge.clearRegistry()} title="Clear registry results" aria-label="Clear registry results">✕</button> : null}
         </div>
         {bridge.registry ? (
           <ul className="market-grid">

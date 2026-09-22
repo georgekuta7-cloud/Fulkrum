@@ -148,7 +148,7 @@ export function SettingsPanel({ bridge, theme, setTheme, onClose }: { bridge: Br
             <p className="eyebrow">Workspace</p>
             <h2>State, permissions, spend</h2>
           </div>
-          <button type="button" className="icon" onClick={onClose} title="Close"><X size={16} /></button>
+          <button type="button" className="icon" onClick={onClose} title="Close" aria-label="Close settings"><X size={16} /></button>
         </header>
 
         {configReport?.problems.length ? (
@@ -207,7 +207,7 @@ export function SettingsPanel({ bridge, theme, setTheme, onClose }: { bridge: Br
                       {status?.providers.find((entry) => entry.id === provider.id)?.breaker?.open ? ' · skipped after failures' : ''}
                     </span>
                   </div>
-                  <button type="button" className="icon" title={`Test ${provider.label}`} onClick={async () => {
+                  <button type="button" className="icon" title={`Test ${provider.label}`} aria-label={`Test ${provider.label}`} onClick={async () => {
                     setTests((current) => ({ ...current, [provider.id]: 'testing' }))
                     try {
                       const result = await testProvider(provider.id)
@@ -223,7 +223,7 @@ export function SettingsPanel({ bridge, theme, setTheme, onClose }: { bridge: Br
                     <Zap size={13} />
                   </button>
                   <button type="button" className="tiny-button" onClick={() => setEditing(editing === provider.id ? null : provider.id)}>{editing === provider.id ? 'close' : 'edit'}</button>
-                  {provider.custom ? <button type="button" className="icon danger" title={`Remove ${provider.label}`} onClick={() => void removeProvider(provider.id)}><X size={12} /></button> : null}
+                  {provider.custom ? <button type="button" className="icon danger" title={`Remove ${provider.label}`} aria-label={`Remove ${provider.label}`} onClick={() => void removeProvider(provider.id)}><X size={12} /></button> : null}
                 </div>
                 {tests[provider.id] && tests[provider.id] !== 'testing' ? <p className="muted tiny">{tests[provider.id]}</p> : null}
                 {editing === provider.id ? (

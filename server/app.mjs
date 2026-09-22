@@ -31,6 +31,15 @@ import { listSettings, resetSetting, saveSetting } from './settings.mjs'
 export const MAX_JSON_BODY_BYTES = 100_000
 export const MAX_TOOL_BODY_BYTES = 600_000
 
+/** decodeURIComponent that returns the raw input on a malformed escape. */
+function safeDecode(value) {
+  try {
+    return safeDecode(value)
+  } catch {
+    return value
+  }
+}
+
 class HttpError extends Error {
   constructor(status, message) {
     super(message)
@@ -86,7 +95,7 @@ export function sendJson(response, status, payload) {
  */
 export function readJson(request, maximumLength = MAX_JSON_BODY_BYTES) {
   return new Promise((resolve, reject) => {
-    let body = ''
+    const chunks = []
     let received = 0
     let settled = false
     const fail = (status, message) => {
@@ -97,11 +106,8 @@ export function readJson(request, maximumLength = MAX_JSON_BODY_BYTES) {
 
     request.on('data', (chunk) => {
       if (settled) return
-      // Count bytes, not UTF-16 code units: `body.length` undercounts any
-      // multi-byte character, so a 100k-character CJK body is three times the
-      // stated limit.
       received += chunk.length
-      body += chunk
+      chunks.push(chunk)
       if (received > maximumLength) {
         fail(413, `Request body must be ${maximumLength} bytes or fewer.`)
         request.resume()
@@ -112,6 +118,7 @@ export function readJson(request, maximumLength = MAX_JSON_BODY_BYTES) {
       if (settled) return
       settled = true
       try {
+        const body = Buffer.concat(chunks).toString('utf8')
         resolve(body ? JSON.parse(body) : {})
       } catch {
         reject(new HttpError(400, 'Request body must be valid JSON.'))
@@ -173,7 +180,16 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
     const hostname = host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : host.split(':')[0]
     return selfOriginHosts.has(hostname) && origin === `http://${host}`
   }
-  const isAllowedOrigin = (origin, host) => !origin || allowedOrigins.has(origin) || isSelfOrigin(origin, host)
+  const isAllowedOrigin = (origin, host) => {
+    // A request with no Origin header is a non-browser client (curl, script).
+    // Those are allowed only when the Host header names a loopback address:
+    // a rebound DNS name pointing at this port must not reach the API.
+    if (!origin) {
+      const hostname = host ? (host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : host.split(':')[0]) : ''
+      return selfOriginHosts.has(hostname)
+    }
+    return allowedOrigins.has(origin) || isSelfOrigin(origin, host)
+  }
   let draining = null
   /** Open event streams, so draining can end them and let the server close. */
   const openStreams = new Set()
@@ -211,7 +227,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
     }
     let relative = requestUrl.pathname
     try {
-      relative = decodeURIComponent(relative)
+      relative = safeDecode(relative)
     } catch {
       // A malformed escape is not a file name; the resolve below refuses it.
     }
@@ -288,7 +304,11 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       // No demo replies: without a key there is nothing to say that is not
       // invented. The settings drawer takes a key with no restart, and then
       // this same request works.
-      sendJson(response, 409, { error: `No provider key is configured for ${provider.label}. Add one in Workspace settings — providers, keys, endpoints, and models are all settable there — then send this again.` })
+      const configured = providerRegistry.configuredProviders()
+      const hint = configured.length
+        ? `You have ${configured.map((p) => p.label).join(', ')} configured — pick one with the "using" dropdown.`
+        : 'Add one in Workspace settings — providers, keys, endpoints, and models are all settable there.'
+      sendJson(response, 409, { error: `No provider key is configured for ${provider.label}. ${hint}` })
       return
     }
 
@@ -618,7 +638,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       if (request.method === 'POST' && providerTestMatch) {
         let provider
         try {
-          provider = providerRegistry.resolve({ providerId: decodeURIComponent(providerTestMatch[1]) })
+          provider = providerRegistry.resolve({ providerId: safeDecode(providerTestMatch[1]) })
         } catch (error) {
           sendJson(response, 404, { error: error instanceof Error ? error.message : 'Unknown provider.' })
           return
@@ -631,7 +651,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       const providerMatch = requestUrl.pathname.match(/^\/api\/providers\/([^/]+)$/)
       if ((request.method === 'PATCH' || request.method === 'PUT') && providerMatch) {
         try {
-          const provider = providerRegistry.updateSettings(decodeURIComponent(providerMatch[1]), await readJson(request))
+          const provider = providerRegistry.updateSettings(safeDecode(providerMatch[1]), await readJson(request))
           sendJson(response, 200, { provider })
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Invalid provider settings.'
@@ -642,7 +662,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       if (request.method === 'DELETE' && providerMatch) {
         try {
-          const id = providerRegistry.removeCustom(decodeURIComponent(providerMatch[1]))
+          const id = providerRegistry.removeCustom(safeDecode(providerMatch[1]))
           sendJson(response, 200, { removed: id, providers: providerRegistry.list() })
         } catch (error) {
           sendJson(response, 400, { error: error instanceof Error ? error.message : 'Could not remove provider.' })
@@ -678,7 +698,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const projectMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)$/)
       if (request.method === 'GET' && projectMatch) {
-        const project = store.getProject(decodeURIComponent(projectMatch[1]))
+        const project = store.getProject(safeDecode(projectMatch[1]))
         sendJson(response, project ? 200 : 404, project ? project : { error: 'Project not found.' })
         return
       }
@@ -690,7 +710,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
             sendJson(response, 400, { error: 'Project settings must be an object.' })
             return
           }
-          sendJson(response, 200, { project: store.updateProject(decodeURIComponent(projectMatch[1]), body) })
+          sendJson(response, 200, { project: store.updateProject(safeDecode(projectMatch[1]), body) })
         } catch (error) {
           sendJson(response, error instanceof HttpError ? error.status : 400, { error: error instanceof Error ? error.message : 'Could not update project.' })
         }
@@ -699,8 +719,8 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const projectLearningsMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/learnings(?:\/([^/]+))?$/)
       if (projectLearningsMatch) {
-        const projectId = decodeURIComponent(projectLearningsMatch[1])
-        const learnId = projectLearningsMatch[2] ? decodeURIComponent(projectLearningsMatch[2]) : null
+        const projectId = safeDecode(projectLearningsMatch[1])
+        const learnId = projectLearningsMatch[2] ? safeDecode(projectLearningsMatch[2]) : null
         if (!store.getProject(projectId)) {
           sendJson(response, 404, { error: 'Project not found.' })
           return
@@ -727,8 +747,8 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const projectPlaybooksMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/playbooks(?:\/([^/]+)(?:\/runs)?)?$/)
       if (projectPlaybooksMatch) {
-        const projectId = decodeURIComponent(projectPlaybooksMatch[1])
-        const playbookId = projectPlaybooksMatch[2] ? decodeURIComponent(projectPlaybooksMatch[2]) : null
+        const projectId = safeDecode(projectPlaybooksMatch[1])
+        const playbookId = projectPlaybooksMatch[2] ? safeDecode(projectPlaybooksMatch[2]) : null
         const isRuns = requestUrl.pathname.endsWith('/runs')
         if (!store.getProject(projectId)) {
           sendJson(response, 404, { error: 'Project not found.' })
@@ -800,8 +820,8 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const projectSchedulesMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/schedules(?:\/([^/]+))?$/)
       if (projectSchedulesMatch) {
-        const projectId = decodeURIComponent(projectSchedulesMatch[1])
-        const scheduleId = projectSchedulesMatch[2] ? decodeURIComponent(projectSchedulesMatch[2]) : null
+        const projectId = safeDecode(projectSchedulesMatch[1])
+        const scheduleId = projectSchedulesMatch[2] ? safeDecode(projectSchedulesMatch[2]) : null
         if (!store.getProject(projectId)) {
           sendJson(response, 404, { error: 'Project not found.' })
           return
@@ -854,8 +874,8 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const projectGoalsMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/goals(?:\/([^/]+)(?:\/(runs|report))?)?$/)
       if (projectGoalsMatch) {
-        const projectId = decodeURIComponent(projectGoalsMatch[1])
-        const goalId = projectGoalsMatch[2] ? decodeURIComponent(projectGoalsMatch[2]) : null
+        const projectId = safeDecode(projectGoalsMatch[1])
+        const goalId = projectGoalsMatch[2] ? safeDecode(projectGoalsMatch[2]) : null
         const sub = projectGoalsMatch[3] ?? null
         if (!store.getProject(projectId)) {
           sendJson(response, 404, { error: 'Project not found.' })
@@ -996,7 +1016,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const marketplaceInstallMatch = requestUrl.pathname.match(/^\/api\/marketplace\/([^/]+)$/)
       if (marketplaceInstallMatch) {
-        const id = decodeURIComponent(marketplaceInstallMatch[1])
+        const id = safeDecode(marketplaceInstallMatch[1])
         try {
           assertEntryId(id)
         } catch {
@@ -1036,7 +1056,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const projectBlueprintsMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/blueprints\/(preview|apply)$/)
       if (projectBlueprintsMatch) {
-        const projectId = decodeURIComponent(projectBlueprintsMatch[1])
+        const projectId = safeDecode(projectBlueprintsMatch[1])
         const action = projectBlueprintsMatch[2]
         if (!store.getProject(projectId)) {
           sendJson(response, 404, { error: 'Project not found.' })
@@ -1070,7 +1090,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       }
 
       if (request.method === 'DELETE' && projectMatch) {
-        const projectId = decodeURIComponent(projectMatch[1])
+        const projectId = safeDecode(projectMatch[1])
         const detail = store.getProject(projectId)
         if (!detail) {
           sendJson(response, 404, { error: 'Project not found.' })
@@ -1130,7 +1150,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runReportMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/report$/)
       if (request.method === 'GET' && runReportMatch) {
-        const runId = decodeURIComponent(runReportMatch[1])
+        const runId = safeDecode(runReportMatch[1])
         const report = buildRunReport({ store, runId })
         if (!report) {
           sendJson(response, 404, { error: 'Run not found.' })
@@ -1162,7 +1182,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runForkMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/fork$/)
       if (request.method === 'POST' && runForkMatch) {
-        const sourceRunId = decodeURIComponent(runForkMatch[1])
+        const sourceRunId = safeDecode(runForkMatch[1])
         const source = store.getRun(sourceRunId)
         if (!source) {
           sendJson(response, 404, { error: 'Run not found.' })
@@ -1286,15 +1306,15 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const standingGrantMatch = requestUrl.pathname.match(/^\/api\/grants\/([^/]+)$/)
       if (request.method === 'DELETE' && standingGrantMatch) {
-        const revoked = store.revokeStandingGrant(decodeURIComponent(standingGrantMatch[1]))
+        const revoked = store.revokeStandingGrant(safeDecode(standingGrantMatch[1]))
         sendJson(response, revoked ? 200 : 404, revoked ? { grant: revoked, grants: store.listStandingGrants() } : { error: 'No active standing grant with that id.' })
         return
       }
 
       const toolPreviewMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/tools\/([^/]+)\/preview$/)
       if (request.method === 'GET' && toolPreviewMatch) {
-        const runId = decodeURIComponent(toolPreviewMatch[1])
-        const toolCallId = decodeURIComponent(toolPreviewMatch[2])
+        const runId = safeDecode(toolPreviewMatch[1])
+        const toolCallId = safeDecode(toolPreviewMatch[2])
         const toolCall = store.getToolCall(toolCallId)
         if (!toolCall || toolCall.runId !== runId) {
           sendJson(response, 404, { error: 'Tool call not found.' })
@@ -1313,7 +1333,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runBundleMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/bundle$/)
       if (request.method === 'GET' && runBundleMatch) {
-        const runId = decodeURIComponent(runBundleMatch[1])
+        const runId = safeDecode(runBundleMatch[1])
         const report = buildRunReport({ store, runId })
         if (!report) {
           sendJson(response, 404, { error: 'Run not found.' })
@@ -1369,7 +1389,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runEstimateMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/estimate$/)
       if (request.method === 'GET' && runEstimateMatch) {
-        const runId = decodeURIComponent(runEstimateMatch[1])
+        const runId = safeDecode(runEstimateMatch[1])
         const estimate = store.estimateRunCost(runId)
         if (!estimate) {
           sendJson(response, 404, { error: 'Run not found.' })
@@ -1381,7 +1401,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runEventsMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/events$/)
       if (request.method === 'GET' && runEventsMatch) {
-        const runId = decodeURIComponent(runEventsMatch[1])
+        const runId = safeDecode(runEventsMatch[1])
         if (!store.getRun(runId)) {
           sendJson(response, 404, { error: 'Run not found.' })
           return
@@ -1393,7 +1413,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runAuditMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/audit$/)
       if (request.method === 'GET' && runAuditMatch) {
-        const runId = decodeURIComponent(runAuditMatch[1])
+        const runId = safeDecode(runAuditMatch[1])
         if (!store.getRun(runId)) {
           sendJson(response, 404, { error: 'Run not found.' })
           return
@@ -1404,7 +1424,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runTraceMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/trace$/)
       if (request.method === 'GET' && runTraceMatch) {
-        const runId = decodeURIComponent(runTraceMatch[1])
+        const runId = safeDecode(runTraceMatch[1])
         if (!store.getRun(runId)) {
           sendJson(response, 404, { error: 'Run not found.' })
           return
@@ -1415,7 +1435,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runStreamMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/stream$/)
       if (request.method === 'GET' && runStreamMatch) {
-        const runId = decodeURIComponent(runStreamMatch[1])
+        const runId = safeDecode(runStreamMatch[1])
         if (!store.getRun(runId)) {
           sendJson(response, 404, { error: 'Run not found.' })
           return
@@ -1459,7 +1479,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runPlanMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/plan$/)
       if (runPlanMatch) {
-        const runId = decodeURIComponent(runPlanMatch[1])
+        const runId = safeDecode(runPlanMatch[1])
         const run = store.getRun(runId)
         if (!run) {
           sendJson(response, 404, { error: 'Run not found.' })
@@ -1535,7 +1555,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runControlMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/control$/)
       if (request.method === 'POST' && runControlMatch) {
-        const runId = decodeURIComponent(runControlMatch[1])
+        const runId = safeDecode(runControlMatch[1])
         const run = store.getRun(runId)
         const body = await readJson(request)
 
@@ -1698,8 +1718,8 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const toolApprovalMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/tools\/([^/]+)\/approve$/)
       if (request.method === 'POST' && toolApprovalMatch) {
-        const runId = decodeURIComponent(toolApprovalMatch[1])
-        const toolCallId = decodeURIComponent(toolApprovalMatch[2])
+        const runId = safeDecode(toolApprovalMatch[1])
+        const toolCallId = safeDecode(toolApprovalMatch[2])
         const run = store.getRun(runId)
         const toolCall = store.getToolCall(toolCallId)
         if (!run || !toolCall || toolCall.runId !== runId || toolCall.status !== 'approval_required') {
@@ -1749,6 +1769,13 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           }
           if (['cancelled', 'completed', 'failed', 'interrupted'].includes(store.getRun(runId)?.status ?? '')) {
             sendJson(response, 409, { error: 'The run ended before this edit could run.' })
+            return
+          }
+          // Claim atomically before denying: two rapid edit-approvals must not
+          // both pass the status check and both submit an edited call.
+          const editClaim = store.claimToolCallForApproval(toolCall.id, null)
+          if (!editClaim.claimed) {
+            sendJson(response, 409, { error: 'Tool call is no longer awaiting approval.' })
             return
           }
           store.updateToolCall(toolCall.id, { status: 'denied', error: 'Superseded by an edited approval.' })
@@ -1842,8 +1869,8 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const toolDenialMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/tools\/([^/]+)\/deny$/)
       if (request.method === 'POST' && toolDenialMatch) {
-        const runId = decodeURIComponent(toolDenialMatch[1])
-        const toolCallId = decodeURIComponent(toolDenialMatch[2])
+        const runId = safeDecode(toolDenialMatch[1])
+        const toolCallId = safeDecode(toolDenialMatch[2])
         const run = store.getRun(runId)
         const toolCall = store.getToolCall(toolCallId)
         if (!run || !toolCall || toolCall.runId !== runId || toolCall.status !== 'approval_required') {
@@ -1870,8 +1897,8 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const toolAnswerMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/tools\/([^/]+)\/answer$/)
       if (request.method === 'POST' && toolAnswerMatch) {
-        const runId = decodeURIComponent(toolAnswerMatch[1])
-        const toolCallId = decodeURIComponent(toolAnswerMatch[2])
+        const runId = safeDecode(toolAnswerMatch[1])
+        const toolCallId = safeDecode(toolAnswerMatch[2])
         const run = store.getRun(runId)
         const toolCall = store.getToolCall(toolCallId)
         if (!run || !toolCall || toolCall.runId !== runId || toolCall.status !== 'approval_required' || toolCall.name !== 'run.ask') {
@@ -1901,7 +1928,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runGrantsMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/grants$/)
       if (request.method === 'GET' && runGrantsMatch) {
-        const runId = decodeURIComponent(runGrantsMatch[1])
+        const runId = safeDecode(runGrantsMatch[1])
         if (!store.getRun(runId)) {
           sendJson(response, 404, { error: 'Run not found.' })
           return
@@ -1912,7 +1939,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runClaimsMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/claims$/)
       if (request.method === 'GET' && runClaimsMatch) {
-        const runId = decodeURIComponent(runClaimsMatch[1])
+        const runId = safeDecode(runClaimsMatch[1])
         if (!store.getRun(runId)) {
           sendJson(response, 404, { error: 'Run not found.' })
           return
@@ -1923,8 +1950,8 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runGrantMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/grants\/([^/]+)$/)
       if (request.method === 'DELETE' && runGrantMatch) {
-        const runId = decodeURIComponent(runGrantMatch[1])
-        const toolName = decodeURIComponent(runGrantMatch[2])
+        const runId = safeDecode(runGrantMatch[1])
+        const toolName = safeDecode(runGrantMatch[2])
         if (!store.getRun(runId)) {
           sendJson(response, 404, { error: 'Run not found.' })
           return
@@ -1937,8 +1964,8 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runTimelineMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/timeline\/([^/]+)(\/restore)?$/)
       if (runTimelineMatch) {
-        const runId = decodeURIComponent(runTimelineMatch[1])
-        const seq = Number(decodeURIComponent(runTimelineMatch[2]))
+        const runId = safeDecode(runTimelineMatch[1])
+        const seq = Number(safeDecode(runTimelineMatch[2]))
         const restoring = Boolean(runTimelineMatch[3])
         const run = store.getRun(runId)
         if (!run) {
@@ -2007,8 +2034,8 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runArtifactRevertMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/artifacts\/([^/]+)\/revert$/)
       if (request.method === 'POST' && runArtifactRevertMatch) {
-        const runId = decodeURIComponent(runArtifactRevertMatch[1])
-        const toolCallId = decodeURIComponent(runArtifactRevertMatch[2])
+        const runId = safeDecode(runArtifactRevertMatch[1])
+        const toolCallId = safeDecode(runArtifactRevertMatch[2])
         const run = store.getRun(runId)
         if (!run) {
           sendJson(response, 404, { error: 'Run not found.' })
@@ -2048,7 +2075,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runArtifactsMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/artifacts$/)
       if (request.method === 'GET' && runArtifactsMatch) {
-        const runId = decodeURIComponent(runArtifactsMatch[1])
+        const runId = safeDecode(runArtifactsMatch[1])
         if (!store.getRun(runId)) {
           sendJson(response, 404, { error: 'Run not found.' })
           return
@@ -2059,14 +2086,14 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runToolsMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/tools$/)
       if (request.method === 'GET' && runToolsMatch) {
-        const runId = decodeURIComponent(runToolsMatch[1])
+        const runId = safeDecode(runToolsMatch[1])
         const run = store.getRun(runId)
         sendJson(response, run ? 200 : 404, run ? { toolCalls: store.listToolCalls(runId) } : { error: 'Run not found.' })
         return
       }
 
       if (request.method === 'POST' && runToolsMatch) {
-        const runId = decodeURIComponent(runToolsMatch[1])
+        const runId = safeDecode(runToolsMatch[1])
         const run = store.getRun(runId)
         if (!run || ['cancelled', 'completed', 'failed'].includes(run.status)) {
           sendJson(response, 409, { error: 'Tool calls require an active run.' })
@@ -2087,7 +2114,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       const runMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)$/)
       if (request.method === 'GET' && runMatch) {
-        const runId = decodeURIComponent(runMatch[1])
+        const runId = safeDecode(runMatch[1])
         // ?light=1 is the refresh path: status, parked approvals, and counts.
         // History grows with the run's age; a refresh must not cost that age.
         // The chain check and spend rollup ride the full snapshot only.

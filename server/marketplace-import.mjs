@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { parseAgencyAgent } from './agencyAgents.mjs'
 
 /**
  * Internet imports: turn unsigned public skills into installable catalog
@@ -173,6 +174,17 @@ export function draftCommunitySkill(text, { source }) {
   }
 }
 
+/** Reject URLs that resolve to loopback, link-local, or private ranges. */
+function assertPublicUrl(parsed) {
+  const host = parsed.hostname.toLowerCase()
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]' || host === '0.0.0.0') {
+    throw new Error('Imports cannot target loopback addresses.')
+  }
+  if (/^10\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host) || /^192\.168\./.test(host) || /^169\.254\./.test(host)) {
+    throw new Error('Imports cannot target private or link-local addresses.')
+  }
+}
+
 /**
  * @param {string} url
  * @param {{ fetchImpl?: (input: any, init?: any) => Promise<any> }} [options]
@@ -193,22 +205,38 @@ async function downloadBounded(url, { fetchImpl = globalThis.fetch } = {}) {
 export async function importSkillFromUrl(url, { fetchImpl } = {}) {
   const parsed = new URL(String(url))
   if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Only http and https URLs can be imported.')
+  assertPublicUrl(parsed)
   const text = await downloadBounded(parsed.href, { fetchImpl })
   return draftCommunitySkill(text, { source: parsed.href })
 }
 
-/** Import a local directory whose root holds SKILL.md (cloned repo, download). */
+/**
+ * Import a local directory whose root holds SKILL.md (cloned repo, download).
+ * Also accepts agency-agents markdown definitions.
+ */
 export function importSkillFromDirectory(dir) {
   const file = path.join(String(dir), 'SKILL.md')
   let size = 0
   try {
     size = statSync(file).size
   } catch {
-    throw new Error('No SKILL.md at the directory root.')
+    // No SKILL.md — try agency-agents format
+    return importAgencyAgentsFromDirectory(dir)
   }
   if (size > MAX_PACK_BYTES) throw new Error('The skill pack exceeds 256 kB.')
   const text = readFileSync(file, 'utf8')
   return draftCommunitySkill(text, { source: `local:${path.resolve(String(dir))}` })
+}
+
+/** Import agency-agents markdown definitions from a directory. */
+function importAgencyAgentsFromDirectory(dir) {
+  const entries = readdirSync(String(dir), { withFileTypes: true }).filter((e) => e.isFile() && e.name.endsWith('.md'))
+  if (!entries.length) throw new Error('No SKILL.md or agency-agents markdown at the directory root.')
+  const entry = entries[0]
+  const text = readFileSync(path.join(String(dir), entry.name), 'utf8')
+  const parsed = parseAgencyAgent(text, { source: `agency-agents:${entry.name}` })
+  if (!parsed.ok) throw new Error(`Unusable agency agent: ${parsed.problems?.join('; ') ?? 'invalid'}`)
+  return draftCommunitySkill(text, { source: `agency-agents:${path.resolve(String(dir))}` })
 }
 
 /**
@@ -221,6 +249,9 @@ export function importSkillFromDirectory(dir) {
  * @param {{ fetchImpl?: (input: any, init?: any) => Promise<any> }} [options]
  */
 export async function fetchRegistryCatalog(registryUrl, { fetchImpl = globalThis.fetch } = {}) {
+  const parsedRegistry = new URL(String(registryUrl))
+  if (!['http:', 'https:'].includes(parsedRegistry.protocol)) throw new Error('Only http and https registry URLs are supported.')
+  assertPublicUrl(parsedRegistry)
   const response = await fetchImpl(String(registryUrl), { redirect: 'follow' })
   if (!response.ok) throw new Error(`The registry answered ${response.status}.`)
   const text = await response.text()

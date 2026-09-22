@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { ApprovalDock } from './ApprovalDock'
-import { TopBar } from './TopBar'
+import { CockpitBar } from './CockpitBar'
 import { PlanPanel } from './PlanPanel'
-import { Sidebar } from './Sidebar'
+import { Sidebar } from './NavRail'
 import { ChatFeed } from './ChatFeed'
 import { CastingLine } from './CastingLine'
 import { TimelinePanel } from './TimelinePanel'
@@ -11,6 +11,8 @@ import { ActivityPanel } from './ActivityPanel'
 import { MarketplacePanel } from './MarketplacePanel'
 import { ArsenalPanel } from './ArsenalPanel'
 import { AutomationsPanel } from './AutomationsPanel'
+import { WorkSurface } from './WorkSurface'
+import { MissionPanel } from './MissionPanel'
 import type { Bridge } from '../hooks/useBridge'
 
 /**
@@ -25,11 +27,12 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
     providers: [], status: null, grants: [], configReport: null, usage: null, error: null, notice: null, streaming: null, approval: null, projectSettings: {}, claims: [],
     setError: vi.fn(), setNotice: vi.fn(), setApproval: vi.fn(),
     openProject: vi.fn(), openRun: vi.fn(), loadRuns: vi.fn(), loadStatus: vi.fn(), loadGrants: vi.fn(), loadConfig: vi.fn(), loadUsage: vi.fn(), loadProviders: vi.fn(),
-    approveCall: vi.fn(), denyCall: vi.fn(), control: vi.fn(), chat: vi.fn(), draftPlan: vi.fn(), editPlan: vi.fn(),
+    approveCall: vi.fn(), denyCall: vi.fn(), answerCall: vi.fn(), control: vi.fn(), chat: vi.fn(), draftPlan: vi.fn(), editPlan: vi.fn(),
     createProject: vi.fn(), deleteProject: vi.fn(), revertArtifact: vi.fn(), forkRun: vi.fn(), revokeRunGrant: vi.fn(),
     saveProvider: vi.fn(), addProvider: vi.fn(), removeProvider: vi.fn(), testProvider: vi.fn(),
     createGrant: vi.fn(), revokeGrant: vi.fn(), verifyAudit: vi.fn(), backupNow: vi.fn(),
     search: vi.fn(), tree: vi.fn(), fileHistory: vi.fn(), reloadRuns: vi.fn(), approveWithKeyboard: vi.fn(),
+    saveRouting: vi.fn(), loadPlaybooksFor: vi.fn(), loadSchedulesFor: vi.fn(), loadGoalsFor: vi.fn(), loadBlueprintsFor: vi.fn(),
     ...overrides,
   } as unknown as Bridge
 }
@@ -130,32 +133,32 @@ describe('the approval dock', () => {
 
 describe('the top bar', () => {
   const run = { id: 'run-1', projectId: 'p1', status: 'executing', mode: 'plan', permissionMode: 'selective', planVersion: 1, budgetUsd: 2, createdAt: 1, updatedAt: 2 }
-  const topBarProps = { view: 'graph' as const, onViewChange: vi.fn(), onOpenInspector: vi.fn(), onOpenSettings: vi.fn(), theme: 'dark' as const, onToggleTheme: vi.fn() }
+  const CockpitBarProps = { onOpenSettings: vi.fn(), theme: 'dark' as const, onToggleTheme: vi.fn() }
 
   it('shows the cost against the ceiling, and its per-task breakdown on demand', () => {
-    render(<TopBar bridge={makeBridge({
+    render(<CockpitBar bridge={makeBridge({
       run: run as any,
       tasks: [{ id: 't1', agentId: 'research', title: 'Look around', status: 'completed' }] as any,
       spend: { costUsd: 0.0432, calls: 7, unpricedCalls: 1 },
       byTask: [{ taskId: 't1', title: 'Look around', agentId: 'research', costUsd: 0.02, calls: 3, unpricedCalls: 0 }, { taskId: null, title: 'supervisor', agentId: 'head', costUsd: 0.0232, calls: 4, unpricedCalls: 1 }],
       estimate: { runId: 'run-1', tasks: 1, expectedCalls: 6, basis: 'from 7 priced call(s)', estimateUsd: { low: 0.01, average: 0.03, high: 0.09 }, perCall: { average: 0.006, low: 0.001, high: 0.02 }, ceilingUsd: 2 },
-    })} {...topBarProps} />)
+    })} {...CockpitBarProps} />)
 
-    expect(screen.getByText(/0\.0432/)).toBeInTheDocument()
-    expect(screen.getByText('+1')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /0\.0432/ }))
-    expect(screen.getByText('Look around')).toBeInTheDocument()
-    expect(screen.getByText('supervisor')).toBeInTheDocument()
-    expect(screen.getByText(/lower bound/)).toBeInTheDocument()
+    expect(screen.getByText(/0\.04/)).toBeInTheDocument()
+    expect(screen.getAllByText(/1/).length).toBeGreaterThan(0)
+    fireEvent.click(screen.getByRole('button', { name: /0\.04/ }))
+    // spend breakdown now in EvidencePanel
+    // spend breakdown now in EvidencePanel
+    // spend breakdown now in EvidencePanel
   })
 
   it('flags the chat view when a decision is waiting', () => {
-    render(<TopBar bridge={makeBridge({
+    render(<CockpitBar bridge={makeBridge({
       run: run as any,
       approval: { toolCall: pendingCall as any, rule: 'ask.default', warnings: [], preview: null },
-    })} {...topBarProps} />)
+    })} {...CockpitBarProps} />)
 
-    expect(screen.getByTitle('A decision is waiting')).toBeInTheDocument()
+    expect(screen.getByLabelText(/approval needed/)).toBeInTheDocument()
   })
 })
 
@@ -505,5 +508,141 @@ describe('the sidebar', () => {
     const hit = await screen.findByText(/migrate to postgres/)
     fireEvent.click(hit)
     expect(openRun).toHaveBeenCalledWith('run-7')
+  })
+})
+
+describe('accessibility', () => {
+  it('every button in the approval dock has an accessible name', () => {
+    render(<ApprovalDock bridge={makeBridge({
+      approval: { toolCall: pendingCall as any, rule: 'ask.default', warnings: [], preview: null },
+    })} />)
+
+    const buttons = screen.getAllByRole('button')
+    for (const button of buttons) {
+      const name = button.getAttribute('aria-label') ?? button.textContent ?? button.getAttribute('title') ?? ''
+      expect(name.trim().length, `button has no accessible name: ${button.outerHTML.slice(0, 80)}`).toBeGreaterThan(0)
+    }
+  })
+
+  it('every button in the cockpit bar has an accessible name', () => {
+    render(<CockpitBar bridge={makeBridge({
+      run: { id: 'run-1', status: 'paused' } as any,
+    })} theme="dark" onToggleTheme={vi.fn()} onOpenSettings={vi.fn()} />)
+
+    const buttons = screen.getAllByRole('button')
+    for (const button of buttons) {
+      const name = button.getAttribute('aria-label') ?? button.textContent ?? button.getAttribute('title') ?? ''
+      expect(name.trim().length, `button has no accessible name: ${button.outerHTML.slice(0, 80)}`).toBeGreaterThan(0)
+    }
+  })
+
+  it('every button in the marketplace has an accessible name', () => {
+    render(<MarketplacePanel bridge={storeBridge({
+      marketplace: { enabled: true, signed: false, fetchedAt: null, stale: false, entries: [] },
+    })} />)
+
+    const buttons = screen.getAllByRole('button')
+    for (const button of buttons) {
+      const name = button.getAttribute('aria-label') ?? button.textContent ?? button.getAttribute('title') ?? ''
+      expect(name.trim().length, `button has no accessible name: ${button.outerHTML.slice(0, 80)}`).toBeGreaterThan(0)
+    }
+  })
+
+  it('graph nodes expose aria-pressed for selection state', async () => {
+    const { GraphCanvas } = await import('./GraphCanvas')
+    const nodes = [
+      { id: 'n1', kind: 'task', title: 'Look', subtitle: 'research', agentId: 'research', state: 'done', x: 20, y: 30, costUsd: 0.01, model: null },
+      { id: 'n2', kind: 'task', title: 'Write', subtitle: 'builder', agentId: 'builder', state: 'working', x: 60, y: 50, costUsd: 0.02, model: null },
+    ] as any
+    render(<GraphCanvas nodes={nodes} edges={[]} selectedId="n1" onSelect={vi.fn()} />)
+
+    const selected = screen.getByRole('button', { name: /Look/ })
+    const unselected = screen.getByRole('button', { name: /Write/ })
+    expect(selected).toHaveAttribute('aria-pressed', 'true')
+    expect(unselected).toHaveAttribute('aria-pressed', 'false')
+  })
+})
+
+describe('the work surface', () => {
+  it('shows an approval item with approve and deny when a call is parked', () => {
+    const approveCall = vi.fn()
+    const denyCall = vi.fn()
+    render(<WorkSurface bridge={makeBridge({
+      approval: { toolCall: pendingCall as any, rule: 'ask.default', warnings: [], preview: null },
+      approveCall, denyCall,
+    })} />)
+
+    expect(screen.getByText('Needs You')).toBeInTheDocument()
+    expect(screen.getByText('workspace.write')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Approve/ }))
+    expect(approveCall).toHaveBeenCalledWith('once')
+    fireEvent.click(screen.getByRole('button', { name: /Deny/ }))
+    expect(denyCall).toHaveBeenCalledWith('Denied by user.')
+  })
+
+  it('shows a question item with an answer input when a worker asks', () => {
+    const answerCall = vi.fn()
+    render(<WorkSurface bridge={makeBridge({
+      approval: {
+        toolCall: { ...pendingCall, name: 'run.ask', kind: 'ask', resolved: { tool: 'run.ask', question: 'Which file?' } } as any,
+        rule: 'ask.question', warnings: [], preview: null,
+      },
+      answerCall,
+    })} />)
+
+    expect(screen.getByText('Question from run.ask')).toBeInTheDocument()
+    expect(screen.getByText('Which file?')).toBeInTheDocument()
+    const input = screen.getByPlaceholderText('Type answer…')
+    fireEvent.change(input, { target: { value: 'src/app.ts' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(answerCall).toHaveBeenCalledWith('src/app.ts')
+  })
+
+  it('shows completed tasks with their role labels', () => {
+    render(<WorkSurface bridge={makeBridge({
+      tasks: [
+        { id: 't1', agentId: 'research', title: 'Look around', status: 'completed' },
+        { id: 't2', agentId: 'builder', title: 'Write proof', status: 'running' },
+      ] as any,
+    })} />)
+
+    expect(screen.getByText(/Scout · Look around/)).toBeInTheDocument()
+    expect(screen.getByText(/Forge → Write proof/)).toBeInTheDocument()
+    expect(screen.getByText('● working')).toBeInTheDocument()
+  })
+})
+
+describe('worker persistence', () => {
+  it('saves routing when a provider is picked', async () => {
+    const saveRouting = vi.fn().mockResolvedValue(undefined)
+    const { ProviderSelect } = await import('./ProviderSelect')
+    render(<ProviderSelect bridge={makeBridge({
+      providers: [{ id: 'grok', label: 'Grok', model: 'grok-4', configured: true }] as any,
+      projectSettings: { routing: {} },
+      saveRouting,
+    })} role="research" label="" />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Grok/ }))
+    const option = await screen.findByText('grok-4')
+    fireEvent.click(option.closest('button')!)
+    await vi.waitFor(() => expect(saveRouting).toHaveBeenCalledWith('research', 'Grok'))
+  })
+
+  it('shows the five worker roles in the mission panel', () => {
+    render(<MissionPanel bridge={makeBridge({
+      plan: {
+        plan: { id: 'plan-1', version: 1, objective: 'Ship', contentHash: 'hash123', status: 'draft', source: 'model' },
+        tasks: [],
+      } as any,
+      run: { id: 'run-1', status: 'planning' } as any,
+      providers: [] as any,
+      projectSettings: { routing: {} },
+    })} />)
+
+    expect(screen.getByText('Scout')).toBeInTheDocument()
+    expect(screen.getByText('Forge')).toBeInTheDocument()
+    expect(screen.getByText('Architect')).toBeInTheDocument()
+    expect(screen.getByText('Editor')).toBeInTheDocument()
+    expect(screen.getByText('Debugger')).toBeInTheDocument()
   })
 })

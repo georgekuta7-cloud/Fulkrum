@@ -249,6 +249,14 @@ function toolCallFromRow(row) {
   }
 }
 
+function eventHashBody(event) {
+  return { runId: event.runId, sequence: event.sequence, type: event.type, agentId: event.agentId, payload: event.payload, createdAt: event.createdAt }
+}
+
+function computeEventHash(prevHash, body) {
+  return createHash('sha256').update(`${prevHash}\n${canonicalJson(body)}`, 'utf8').digest('hex')
+}
+
 export class FulkrumStore {
   constructor(filePath = process.env.FULKRUM_DB_PATH ?? path.join(process.env.FULKRUM_DATA_DIR ?? 'data', 'fulkrum.sqlite')) {
     mkdirSync(path.dirname(filePath), { recursive: true })
@@ -609,8 +617,8 @@ export class FulkrumStore {
     const sequence = Number(previous?.sequence ?? 0) + 1
     const prevHash = previous?.hash ?? genesisHash
     const createdAt = Date.now()
-    const body = { runId, sequence, type, agentId, payload, createdAt }
-    const hash = createHash('sha256').update(`${prevHash}\n${canonicalJson(body)}`, 'utf8').digest('hex')
+    const body = eventHashBody({ runId, sequence, type, agentId, payload, createdAt })
+    const hash = computeEventHash(prevHash, body)
     const event = { eventId: `evt-${randomUUID()}`, runId, ...body, prevHash, hash }
 
     this.database.prepare('INSERT INTO run_events(event_id, run_id, sequence, type, agent_id, payload_json, prev_hash, hash, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)')
@@ -683,8 +691,8 @@ export class FulkrumStore {
         unverifiable += 1
         continue
       }
-      const body = { runId: event.runId, sequence: event.sequence, type: event.type, agentId: event.agentId, payload: event.payload, createdAt: event.createdAt }
-      const expected = createHash('sha256').update(`${prevHash}\n${canonicalJson(body)}`, 'utf8').digest('hex')
+      const body = eventHashBody(event)
+      const expected = computeEventHash(prevHash, body)
       if (event.prevHash !== prevHash || event.hash !== expected) {
         return { ok: false, checked, unverifiable, total: rows.length, brokenAt: event.sequence, eventId: event.eventId, checkpoint, anchor, truncated: false, anchored: false, checkpointMissing: false }
       }
@@ -703,12 +711,15 @@ export class FulkrumStore {
     const truncated = highest !== null && lastSequence < highest
     const anchored = highest === null || lastSequence >= highest
     const checkpointHashIntact = !checkpoint || !checkpoint.hash || rows.some((row) => row.sequence === checkpoint.sequence && row.hash === checkpoint.hash)
+    // The anchor outside the database must match the event it claims to cover.
+    // Without this check a tampered anchor file would pass silently.
+    const anchorHashIntact = !anchor || !anchor.hash || rows.some((row) => row.sequence === anchor.sequence && row.hash === anchor.hash)
     // An anchor exists for this run but the row that recorded it does not: the row
     // was removed, which is a deletion rather than a run that never anchored.
     const checkpointMissing = Boolean(anchor && !checkpoint)
 
     return {
-      ok: anchored && checkpointHashIntact && !checkpointMissing,
+      ok: anchored && checkpointHashIntact && anchorHashIntact && !checkpointMissing,
       checked,
       unverifiable,
       total: rows.length,
@@ -718,6 +729,7 @@ export class FulkrumStore {
       anchored,
       truncated,
       checkpointHashIntact,
+      anchorHashIntact,
       checkpointMissing,
       // The first sequence covered by the chain, for an honest summary line.
       verifiedFrom: rows.find((row) => row.hash)?.sequence ?? null,
@@ -859,9 +871,9 @@ export class FulkrumStore {
       eventsUnverifiable: results.reduce((total, result) => total + result.unverifiable, 0),
       // A chain can be internally valid and still have lost its tail, so both are
       // reported separately rather than folded into one boolean.
-      broken: results.filter((result) => !result.ok && !result.truncated && result.checkpointHashIntact !== false && !result.checkpointMissing),
+      broken: results.filter((result) => !result.ok && !result.truncated && result.checkpointHashIntact !== false && result.anchorHashIntact !== false && !result.checkpointMissing),
       truncated: results.filter((result) => result.truncated),
-      anchorMismatch: results.filter((result) => result.checkpoint && !result.checkpointHashIntact),
+      anchorMismatch: results.filter((result) => (result.checkpoint && !result.checkpointHashIntact) || (result.anchor && result.anchorHashIntact === false)),
       // An anchor outside the database with no row to match it means the row was
       // deleted, which a checkpoint-only scheme cannot notice.
       anchorOrphaned: results.filter((result) => result.checkpointMissing),
@@ -1474,7 +1486,17 @@ export class FulkrumStore {
   }
 
   listPlaybooks(projectId) {
-    return this.database.prepare('SELECT * FROM playbooks WHERE project_id = ? ORDER BY created_at DESC').all(projectId).map((row) => this.getPlaybook(row.id))
+    return this.database.prepare('SELECT * FROM playbooks WHERE project_id = ? ORDER BY created_at DESC').all(projectId).map((row) => ({
+      id: row.id,
+      projectId: row.project_id,
+      name: row.name,
+      skills: parseJson(row.skills_json ?? '[]', []),
+      plan: parseJson(row.plan_json, null),
+      contentHash: row.content_hash,
+      budgetUsd: row.budget_usd === null || row.budget_usd === undefined ? null : Number(row.budget_usd),
+      approvedAt: row.approved_at === null || row.approved_at === undefined ? null : Number(row.approved_at),
+      createdAt: Number(row.created_at),
+    }))
   }
 
   deletePlaybook(id) {
@@ -1520,7 +1542,17 @@ export class FulkrumStore {
   }
 
   listSchedules(projectId) {
-    return this.database.prepare('SELECT * FROM schedules WHERE project_id = ? ORDER BY created_at DESC').all(projectId).map((row) => this.getSchedule(row.id))
+    return this.database.prepare('SELECT * FROM schedules WHERE project_id = ? ORDER BY created_at DESC').all(projectId).map((row) => ({
+      id: row.id,
+      projectId: row.project_id,
+      playbookId: row.playbook_id,
+      everyMinutes: Number(row.every_minutes),
+      budgetUsd: row.budget_usd === null || row.budget_usd === undefined ? null : Number(row.budget_usd),
+      enabled: Number(row.enabled) === 1,
+      nextFireAt: Number(row.next_fire_at),
+      lastRunId: row.last_run_id ?? null,
+      createdAt: Number(row.created_at),
+    }))
   }
 
   listDueSchedules(now) {

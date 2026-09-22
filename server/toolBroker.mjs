@@ -8,6 +8,8 @@ import { canonicalJson } from './canonicalJson.mjs'
 import { loadPluginManifests, searchPlugins } from './plugins.mjs'
 import { hashHeaderValues, redact } from './redaction.mjs'
 import { loadSkills, searchSkills } from './skills.mjs'
+import { allScrapingTools, scrape } from './agentReach.mjs'
+import { CodeGraph, codeGraphTools } from './codebaseMemory.mjs'
 
 const MAX_FILE_BYTES = 500_000
 // Read at use time, not import time: a value saved through the app applies live.
@@ -64,11 +66,24 @@ const toolDefinitions = [
   { name: 'run.ask', kind: 'ask', description: 'Ask the human a question and wait for the answer.' },
   { name: 'shell.exec', kind: 'shell', description: 'Run a command inside the sandboxed workspace container.' },
   { name: 'http.request', kind: 'http', description: 'Call an HTTP or HTTPS endpoint.' },
+  // External integrations: web scraping and code graph.
+  ...allScrapingTools(),
+  ...codeGraphTools(),
 ]
 
 function clipped(value, maximum = MAX_OUTPUT_BYTES) {
   const text = typeof value === 'string' ? value : JSON.stringify(value)
-  return text.length > maximum ? `${text.slice(0, maximum)}\n[output clipped]` : text
+  // Byte length, not UTF-16 code units: a CJK string of 100k characters is
+  // ~300k bytes and would slip past a `text.length` check.
+  const bytes = Buffer.byteLength(text, 'utf8')
+  if (bytes <= maximum) return text
+  // Slice to the byte budget, then drop any trailing partial multi-byte
+  // sequence so the result is still valid UTF-8.
+  const buf = Buffer.from(text, 'utf8').subarray(0, maximum)
+  let end = buf.length
+  while (end > 0 && (buf[end - 1] & 0xc0) === 0x80) end -= 1
+  if (end > 0 && (buf[end - 1] & 0x80) !== 0) end -= 1
+  return `${buf.subarray(0, end).toString('utf8')}\n[output clipped]`
 }
 
 async function walkFiles(directory, root, results, query, rules) {
@@ -287,6 +302,12 @@ export function redirectHop({ method, headers, body, currentUrl, status, locatio
   if (dropBody) {
     nextMethod = 'GET'
     nextBody = null
+    // Content-Length and Transfer-Encoding describe the body's framing, which
+    // no longer exists. Content-Type is left alone: it describes the media
+    // type and is harmless (and expected by some intermediaries) on a GET.
+    nextHeaders = Object.fromEntries(
+      Object.entries(nextHeaders ?? {}).filter(([name]) => !/^(content-length|content-encoding|transfer-encoding)$/i.test(name)),
+    )
   }
   return { method: nextMethod, headers: nextHeaders, body: nextBody, url: nextUrl }
 }
@@ -460,6 +481,11 @@ export class FulkrumToolBroker {
         if (cached !== undefined) return { path: resolved.relative, content: cached, cached: true }
         const content = await handle.readFile({ encoding: 'utf8' })
         if (Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new Error(`File exceeds the ${MAX_FILE_BYTES}-byte read limit.`)
+        // Evict any prior entry for this path before inserting: a file that
+        // changes often would otherwise accumulate one stale entry per revision.
+        for (const key of this.readCache.keys()) {
+          if (key.startsWith(`${resolved.path}:`)) this.readCache.delete(key)
+        }
         this.readCache.set(cacheKey, content)
         if (this.readCache.size > MAX_READ_CACHE_ENTRIES) {
           this.readCache.delete(this.readCache.keys().next().value)
@@ -537,6 +563,37 @@ export class FulkrumToolBroker {
       const requestHeaders = input?.headers && typeof input.headers === 'object' ? { ...input.headers } : {}
       const body = input?.body === undefined ? null : JSON.stringify(input.body)
       return this.fetchPinned({ method, headers: requestHeaders, body, url: resolved.url })
+    }
+
+    // External integration: web scraping through the pinned HTTP layer.
+    if (name.startsWith('reach.')) {
+      const channel = name.slice(6)
+      const url = String(input?.url ?? '')
+      const query = input?.query ? String(input.query) : undefined
+      return scrape({ channel, url, query }, { networkPolicy: (u) => {
+        const parsed = new URL(u)
+        const allowed = this.httpAllowlist ?? configuredHttpAllowlist()
+        if (allowed.length && !allowed.includes(parsed.hostname)) {
+          throw new Error(`Host ${parsed.hostname} is not in the allowlist.`)
+        }
+      } })
+    }
+
+    // External integration: code knowledge graph.
+    if (name.startsWith('graph.')) {
+      if (!this.codeGraph) this.codeGraph = new CodeGraph()
+      if (name === 'graph.search') {
+        const pattern = String(input?.pattern ?? input?.query ?? '')
+        return { results: this.codeGraph.search(pattern) }
+      }
+      if (name === 'graph.trace') {
+        const target = String(input?.name ?? '')
+        const direction = input?.direction === 'outbound' ? 'outbound' : 'inbound'
+        return { edges: this.codeGraph.traceCalls(target, direction) }
+      }
+      if (name === 'graph.stats') {
+        return this.codeGraph.stats()
+      }
     }
 
     if (name === 'skills.find') {

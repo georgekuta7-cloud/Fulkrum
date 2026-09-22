@@ -1,42 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Activity, ArrowLeft, FileDiff, FolderTree, ListChecks, Settings2, TriangleAlert, X } from 'lucide-react'
+import { TriangleAlert, X } from 'lucide-react'
 import { useBridge } from './hooks/useBridge'
-import { TopBar } from './components/TopBar'
-import type { CenterView, InspectorTab } from './components/TopBar'
-import { Sidebar } from './components/Sidebar'
-import { GraphCanvas } from './components/GraphCanvas'
-import { TimelinePanel } from './components/TimelinePanel'
-import { WorkerSheet } from './components/WorkerSheet'
-import { ApprovalDock } from './components/ApprovalDock'
-import { PlanPanel } from './components/PlanPanel'
-import { ActivityPanel } from './components/ActivityPanel'
-import { ArtifactsPanel, FilesPanel } from './components/FilesPanel'
-import { ChatPanel } from './components/ChatPanel'
+import { CockpitBar } from './components/CockpitBar'
+import type { CenterView, InspectorTab } from './lib/constants'
+import { NavRail, Sidebar } from './components/NavRail'
+import { MissionPanel } from './components/MissionPanel'
+import { WorkSurface } from './components/WorkSurface'
+import { EvidencePanel } from './components/EvidencePanel'
+import { CommandBar } from './components/CommandBar'
 import { MarketplacePanel } from './components/MarketplacePanel'
 import { ArsenalPanel } from './components/ArsenalPanel'
 import { AutomationsPanel } from './components/AutomationsPanel'
-import { ContextRail } from './components/ContextRail'
 import { SettingsPanel } from './components/SettingsPanel'
 import { ErrorBoundary } from './ErrorBoundary'
 import { buildGraph } from './lib/runGraph'
-import type { GraphNode } from './lib/runGraph'
 import './app.css'
-
-/**
- * The shell: a status bar that never leaves, the run as a living map in the
- * middle, and the Head AI one panel away. The map is the main screen because it
- * answers the two questions everything else serves — what is it doing, and what
- * is it waiting for. The chat takes the center on demand; the inspector (plan,
- * activity, artifacts, workspace) is a view over the same records, not a mode
- * the app is stuck in.
- */
-
-const inspectorTabs: Array<{ id: InspectorTab; label: string; icon: React.ReactNode }> = [
-  { id: 'plan', label: 'Plan', icon: <ListChecks size={14} /> },
-  { id: 'activity', label: 'Activity', icon: <Activity size={14} /> },
-  { id: 'artifacts', label: 'Artifacts', icon: <FileDiff size={14} /> },
-  { id: 'files', label: 'Workspace', icon: <FolderTree size={14} /> },
-]
 
 export default function App() {
   const bridge = useBridge()
@@ -44,8 +22,10 @@ export default function App() {
   const [inspector, setInspector] = useState<InspectorTab | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(true)
   const [projectName, setProjectName] = useState('')
   const [theme, setTheme] = useState<'dark' | 'light'>(() => (localStorage.getItem('fulkrum.theme') === 'light' ? 'light' : 'dark'))
+  const [dismissedCallId, setDismissedCallId] = useState<string | null>(null)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -58,17 +38,12 @@ export default function App() {
     tasks: bridge.tasks,
     toolCalls: bridge.toolCalls,
     byTask: bridge.byTask,
-    routing: ((bridge.projectSettings ?? {}).routing as Record<string, string> | undefined) ?? {},
+    routing: ((bridge.projectSettings ?? {}) as any).routing ?? {},
     providers: bridge.providers,
   }), [bridge.run, bridge.plan, bridge.tasks, bridge.toolCalls, bridge.byTask, bridge.projectSettings, bridge.providers])
 
-  // The node a pending approval belongs to, so the decision surfaces on the
-  // worker that is actually waiting — even if the person is looking elsewhere.
-  // An explicit click always wins; a dismissal is remembered per tool call so it
-  // does not fight the next approval.
-  const [dismissedCallId, setDismissedCallId] = useState<string | null>(null)
   const approvalNode = bridge.approval
-    ? graph.nodes.find((node) => node.kind === 'task' && node.agentId === bridge.approval?.toolCall.agentId) ?? null
+    ? graph.nodes.find((node) => node.agentId === bridge.approval?.toolCall.agentId) ?? null
     : null
   const explicit = graph.nodes.find((node) => node.id === selectedId) ?? null
   const selected = explicit ?? (approvalNode && bridge.approval?.toolCall.id !== dismissedCallId ? approvalNode : null)
@@ -78,10 +53,11 @@ export default function App() {
     setSelectedId(null)
   }, [selected, approvalNode, bridge.approval])
 
-  // Escape unwinds the topmost layer; ⌃1–4 open the inspector over the map.
+  // Keyboard: Esc unwinds, Ctrl+1-4 opens inspector
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes((event.target as HTMLElement)?.tagName ?? '')
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(target?.tagName ?? '')
       if (event.key === 'Escape') {
         if (settingsOpen) setSettingsOpen(false)
         else if (inspector) setInspector(null)
@@ -89,192 +65,105 @@ export default function App() {
         return
       }
       if (typing || !(event.ctrlKey || event.metaKey)) return
-      const tab = inspectorTabs[Number(event.key) - 1]
-      if (tab) {
-        event.preventDefault()
-        setInspector(tab.id)
-      }
+      const tabs: InspectorTab[] = ['plan', 'activity', 'artifacts', 'files']
+      const tab = tabs[Number(event.key) - 1]
+      if (tab) { event.preventDefault(); setInspector(tab) }
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
   }, [settingsOpen, inspector, closeSheet])
 
-  // A run that parks on an approval is the one thing worth interrupting a person
-  // for, and only when they are looking at something else.
+  // Notification on approval
   useEffect(() => {
-    if (!bridge.approval) {
-      document.title = 'fulkrum'
-      return
-    }
+    if (!bridge.approval) { document.title = 'fulkrum'; return }
     document.title = '● approval needed — fulkrum'
     if (document.hidden && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
       new Notification('Fulkrum needs a decision', { body: `${bridge.approval.toolCall.name} is waiting for approval.` })
     }
   }, [bridge.approval])
 
+  // Auto-dismiss notices
   useEffect(() => {
     if (!bridge.notice) return
     const timer = setTimeout(() => bridge.setNotice(null), 6000)
     return () => clearTimeout(timer)
   }, [bridge.notice, bridge])
 
-  const noProvider = bridge.providers.length > 0 && !bridge.providers.some((provider) => provider.configured)
+  const noProvider = bridge.providers.length > 0 && !bridge.providers.some((p: any) => p.configured)
   const setupNeeded = noProvider || bridge.status?.execution.available === false
 
   return (
     <ErrorBoundary>
       <div className="app">
-        <TopBar
-          bridge={bridge}
-          view={view}
-          onViewChange={setView}
-          onOpenInspector={setInspector}
-          onOpenSettings={() => setSettingsOpen(true)}
-          theme={theme}
-          onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
-        />
+        <CockpitBar bridge={bridge} theme={theme} onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onOpenSettings={() => setSettingsOpen(true)} />
 
-        {setupNeeded ? (
+        {setupNeeded && (
           <div className="setup-card">
-            <TriangleAlert size={15} />
-            <div>
-              <strong>Two steps before this can do anything</strong>
-              <ul>
-                {noProvider ? <li>No provider has a key yet: add one in Workspace settings, or point it at an endpoint on your own machine and turn on local access for that provider.</li> : null}
-                {bridge.status?.execution.available === false ? <li>No container engine is reachable, so a worker cannot run commands. Start Docker Desktop or Podman, then build the runner image once: <code>npm run runner:build</code>.</li> : null}
+            <TriangleAlert size={15} style={{ color: 'var(--warn)' }} />
+            <div style={{ flex: 1 }}>
+              <strong style={{ fontFamily: 'var(--font-sans)' }}>Two steps before this can do anything</strong>
+              <ul style={{ marginLeft: 'var(--sp-4)', fontSize: 'var(--text-sm)', color: 'var(--muted)' }}>
+                {noProvider && <li>No provider has a key yet: add one in Workspace settings.</li>}
+                {bridge.status?.execution.available === false && <li>No container engine is reachable. Start Docker Desktop or Podman.</li>}
               </ul>
             </div>
-            <button type="button" className="primary" onClick={() => setSettingsOpen(true)}><Settings2 size={13} /> Open settings</button>
+            <button className="btn btn-primary" onClick={() => setSettingsOpen(true)}>Open settings</button>
           </div>
-        ) : null}
+        )}
 
         {bridge.booted && bridge.projects.length === 0 ? (
-          <div className="app-body">
-            <main className="center">
+          <div className="app-body no-rail">
+            <div />
+            <main className="work-surface" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               {view === 'marketplace' ? <MarketplacePanel bridge={bridge} /> : view === 'arsenal' ? <ArsenalPanel bridge={bridge} /> : view === 'automations' ? <AutomationsPanel bridge={bridge} /> : (
-              <div className="panel-empty">
-                <h2>Start your first project</h2>
-                <p>Runs, plans, and approvals live inside a project, and nothing is seeded — what you see is what you made.</p>
-                <form
-                  className="deny-row"
-                  onSubmit={(event) => {
-                    event.preventDefault()
-                    if (projectName.trim().length >= 2) {
-                      void bridge.createProject(projectName.trim())
-                      setProjectName('')
-                    }
-                  }}
-                >
-                  <input autoFocus value={projectName} placeholder="Project name (at least 2 characters)" onChange={(event) => setProjectName(event.target.value)} />
-                  <button type="submit" className="primary" disabled={projectName.trim().length < 2}>Create project</button>
-                </form>
-              </div>
+                <div className="empty-state">
+                  <div className="empty-icon">◈</div>
+                  <div className="empty-text">Start your first project</div>
+                  <div className="empty-sub" style={{ marginBottom: 'var(--sp-4)' }}>Runs, plans, and approvals live inside a project.</div>
+                  <input className="input" autoFocus value={projectName} placeholder="Project name (at least 2 characters)" onChange={(e) => setProjectName(e.target.value)} style={{ marginBottom: 'var(--sp-3)', maxWidth: 300 }} />
+                  <button className="btn btn-primary" disabled={projectName.trim().length < 2} onClick={() => { void bridge.createProject(projectName.trim()); setProjectName('') }}>Create project</button>
+                </div>
               )}
             </main>
           </div>
         ) : (
-        <div className={`app-body ${view === 'chat' ? 'chat-centered' : ''}`}>
-          <Sidebar bridge={bridge} />
+          <div className={`app-body ${sidebarOpen ? 'has-sidebar' : 'no-sidebar'}`}>
+            <NavRail view={view} onViewChange={setView} onOpenSettings={() => setSettingsOpen(true)} sidebarOpen={sidebarOpen} onToggleSidebar={() => setSidebarOpen(!sidebarOpen)} />
+            {sidebarOpen && <Sidebar bridge={bridge} />}
 
-          <main className="center">
-            {inspector ? (
+            {/* Workbench layout for run views */}
+            {view === 'graph' || view === 'chat' ? (
               <>
-                <nav className="tabs" role="tablist">
-                  <button type="button" className="inspector-back" onClick={() => setInspector(null)} title="Back to the map">
-                    <ArrowLeft size={14} />
-                  </button>
-                  {inspectorTabs.map((entry, index) => (
-                    <button
-                      type="button"
-                      role="tab"
-                      key={entry.id}
-                      aria-selected={inspector === entry.id}
-                      className={inspector === entry.id ? 'active' : ''}
-                      onClick={() => setInspector(entry.id)}
-                    >
-                      {entry.icon} {entry.label}
-                      {entry.id === 'activity' && bridge.streaming ? <span className="live-dot" title="text is arriving" /> : null}
-                      {entry.id === 'artifacts' && bridge.artifacts.length ? <span className="count">{bridge.artifacts.length}</span> : null}
-                      <kbd>⌃{index + 1}</kbd>
-                    </button>
-                  ))}
-                </nav>
-                <section className="panel">
-                  {inspector === 'plan' ? <PlanPanel bridge={bridge} /> : null}
-                  {inspector === 'activity' ? <ActivityPanel bridge={bridge} /> : null}
-                  {inspector === 'artifacts' ? <ArtifactsPanel bridge={bridge} /> : null}
-                  {inspector === 'files' ? <FilesPanel bridge={bridge} /> : null}
-                </section>
+                <MissionPanel bridge={bridge} />
+                <WorkSurface bridge={bridge} />
+                <EvidencePanel bridge={bridge} />
               </>
-            ) : view === 'marketplace' ? (
-              <MarketplacePanel bridge={bridge} />
-            ) : view === 'arsenal' ? (
-              <ArsenalPanel bridge={bridge} />
-            ) : view === 'automations' ? (
-              <AutomationsPanel bridge={bridge} />
-            ) : view === 'graph' ? (
-              <div className="graph-wrap">
-                {graph.nodes.length ? (
-                  <>
-                    <p className="graph-hint">Click a worker to see what it is doing</p>
-                    <button
-                      type="button"
-                      className={`timeline-toggle${bridge.timeline ? ' on' : ''}`}
-                      title="Scrub the run's file history"
-                      onClick={() => {
-                        if (bridge.timeline) bridge.clearTimeline()
-                        else {
-                          setSelectedId(null)
-                          void bridge.loadTimeline(bridge.events.length ? bridge.events[bridge.events.length - 1].sequence : 0)
-                        }
-                      }}
-                    >
-                      ◷ Timeline
-                    </button>
-                    <GraphCanvas nodes={graph.nodes} edges={graph.edges} selectedId={selected?.id ?? null} onSelect={(node: GraphNode) => { bridge.clearTimeline(); setSelectedId(node.id) }} />
-                    {bridge.timeline ? (
-                      <TimelinePanel bridge={bridge} maxSeq={bridge.events.length ? bridge.events[bridge.events.length - 1].sequence : 0} onClose={() => bridge.clearTimeline()} />
-                    ) : (
-                      <>
-                        {selected ? <WorkerSheet bridge={bridge} node={selected} onClose={closeSheet} /> : null}
-                        {!selected && bridge.approval && !approvalNode ? (
-                          <div className="worker-sheet-fallback"><ApprovalDock bridge={bridge} /></div>
-                        ) : null}
-                      </>
-                    )}
-                  </>
-                ) : (
-                  <div className="panel-empty">
-                    <h2>No run open</h2>
-                    <p className="muted">Pick a run from the sidebar, or start one from the chat.</p>
-                  </div>
-                )}
-              </div>
             ) : (
-              <ChatPanel bridge={bridge} centered />
+              <main style={{ overflow: 'auto' }}>
+                {view === 'marketplace' ? <MarketplacePanel bridge={bridge} /> : view === 'arsenal' ? <ArsenalPanel bridge={bridge} /> : <AutomationsPanel bridge={bridge} />}
+              </main>
             )}
-          </main>
-
-          {view === 'marketplace' || view === 'arsenal' || view === 'automations' ? null : view === 'graph' ? <ChatPanel bridge={bridge} /> : <ContextRail bridge={bridge} />}
-        </div>
+          </div>
         )}
 
-        {settingsOpen ? <SettingsPanel bridge={bridge} theme={theme} setTheme={setTheme} onClose={() => setSettingsOpen(false)} /> : null}
+        <CommandBar bridge={bridge} />
+
+        {settingsOpen && <SettingsPanel bridge={bridge} theme={theme} setTheme={setTheme} onClose={() => setSettingsOpen(false)} />}
 
         <div className="toasts">
-          {bridge.error ? (
+          {bridge.error && (
             <div className="toast bad" role="alert">
               <TriangleAlert size={14} />
               <span>{bridge.error}</span>
-              <button type="button" className="icon" onClick={() => bridge.setError(null)}><X size={12} /></button>
+              <button onClick={() => bridge.setError(null)} aria-label="Dismiss error"><X size={12} /></button>
             </div>
-          ) : null}
-          {bridge.notice ? (
+          )}
+          {bridge.notice && (
             <div className="toast">
               <span>{bridge.notice}</span>
-              <button type="button" className="icon" onClick={() => bridge.setNotice(null)}><X size={12} /></button>
+              <button onClick={() => bridge.setNotice(null)} aria-label="Dismiss notice"><X size={12} /></button>
             </div>
-          ) : null}
+          )}
         </div>
       </div>
     </ErrorBoundary>

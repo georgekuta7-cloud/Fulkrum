@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Check, FilePen, Plus, RefreshCw, Trash2, TriangleAlert } from 'lucide-react'
 import type { Bridge } from '../hooks/useBridge'
 import { CastingLine } from './CastingLine'
+import { WorkerSlots } from './WorkerSlots'
 
 /**
  * The plan: what the run will do, and the place it can be changed before it does.
@@ -23,6 +24,10 @@ export function PlanPanel({ bridge }: { bridge: Bridge }) {
   const [objective, setObjective] = useState('')
   const [tasks, setTasks] = useState<DraftTask[]>([])
   const [busy, setBusy] = useState(false)
+  const [workers, setWorkers] = useState<Array<{ role: string; provider: string }>>([
+    { role: 'research', provider: '' },
+    { role: 'builder', provider: '' },
+  ])
 
   /** Start from what the plan says now, rather than syncing through an effect. */
   const startEditing = () => {
@@ -62,6 +67,15 @@ export function PlanPanel({ bridge }: { bridge: Bridge }) {
 
   return (
     <div className="plan-panel">
+      {/* Worker Slots — pick which AI plays which role, and how many workers */}
+      <div style={{ marginBottom: 20 }}>
+        <WorkerSlots
+          bridge={bridge}
+          workers={workers}
+          onWorkersChange={setWorkers}
+        />
+      </div>
+
       <div className="plan-head">
         <div>
           <span className={`status-chip ${approved ? 'ok' : 'idle'}`}>v{plan.plan.version} · {plan.plan.status}</span>

@@ -37,6 +37,12 @@ test('the container argv carries every isolation flag', () => {
   const value = (flag) => args[args.indexOf(flag) + 1]
   assert.equal(args[0], 'run')
   assert.equal(value('--network'), 'none', 'the container has no network by default')
+  // E6: assert no other network flags exist — a second --network or --net=host
+  // would override the isolation regardless of the first flag.
+  const networkFlags = args.filter((a) => a === '--network' || a === '--net' || a?.startsWith('--net='))
+  assert.equal(networkFlags.length, 1, 'exactly one network flag, no override')
+  assert.equal(args.includes('--privileged'), false, 'no privileged mode')
+  assert.equal(args.some((a) => a?.includes('host')), false, 'no host network alias')
   assert.equal(args.includes('--read-only'), true, 'the root filesystem is read-only')
   assert.match(value('--tmpfs'), /^\/tmp:/)
   assert.equal(value('--user'), '1000:1000', 'the agent does not run as root')

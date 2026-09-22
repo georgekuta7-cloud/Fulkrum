@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { statSync, readFileSync } from 'node:fs'
 import { buildTaskHandoffDigest, extractFencedBlock, extractStructuredCompletion, listWritePointers, summarizeVerdict, validateDecisionBlock, validateStructuredCompletion, validateVerdictBlock } from './artifacts.mjs'
+import { createBudgetGuard, BudgetExceededError } from './budget.mjs'
+import { createApprovalGate } from './approvalGate.mjs'
 import { asToolResult, findInjectionAttempts } from './injection.mjs'
 import { maybeExportTrace } from './otel.mjs'
 import { scanArguments } from './redaction.mjs'
@@ -8,6 +10,8 @@ import { fingerprintToolCall, resolveWorkspacePath } from './permissions.mjs'
 import { planContentHash, planLayers, scoreComplexity, splitLayerForConcurrency, validatePlan } from './plans.mjs'
 import { agentRoles, roleOrDefault } from './roles.mjs'
 import { resolveReasoning } from './reasoning.mjs'
+import { routeTurn } from './router.mjs'
+import { dynamicToolSurface } from './toolAccess.mjs'
 import { formatSkillsForPrompt, loadSkills, matchSkills } from './skills.mjs'
 import { loadPluginManifests, pluginToolDefinitions } from './plugins.mjs'
 import { isToolAllowedForRole, toolsForRole, validateToolArguments } from './tools.mjs'
@@ -25,13 +29,8 @@ const verifyMaxSteps = () => Math.max(Number(process.env.FULKRUM_VERIFY_MAX_STEP
 // row, so restarts cannot mint fresh allowances and the repair loop terminates.
 const taskMaxAttempts = () => Math.max(Number(process.env.FULKRUM_TASK_MAX_ATTEMPTS ?? 2) || 2, 1)
 
-/** Thrown when a run cannot afford another model call. */
-export class BudgetExceededError extends Error {
-  constructor(message, { scope }) {
-    super(message)
-    this.scope = scope
-  }
-}
+/** Thrown when a run cannot afford another model call. Re-exported from budget.mjs. */
+export { BudgetExceededError }
 
 /**
  * Keep the tool result the model sees small. The stored record keeps the previous
@@ -73,11 +72,10 @@ export function compactTaskMessages(messages, budgetTokens = taskTokenBudget()) 
 
 export function createRunOrchestrator({ store, providerRegistry, toolBroker, callModel, pricing, ownerId = 'orchestrator', leaseMs = 60_000 }) {
   const activeRuns = new Map()
-  const approvalWaiters = new Map()
-  // Answers to questions that did not park the worker: the loop drains these
-  // into the task's next turn, so a reader learns the answer without having
-  // stopped to wait for it.
-  const pendingAnswers = new Map()
+  const budget = createBudgetGuard({ store })
+  const gate = createApprovalGate({ store })
+  const approvalWaiters = gate.approvalWaiters
+  const pendingAnswers = gate.pendingAnswers
 
   /** Resolve a route, falling back rather than failing the run on a stale setting. */
   const resolveRoute = (runId, requested, roleName) => {
@@ -130,129 +128,20 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
    * which is what a user means by "today", and `FULKRUM_BUDGET_TIMEZONE=UTC` for a
    * window that does not move with daylight saving.
    */
-  const startOfToday = () => {
-    const now = new Date()
-    if (/^utc$/i.test(process.env.FULKRUM_BUDGET_TIMEZONE ?? '')) {
-      return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
-    }
-    const midnight = new Date(now)
-    midnight.setHours(0, 0, 0, 0)
-    return midnight.getTime()
-  }
-
-  /**
-   * Cost of the calls that are in flight right now.
-   *
-   * A ceiling checked against recorded spend alone lets every parallel reader pass
-   * the same check before any of them returns, so a run could overshoot by
-   * `maxParallelReaders` calls. A reservation is taken synchronously with the
-   * check, which is atomic in a single-threaded runtime, so the second caller sees
-   * the first one's estimate.
-   */
-  const reservations = new Map()
-
-  /**
-   * Runs that have had the unmeasurable-spend note logged. Cleared when a run ends,
-   * so a ceiling raised after a budget stop says it again — the spend has changed.
-   */
-  const unmeasurableLogged = new Set()
-
-  const reservedFor = (runId) => {
-    let total = 0
-    for (const entry of reservations.values()) {
-      if (entry.runId === runId) total += entry.costUsd
-    }
-    return total
-  }
-
-  // Every in-flight call in this process, whatever run it belongs to. The daily
-  // ceiling spans runs, so its check must span them too — otherwise two runs
-  // passing the same check together overshoot by two calls, not one.
-  const reservedTotal = () => {
-    let total = 0
-    for (const entry of reservations.values()) total += entry.costUsd
-    return total
-  }
-
-  /**
-   * What one call is assumed to cost: the largest call this run has already made,
-   * or a floor. Cost is only known afterwards, so an estimate that is too low
-   * means the run can still overshoot by the difference — at most one call's worth,
-   * not one per parallel reader.
-   */
-  const estimateCallCost = (runId) => {
-    const largest = store.listModelCalls(runId).reduce((max, call) => Math.max(max, call.costUsd ?? 0), 0)
-    return Math.max(largest, Number(process.env.FULKRUM_BUDGET_RESERVE_USD ?? 0.02))
-  }
-
-  const reserveBudget = (runId) => {
-    const id = `res-${randomUUID()}`
-    reservations.set(id, { runId, costUsd: estimateCallCost(runId) })
-    return id
-  }
-
-  const releaseBudget = (id) => {
-    reservations.delete(id)
-  }
-
-  /**
-   * Refuse to start another model call once a ceiling is reached. Recorded spend
-   * plus what is in flight is compared with the cap, so parallel calls cannot all
-   * slip through together.
-   */
-  function assertWithinBudget(runId) {
-    const run = store.getRun(runId)
-    const runCap = run?.budgetUsd ?? (Number(process.env.FULKRUM_RUN_BUDGET_USD ?? 0) || null)
-    const dayCap = Number(process.env.FULKRUM_DAILY_BUDGET_USD ?? 0) || null
-
-    if (runCap) {
-      const { costUsd, unpricedCalls } = store.spendForRun(runId)
-      const committed = costUsd + reservedFor(runId)
-      // Once per run, not once per call: every unpriced call would otherwise append
-      // the same sentence to the log again.
-      if (unpricedCalls > 0 && !run?.budgetExceededAt && !unmeasurableLogged.has(runId)) {
-        unmeasurableLogged.add(runId)
-        store.appendEvent({ runId, type: 'run.budget.unmeasurable', agentId: 'head', payload: { unpricedCalls, reason: 'Some calls used a model with no known price, so spend is a lower bound.' } })
-      }
-      if (committed >= runCap) throw new BudgetExceededError(`This run reached its $${runCap.toFixed(2)} budget (spent $${costUsd.toFixed(4)}${reservedFor(runId) > 0 ? `, plus $${reservedFor(runId).toFixed(4)} in flight` : ''}).`, { scope: 'run' })
-    }
-
-    if (dayCap) {
-      const { costUsd } = store.spendSince(startOfToday())
-      const committed = costUsd + reservedTotal()
-      if (committed >= dayCap) throw new BudgetExceededError(`Today's spend reached the $${dayCap.toFixed(2)} daily budget (spent $${costUsd.toFixed(4)}${reservedTotal() > 0 ? `, plus $${reservedTotal().toFixed(4)} in flight` : ''}).`, { scope: 'day' })
-    }
-  }
-
-  /**
-   * The budget gate for model calls that do not go through the worker loop —
-   * planning drafts and chat replies. Same check the workers get; without it a
-   * ceiling would stop the team but not the planning that starts it.
-   */
-  const assertBudget = (runId) => {
-    assertWithinBudget(runId)
-  }
-
-  /**
-   * assertBudget plus a reservation held for the call, for callers whose work
-   * can overlap a running worker loop (chat mid-run). The reservation is what
-   * keeps two overlapping calls from passing the same check together.
-   */
-  const withBudget = async (runId, task) => {
-    assertWithinBudget(runId)
-    const reservationId = reserveBudget(runId)
-    try {
-      return await task()
-    } finally {
-      releaseBudget(reservationId)
-    }
-  }
+  const assertBudget = budget.assertBudget
+  const withBudget = budget.withBudget
 
   const callModelWithFallback = async ({ runId, role, route, messages, tools = [], instructions, parentSpanId = null, taskId = null }) => {
     const attempts = [route ?? '', ...providerRegistry.fallbackRoutes()]
-    // How hard this role should think, read where the routing lives so a change
-    // in settings applies to the very next call without a restart.
     const reasoning = resolveReasoning(store.getProject(store.getRun(runId)?.projectId)?.project?.settings, role)
+    // Smart routing: classify the work and pick a model tier. Logged on the
+    // chain so every route decision is auditable.
+    const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user')
+    const routing = routeTurn({ role, text: lastUserMessage?.content ?? '', primaryRoute: attempts[0] || '' })
+    if (routing.model && routing.model !== attempts[0]) {
+      attempts.unshift(routing.model)
+      store.appendEvent({ runId, type: 'run.route.selected', agentId: role, payload: { kind: routing.kind, tier: routing.tier, model: routing.model, reason: routing.reason } })
+    }
     let lastError
     for (const [index, candidate] of attempts.entries()) {
       const provider = resolveRoute(runId, candidate, role)
@@ -271,8 +160,8 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
       const startedAt = Date.now()
       // The check and the reservation happen in the same synchronous block, so no
       // other caller can slip between them.
-      assertWithinBudget(runId)
-      const reservationId = reserveBudget(runId)
+      assertBudget(runId)
+      const reservationId = budget.reserve(runId)
       // Text streams to whoever is watching while the call runs, and is cleared when
       // it returns: the finished reply is what gets recorded, not the fragments.
       const sink = store.partialSink(runId, { role })
@@ -306,7 +195,7 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
       } finally {
         // Once the call is no longer in flight, the recorded cost replaces the
         // estimate it was holding.
-        releaseBudget(reservationId)
+        budget.release(reservationId)
         sink.done()
       }
     }
@@ -650,7 +539,11 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
     // same path as built-ins, so there is no second, weaker tool system.
     const pluginTools = pluginToolDefinitions(plugins, role)
     const pluginNames = pluginTools.map((tool) => tool.name)
-    const tools = [...toolsForRole(role), ...pluginTools]
+    const allTools = [...toolsForRole(role), ...pluginTools]
+    // Dynamic tool access: filter by phase to reduce context noise and
+    // security surface. A planning turn gets reads; an editing turn gets writes.
+    const surface = dynamicToolSurface({ role: role.agentId, stepCount: 0, maxSteps: role.maxSteps ?? maxStepsPerTask(), allTools })
+    const tools = surface.tools
     const instructions = `You are ${role.name}, ${role.label} inside Fulkrum, working as one agent in a bounded supervised run.
 
 ${roleInstructions}
@@ -688,7 +581,7 @@ Rules:
       messages.splice(0, messages.length, ...previousTurns)
       store.appendEvent({ runId, type: 'task.resumed', agentId: task.agentId, payload: { taskId: task.id, turns: previousTurns.length, stepCount: task.stepCount } })
     }
-    let steps = previousTurns.length ? task.stepCount : 0
+    let steps = previousTurns.length ? (store.getTask(task.id)?.stepCount ?? task.stepCount) : 0
     // Roles may carry their own step budget: an editor's three steps are the
     // enforcement behind "narrow" — read, edit, done, with no room to wander.
     const stepBudget = role.maxSteps ?? maxStepsPerTask()
@@ -1609,7 +1502,7 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
         store.releaseRunLease(runId, ownerId)
         // A new run of the same id never happens, but a resumed one logs its own
         // spend — the note should say again what changed.
-        unmeasurableLogged.delete(runId)
+        budget.resetUnmeasurable(runId)
       } catch {
         // The store was closed underneath us, which happens during shutdown.
       }
@@ -1651,77 +1544,10 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
     return promise
   }
 
-  const approveToolCall = async (toolCallId) => {
-    const pending = approvalWaiters.get(toolCallId)
-    if (!pending) return { handled: false }
-    approvalWaiters.delete(toolCallId)
-    const result = await executeResolvedTool({ ...pending, approved: true })
-    pending.resolve(result)
-    return { handled: true, result }
-  }
+  const approveToolCall = async (toolCallId) => gate.approve(toolCallId, executeResolvedTool)
+  const denyToolCall = (toolCallId, reason) => gate.deny(toolCallId, reason)
+  const answerToolCall = (toolCallId, answer) => gate.answer(toolCallId, answer)
+  const abandonWaiters = (reason, runId = null) => gate.abandonAll(reason, runId)
 
-  const denyToolCall = (toolCallId, reason) => {
-    const pending = approvalWaiters.get(toolCallId)
-    if (!pending) return { handled: false }
-    approvalWaiters.delete(toolCallId)
-    if (pending.nonBlocking && pending.task?.id) {
-      // A denial is an answer too: without it the worker would wait out a
-      // question nobody will ever answer. It arrives as a result, like any
-      // answer, and the worker proceeds without what it asked for.
-      const queued = pendingAnswers.get(pending.task.id) ?? []
-      queued.push({ toolCallId, answer: `Your question was declined: ${reason}. Proceed without it.` })
-      pendingAnswers.set(pending.task.id, queued)
-    }
-    pending.resolve({ ok: false, denied: true, error: reason })
-    return { handled: true }
-  }
-
-  /**
-   * Answer a parked question. Unlike an approval this executes nothing: the
-   * human's words become the tool result, recorded like any other completion
-   * so the worker that asked can continue on them.
-   */
-  const answerToolCall = (toolCallId, answer) => {
-    const pending = approvalWaiters.get(toolCallId)
-    if (!pending || pending.toolCall?.name !== 'run.ask') return { handled: false }
-    approvalWaiters.delete(toolCallId)
-    const output = { answer }
-    store.updateToolCall(toolCallId, { status: 'completed', output })
-    store.appendEvent({ runId: pending.runId, type: 'tool.completed', agentId: pending.task?.agentId ?? 'head', payload: { toolCallId, name: 'run.ask', ...store.summarizeOutput(output), answered: true } })
-    if (pending.spanId) store.endSpan(pending.spanId, { status: 'ok', attributes: { 'fulkrum.answered': true } })
-    if (pending.nonBlocking && pending.task?.id) {
-      // The worker never parked, so there is no promise to resolve: the answer
-      // queues for the task's next turn instead, where the loop picks it up.
-      const queued = pendingAnswers.get(pending.task.id) ?? []
-      queued.push({ toolCallId, answer })
-      pendingAnswers.set(pending.task.id, queued)
-    }
-    pending.resolve({ ok: true, output })
-    return { handled: true }
-  }
-
-  /**
-   * Resolve every parked call, and say why.
-   *
-   * A parked worker holds a promise nobody else will resolve: cancel used to stop the
-   * run and leave the worker parked forever, and a restart simply lost the map. Both
-   * the worker that is waiting and the audit log need the call to end as a fact.
-   */
-  const abandonWaiters = (reason) => {
-    const abandoned = []
-    for (const [toolCallId, pending] of approvalWaiters) {
-      approvalWaiters.delete(toolCallId)
-      try {
-        store.updateToolCall(toolCallId, { status: 'interrupted', error: reason })
-        store.appendEvent({ runId: pending.runId, type: 'tool.denied', agentId: pending.task?.agentId ?? 'head', payload: { toolCallId, name: pending.toolCall?.name ?? 'unknown', reason, rule: 'deny.run-ended' } })
-      } catch {
-        // The store may already be closing; the worker still gets its answer.
-      }
-      pending.resolve({ ok: false, denied: true, error: reason })
-      abandoned.push(toolCallId)
-    }
-    return abandoned
-  }
-
-  return { start, activeRuns, approvalWaiters, approveToolCall, denyToolCall, answerToolCall, abandonWaiters, assertBudget, withBudget, maxStepsPerTask, inFlightBudget: reservedFor }
+  return { start, activeRuns, approvalWaiters, approveToolCall, denyToolCall, answerToolCall, abandonWaiters, assertBudget, withBudget, maxStepsPerTask, inFlightBudget: budget.reservedFor }
 }

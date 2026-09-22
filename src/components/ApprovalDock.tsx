@@ -82,7 +82,7 @@ function WriteEditor({ initial, path, onApprove }: { initial: string; path: stri
     <span className="deny-row">
       <textarea rows={4} value={content} onChange={(event) => setContent(event.target.value)} />
       <button type="button" className="primary" onClick={() => onApprove({ path, content })}><Check size={13} /> Approve edits</button>
-      <button type="button" onClick={() => setEditing(false)}><X size={13} /></button>
+      <button type="button" onClick={() => setEditing(false)} aria-label="Cancel edit"><X size={13} /></button>
     </span>
   )
 }
@@ -164,7 +164,7 @@ export function ApprovalDock({ bridge }: { bridge: Bridge }) {
           <span className="deny-row">
             <input autoFocus value={reason} placeholder="Why not? The worker reads this." onChange={(event) => setReason(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void denyCall(reason || 'Denied by the user.') }} />
             <button type="button" className="danger" onClick={() => void denyCall(reason || 'Denied by the user.')}><CornerDownLeft size={13} /> Send</button>
-            <button type="button" onClick={() => setShowDeny(false)}><X size={13} /></button>
+            <button type="button" onClick={() => setShowDeny(false)} aria-label="Cancel deny"><X size={13} /></button>
           </span>
         ) : (
           <button type="button" className="danger" onClick={() => setShowDeny(true)}>{isQuestion ? 'Decline' : 'Deny'} <kbd>d</kbd></button>

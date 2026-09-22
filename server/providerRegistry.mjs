@@ -174,7 +174,12 @@ export function createProviderRegistry(store) {
     resolve(route) {
       const parts = routeParts(route)
       const requested = String(parts.providerId ?? '').trim().toLowerCase()
-      if (!requested) return all()[0]
+      if (!requested) {
+        // No route specified: use the first configured provider, not the first
+        // declared one. A provider with no key cannot serve anything.
+        const configured = all().filter((item) => isConfiguredProvider(item, settingsFor(item.id)))
+        return configured[0] ?? all()[0]
+      }
       const provider = all().find((item) => item.id === requested || item.label.toLowerCase() === requested)
       if (!provider) throw new Error(`Unknown provider route: ${parts.providerId}`)
       return provider

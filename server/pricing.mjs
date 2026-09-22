@@ -80,9 +80,13 @@ export function createPricing({ filePath = process.env.FULKRUM_PRICE_FILE, table
       const price = findPrice(merged, model)
       if (!price || !usage) return { costUsd: null, priced: false, version }
       const perToken = (value) => (Number(value) || 0) / 1_000_000
+      // Reasoning tokens are billed as output by every provider that reports
+      // them (Google thoughts, OpenAI reasoning). Omitting them undercounts
+      // cost and lets a budget cap fire too late.
       const costUsd =
         perToken(usage.billableInputTokens ?? usage.inputTokens) * price.input +
         perToken(usage.outputTokens) * price.output +
+        perToken(usage.reasoningTokens) * price.output +
         perToken(usage.cacheReadTokens) * price.cacheRead +
         perToken(usage.cacheWriteTokens) * price.cacheWrite
       return { costUsd: Number(costUsd.toFixed(6)), priced: true, version }

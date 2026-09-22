@@ -3,6 +3,7 @@ import { Send, Sparkles } from 'lucide-react'
 import type { Bridge } from '../hooks/useBridge'
 import { ChatFeed } from './ChatFeed'
 import { ReasoningSelect } from './ReasoningSelect'
+import { ProviderSelect } from './ProviderSelect'
 
 /**
  * The conversation with the Head AI.
@@ -42,6 +43,7 @@ export function ChatPanel({ bridge, centered = false }: { bridge: Bridge; center
       <div className="panel-bar">
         <Sparkles size={13} />
         <strong>Head AI</strong>
+        <ProviderSelect bridge={bridge} role="head" label="using" />
         <ReasoningSelect bridge={bridge} role="head" label="thinks" />
         <span className="muted tiny">{ready ? 'live' : 'no provider key — add one in settings'}</span>
       </div>

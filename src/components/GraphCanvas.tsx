@@ -67,6 +67,8 @@ export function GraphCanvas({ nodes, edges, selectedId, onSelect }: {
           style={{ left: `${node.x}%`, top: `${node.y}%` }}
           onClick={() => onSelect(node)}
           title={node.subtitle}
+          aria-pressed={selectedId === node.id}
+          aria-label={`${node.title} — ${node.subtitle}`}
         >
           <span className="graph-avatar">{AVATAR[node.agentId ?? node.kind] ?? '🤖'}</span>
           <span className="graph-name">{node.title}</span>

@@ -460,7 +460,8 @@ export function useBridge() {
       if (!runId) return
       try {
         setStreaming({ role: 'head', text: '' })
-        await api.post('/api/chat', { projectId, runId, message, history: messages.slice(-20).map((entry) => ({ role: entry.role, content: entry.content })) })
+        const routing = (projectSettings?.routing as Record<string, string> | undefined) ?? {}
+        await api.post('/api/chat', { projectId, runId, message, routing, history: messages.slice(-20).map((entry) => ({ role: entry.role, content: entry.content })) })
       } catch (caught) {
         setStreaming(null)
         report(caught, 'The message could not be sent.')
@@ -832,16 +833,17 @@ export function useBridge() {
     tree: (path = '.', depth = 2) => api.get<{ path: string; entries: TreeNode[] }>(`/api/workspace/tree?path=${encodeURIComponent(path)}&depth=${depth}`),
     fileHistory: (path: string) => api.get<{ path: string; calls: FileHistoryEntry[] }>(`/api/workspace/history?path=${encodeURIComponent(path)}`),
     reloadRuns: () => loadRuns(projectId),
-  }), [approval, loadArsenalState, loadArtifacts, loadConfig, loadEstimate, loadGoalsFor, loadGrants, loadLearnings, loadMarketplaceState, loadPlaybooksFor, loadProjectSettings, loadProjects, loadProviders, loadRun, loadRuns, loadSchedulesFor, loadStatus, messages, openProject, openRun, projectId, projects, report, runId, timeline])
+  }), [approval, loadArsenalState, loadArtifacts, loadConfig, loadEstimate, loadGoalsFor, loadGrants, loadLearnings, loadMarketplaceState, loadPlaybooksFor, loadProjectSettings, loadProjects, loadProviders, loadRun, loadRuns, loadSchedulesFor, loadStatus, messages, openProject, openRun, projectId, projects, projectSettings, report, runId, timeline])
 
-  return {
+  const bridge = useMemo(() => ({
     projects, projectId, runs, runId, run, tasks, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, estimate, audit,
     providers, status, grants, learnings, playbooks, schedules, goals, blueprints, marketplace, arsenal, registry, timeline, configReport, usage, error, notice, streaming, approval, booted, appSettings, projectSettings,
     setError, setNotice, setApproval,
     openProject, openRun, loadRuns, loadStatus, loadGrants, loadConfig, loadUsage, loadProviders, loadSettings, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadMarketplaceState, loadArsenalState, loadBlueprintsFor,
     ...actions,
     approveWithKeyboard: (scope: 'once' | 'run' | 'always') => actions.approveCall(scope),
-  }
+  }), [projects, projectId, runs, runId, run, tasks, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, estimate, audit, providers, status, grants, learnings, playbooks, schedules, goals, blueprints, marketplace, arsenal, registry, timeline, configReport, usage, error, notice, streaming, approval, booted, appSettings, projectSettings, actions, openProject, openRun, loadRuns, loadStatus, loadGrants, loadConfig, loadUsage, loadProviders, loadSettings, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadMarketplaceState, loadArsenalState, loadBlueprintsFor])
+  return bridge
 }
 
 export type Bridge = ReturnType<typeof useBridge>
