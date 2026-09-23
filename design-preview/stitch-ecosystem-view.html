@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nexus Agent Marketplace</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Plus Jakarta Sans"', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'monospace'],
+          },
+          colors: {
+            dark: {
+              950: '#07090E',
+              900: '#0C0F17',
+              850: '#111522',
+              800: '#171C2E',
+              700: '#232A42',
+              600: '#343E61',
+            },
+            purple: {
+              300: '#D8B4FE',
+              400: '#C084FC',
+              500: '#A855F7',
+              600: '#9333EA',
+              primary: '#8B5CF6',
+              glow: '#7C3AED',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    .glow-effect {
+      box-shadow: 0 0 25px -5px rgba(139, 92, 246, 0.35);
+    }
+    .subtle-border {
+      border: 1px solid rgba(139, 92, 246, 0.18);
+    }
+    .node-pulse {
+      animation: pulseGlow 2.5s infinite;
+    }
+    @keyframes pulseGlow {
+      0%, 100% { opacity: 0.9; box-shadow: 0 0 10px rgba(168, 85, 247, 0.4); }
+      50% { opacity: 1; box-shadow: 0 0 20px rgba(168, 85, 247, 0.8); }
+    }
+    .custom-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .custom-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+  </style>
+</head>
+<body class="bg-dark-950 text-slate-100 font-sans antialiased min-h-screen selection:bg-purple-primary selection:text-white pb-24">
+  
+  <!-- Top App Navigation -->
+  <header class="sticky top-0 z-30 bg-dark-950/85 backdrop-blur-xl border-b border-purple-500/10 px-4 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-2.5">
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-purple-primary via-purple-600 to-indigo-700 flex items-center justify-center shadow-lg shadow-purple-900/40">
+        <svg class="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+      </div>
+      <div>
+        <div class="flex items-center gap-1.5">
+          <span class="font-bold text-base tracking-tight bg-gradient-to-r from-white via-slate-100 to-purple-200 bg-clip-text text-transparent">SYNTHETIC</span>
+          <span class="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">NEXUS</span>
+        </div>
+        <p class="text-[10px] text-slate-400 font-medium tracking-wide">Autonomous Agent Hub</p>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-2">
+      <!-- Network indicator -->
+      <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-dark-900 border border-slate-800 text-xs">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+        <span class="text-[11px] font-mono text-slate-300">v3.4 Live</span>
+      </div>
+
+      <!-- Notification button -->
+      <button class="relative w-8 h-8 rounded-lg bg-dark-900 border border-slate-800 flex items-center justify-center text-slate-400 hover:text-white transition">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+        </svg>
+        <span class="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-purple-400 rounded-full"></span>
+      </button>
+    </div>
+  </header>
+
+  <main class="px-4 pt-4 space-y-5">
+
+    <!-- Search & Command Input -->
+    <div class="relative">
+      <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+        <svg class="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+        </svg>
+      </div>
+      <input 
+        type="text" 
+        placeholder="Search 1,840+ agent tools, skills & plugins..." 
+        value="autonomous crawler"
+        class="w-full pl-10 pr-10 py-2.5 bg-dark-900 border border-purple-500/25 rounded-xl text-xs sm:text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 shadow-inner transition"
+      >
+      <div class="absolute inset-y-0 right-0 pr-2.5 flex items-center">
+        <kbd class="px-1.5 py-0.5 text-[10px] font-mono text-slate-400 bg-dark-800 rounded border border-slate-700">⌘K</kbd>
+      </div>
+    </div>
+
+    <!-- Filter Pills (Scrollable horizontally) -->
+    <div class="flex items-center gap-2 overflow-x-auto pb-1 custom-scrollbar">
+      <button class="flex-shrink-0 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-purple-primary text-white shadow-md shadow-purple-900/50 flex items-center gap-1.5">
+        <span>All Artifacts</span>
+        <span class="px-1.5 py-0.2 rounded bg-purple-900/70 text-[10px]">42</span>
+      </button>
+      <button class="flex-shrink-0 px-3.5 py-1.5 rounded-lg text-xs font-medium bg-dark-900 hover:bg-dark-850 text-slate-300 border border-slate-800 hover:border-purple-500/30 transition flex items-center gap-1.5">
+        <span class="w-1.5 h-1.5 rounded-full bg-cyan-400"></span>
+        <span>Blueprints</span>
+      </button>
+      <button class="flex-shrink-0 px-3.5 py-1.5 rounded-lg text-xs font-medium bg-dark-900 hover:bg-dark-850 text-slate-300 border border-slate-800 hover:border-purple-500/30 transition flex items-center gap-1.5">
+        <span class="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
+        <span>Skills</span>
+      </button>
+      <button class="flex-shrink-0 px-3.5 py-1.5 rounded-lg text-xs font-medium bg-dark-900 hover:bg-dark-850 text-slate-300 border border-slate-800 hover:border-purple-500/30 transition flex items-center gap-1.5">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+        <span>Plugins</span>
+      </button>
+      <button class="flex-shrink-0 px-3.5 py-1.5 rounded-lg text-xs font-medium bg-dark-900 hover:bg-dark-850 text-slate-300 border border-slate-800 hover:border-purple-500/30 transition">
+        <span>Reasoning</span>
+      </button>
+      <button class="flex-shrink-0 px-3.5 py-1.5 rounded-lg text-xs font-medium bg-dark-900 hover:bg-dark-850 text-slate-300 border border-slate-800 hover:border-purple-500/30 transition">
+        <span>Web scrapers</span>
+      </button>
+    </div>
+
+    <!-- FEATURED BLUEPRINT CARD WITH PIPELINE VISUALIZATION -->
+    <section>
+      <div class="flex items-center justify-between mb-2.5">
+        <div class="flex items-center gap-2">
+          <div class="w-2 h-2 rounded-full bg-purple-400 animate-ping"></div>
+          <h2 class="text-xs font-bold uppercase tracking-wider text-purple-300">Featured Blueprint</h2>
+        </div>
+        <span class="text-[11px] font-mono text-slate-400 hover:text-purple-300 transition cursor-pointer">Inspect Graph →</span>
+      </div>
+
+      <div class="relative overflow-hidden rounded-2xl bg-gradient-to-b from-dark-850 to-dark-900 subtle-border p-4 glow-effect">
+        <!-- Ambient background gradient -->
+        <div class="absolute -top-16 -right-16 w-44 h-44 bg-purple-600/15 rounded-full blur-3xl pointer-events-none"></div>
+        <div class="absolute -bottom-10 -left-10 w-36 h-36 bg-indigo-600/10 rounded-full blur-2xl pointer-events-none"></div>
+
+        <!-- Header metadata -->
+        <div class="flex items-start justify-between gap-3 relative z-10">
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="px-2 py-0.5 rounded-md bg-purple-500/20 text-purple-300 text-[10px] font-mono font-semibold border border-purple-500/30">MULTI-AGENT AGENTIC FLOW</span>
+              <span class="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-400 text-[10px] font-mono">99.8% Success</span>
+            </div>
+            <h3 class="text-base font-bold text-white mt-1.5">DeepResearch & Web Synthesis Pipeline</h3>
+            <p class="text-xs text-slate-400 mt-0.5 leading-relaxed">Autonomous deep crawling, vector synthesis, verification loop, and real-time webhook publishing.</p>
+          </div>
+          
+          <button class="shrink-0 p-2 rounded-xl bg-purple-500/10 border border-purple-500/30 text-purple-300 hover:bg-purple-500/20 transition">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+            </svg>
+          </button>
+        </div>
+
+        <!-- PIPELINE FLOW VISUALIZATION -->
+        <div class="mt-4 p-3 rounded-xl bg-dark-950/70 border border-purple-500/20 backdrop-blur-sm relative z-10">
+          <div class="flex items-center justify-between pb-2 mb-3 border-b border-slate-800/80">
+            <div class="flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+              </svg>
+              <span class="text-[11px] font-mono font-medium text-slate-300">Live Execution Graph</span>
+            </div>
+            <span class="text-[10px] font-mono text-purple-300 flex items-center gap-1">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> 4 Active Nodes
+            </span>
+          </div>
+
+          <!-- Nodes flow with connected animated arrows -->
+          <div class="grid grid-cols-4 gap-1.5 relative items-center">
+            
+            <!-- Node 1: Trigger -->
+            <div class="p-2 rounded-lg bg-dark-900 border border-slate-700/80 flex flex-col items-center text-center relative group">
+              <div class="w-6 h-6 rounded-md bg-purple-500/20 border border-purple-400/40 flex items-center justify-center mb-1 text-purple-300">
+                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+              </div>
+              <span class="text-[10px] font-semibold text-slate-200 truncate w-full">Ingest</span>
+              <span class="text-[8px] font-mono text-purple-300/80">API Hook</span>
+              <!-- Connector connector arrow line -->
+              <div class="absolute -right-2 top-1/2 -translate-y-1/2 z-20 pointer-events-none hidden"></div>
+            </div>
+
+            <!-- Node 2: Crawler / Search -->
+            <div class="p-2 rounded-lg bg-dark-900 border border-purple-500/40 flex flex-col items-center text-center relative">
+              <div class="w-6 h-6 rounded-md bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center mb-1 text-cyan-300">
+                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              </div>
+              <span class="text-[10px] font-semibold text-slate-200 truncate w-full">Scrape</span>
+              <span class="text-[8px] font-mono text-cyan-300/80">Vector DB</span>
+            </div>
+
+            <!-- Node 3: LLM Synthesis (Active Node) -->
+            <div class="p-2 rounded-lg bg-purple-900/40 border border-purple-400 node-pulse flex flex-col items-center text-center relative">
+              <div class="w-6 h-6 rounded-md bg-purple-500 text-white flex items-center justify-center mb-1 shadow-sm shadow-purple-500">
+                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+              </div>
+              <span class="text-[10px] font-bold text-white truncate w-full">Reason</span>
+              <span class="text-[8px] font-mono text-purple-200">Claude/GPT</span>
+            </div>
+
+            <!-- Node 4: Dispatch -->
+            <div class="p-2 rounded-lg bg-dark-900 border border-slate-700/80 flex flex-col items-center text-center">
+              <div class="w-6 h-6 rounded-md bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center mb-1 text-emerald-300">
+                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <span class="text-[10px] font-semibold text-slate-200 truncate w-full">Output</span>
+              <span class="text-[8px] font-mono text-emerald-300/80">Webhook</span>
+            </div>
+
+          </div>
+
+          <!-- Pipeline progress bar metric -->
+          <div class="mt-3 pt-2.5 border-t border-slate-800/80 flex items-center justify-between text-[10px] font-mono text-slate-400">
+            <span>Avg latency: <strong class="text-purple-300">420ms</strong></span>
+            <span>Runs: <strong class="text-slate-200">142.8k</strong></span>
+            <span>Cost: <strong class="text-slate-200">$0.003/exec</strong></span>
+          </div>
+        </div>
+
+        <!-- Action CTA buttons -->
+        <div class="mt-3.5 flex items-center gap-2 relative z-10">
+          <button class="flex-1 py-2 px-3 rounded-xl bg-purple-primary hover:bg-purple-600 text-white font-semibold text-xs flex items-center justify-center gap-2 shadow-lg shadow-purple-900/40 active:scale-98 transition">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span>Deploy Blueprint</span>
+          </button>
+          
+          <button class="py-2 px-3 rounded-xl bg-dark-800 hover:bg-dark-700 text-slate-200 text-xs font-medium border border-slate-700 transition flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+            </svg>
+            <span>Fork YAML</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- GRID OF 3 CARDS FOR SKILLS AND PLUGINS -->
+    <section class="space-y-3">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-sm font-bold text-white tracking-tight">Skills & Modular Plugins</h2>
+          <p class="text-[11px] text-slate-400">Composable building blocks for agent architectures</p>
+        </div>
+        <span class="text-xs font-medium text-purple-400 hover:text-purple-300 cursor-pointer">View all (18)</span>
+      </div>
+
+      <!-- 3 Cards Stack / Grid -->
+      <div class="grid grid-cols-1 gap-3">
+
+        <!-- CARD 1: Vector RAG Scraper Skill -->
+        <div class="rounded-xl bg-dark-900 border border-slate-800/80 hover:border-purple-500/40 p-3.5 transition group relative overflow-hidden">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex items-start gap-3">
+              <!-- Plugin Icon -->
+              <div class="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400 group-hover:bg-purple-500/20 group-hover:text-purple-300 transition">
+                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+                </svg>
+              </div>
+
+              <div>
+                <div class="flex items-center gap-2">
+                  <h4 class="text-sm font-bold text-slate-100 group-hover:text-purple-300 transition">ChromaVector Retreiver</h4>
+                  <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/30">PLUGIN</span>
+                </div>
+                <p class="text-xs text-slate-400 mt-1 line-clamp-1">Zero-config semantic chunking and hybrid dense-sparse vector recall for local DBs.</p>
+                
+                <!-- Metrics badges -->
+                <div class="flex items-center gap-3 mt-2 text-[10px] font-mono text-slate-400">
+                  <span class="flex items-center gap-1 text-amber-300">
+                    ★ 4.9 <span class="text-slate-500">(1.2k)</span>
+                  </span>
+                  <span>⚡ 18ms</span>
+                  <span class="text-emerald-400">● Verified tool</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Install CTA -->
+            <button class="shrink-0 px-2.5 py-1.5 rounded-lg bg-dark-800 hover:bg-purple-600 hover:text-white border border-slate-700 hover:border-purple-500 text-slate-200 text-xs font-medium transition">
+              + Add
+            </button>
+          </div>
+        </div>
+
+        <!-- CARD 2: Autonomous Headless Browser Tool -->
+        <div class="rounded-xl bg-dark-900 border border-slate-800/80 hover:border-purple-500/40 p-3.5 transition group relative overflow-hidden">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex items-start gap-3">
+              <!-- Plugin Icon -->
+              <div class="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 group-hover:bg-cyan-500/20 transition">
+                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+              </div>
+
+              <div>
+                <div class="flex items-center gap-2">
+                  <h4 class="text-sm font-bold text-slate-100 group-hover:text-purple-300 transition">BrowserUse Navigator</h4>
+                  <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">SKILL</span>
+                </div>
+                <p class="text-xs text-slate-400 mt-1 line-clamp-1">DOM tree parsing with vision-assisted mouse clicks, auth persistence & CAPTCHA solver.</p>
+                
+                <!-- Metrics badges -->
+                <div class="flex items-center gap-3 mt-2 text-[10px] font-mono text-slate-400">
+                  <span class="flex items-center gap-1 text-amber-300">
+                    ★ 4.8 <span class="text-slate-500">(840)</span>
+                  </span>
+                  <span>⚡ 210ms</span>
+                  <span class="text-purple-400 font-semibold">Self-healing</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Install CTA -->
+            <button class="shrink-0 px-2.5 py-1.5 rounded-lg bg-dark-800 hover:bg-purple-600 hover:text-white border border-slate-700 hover:border-purple-500 text-slate-200 text-xs font-medium transition">
+              + Add
+            </button>
+          </div>
+        </div>
+
+        <!-- CARD 3: Python Sandbox & Code Exec Plugin -->
+        <div class="rounded-xl bg-dark-900 border border-slate-800/80 hover:border-purple-500/40 p-3.5 transition group relative overflow-hidden">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex items-start gap-3">
+              <!-- Plugin Icon -->
+              <div class="w-10 h-10 rounded-xl bg-purple-600/10 border border-purple-500/30 flex items-center justify-center text-purple-400 group-hover:bg-purple-600/20 transition">
+                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                </svg>
+              </div>
+
+              <div>
+                <div class="flex items-center gap-2">
+                  <h4 class="text-sm font-bold text-slate-100 group-hover:text-purple-300 transition">E2B Sandboxed REPL</h4>
+                  <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">PLUGIN</span>
+                </div>
+                <p class="text-xs text-slate-400 mt-1 line-clamp-1">Secure isolated Firecracker microVM for agentic code generation and chart rendering.</p>
+                
+                <!-- Metrics badges -->
+                <div class="flex items-center gap-3 mt-2 text-[10px] font-mono text-slate-400">
+                  <span class="flex items-center gap-1 text-amber-300">
+                    ★ 5.0 <span class="text-slate-500">(2.4k)</span>
+                  </span>
+                  <span>⚡ 95ms</span>
+                  <span class="text-emerald-400">● 100% Isolated</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Install CTA -->
+            <button class="shrink-0 px-2.5 py-1.5 rounded-lg bg-dark-800 hover:bg-purple-600 hover:text-white border border-slate-700 hover:border-purple-500 text-slate-200 text-xs font-medium transition">
+              + Add
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Agent Stats & Developer Footer Card -->
+    <div class="p-3.5 rounded-xl bg-gradient-to-r from-purple-950/40 via-dark-900 to-dark-850 border border-purple-500/20 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center text-purple-300">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+          </svg>
+        </div>
+        <div>
+          <p class="text-xs font-semibold text-white">Create Custom Agent Tool</p>
+          <p class="text-[10px] text-slate-400">Publish via OpenRPC or MCP standard</p>
+        </div>
+      </div>
+      <button class="px-2.5 py-1 rounded-lg bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/40 text-[11px] font-medium transition">
+        Publish
+      </button>
+    </div>
+
+  </main>
+
+  <!-- Mobile Bottom Floating Navigation Bar -->
+  <nav class="fixed bottom-0 inset-x-0 bg-dark-950/90 backdrop-blur-xl border-t border-purple-500/15 px-6 py-2 z-40">
+    <div class="flex items-center justify-between max-w-md mx-auto">
+      <button class="flex flex-col items-center gap-1 text-purple-400">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+        </svg>
+        <span class="text-[10px] font-semibold">Store</span>
+      </button>
+
+      <button class="flex flex-col items-center gap-1 text-slate-400 hover:text-slate-200 transition">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+        <span class="text-[10px] font-medium">Pipelines</span>
+      </button>
+
+      <button class="flex flex-col items-center gap-1 text-slate-400 hover:text-slate-200 transition">
+        <div class="relative">
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+          </svg>
+        </div>
+        <span class="text-[10px] font-medium">Metrics</span>
+      </button>
+
+      <button class="flex flex-col items-center gap-1 text-slate-400 hover:text-slate-200 transition">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+        </svg>
+        <span class="text-[10px] font-medium">Settings</span>
+      </button>
+    </div>
+  </nav>
+
+</body>
+</html>

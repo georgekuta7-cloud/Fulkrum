@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fulkrum — Layout Preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0e14;
+    --surface: #0f1419;
+    --surface-2: #151c24;
+    --line: #1e2a36;
+    --grid: #0d1520;
+    --text: #c8d6e0;
+    --muted: #5a7080;
+    --accent: #00d4ff;
+    --accent-dim: #003344;
+    --ok: #00cc88;
+    --busy: #ffaa00;
+    --warn: #ff6644;
+    --bad: #ff3355;
+    --plan: #4488ff;
+    --mono: 'JetBrains Mono', monospace;
+    --sans: 'Instrument Sans', sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.5;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    background-image:
+      linear-gradient(var(--grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 20px 20px;
+  }
+
+  /* STATUS BAR */
+  .status-bar {
+    height: 36px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 16px;
+    flex-shrink: 0;
+  }
+  .status-brand {
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 1px;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .status-brand::before {
+    content: '◈';
+    font-size: 14px;
+  }
+  .status-run {
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .status-run strong { color: var(--text); font-weight: 500; }
+  .status-sep { width: 1px; height: 16px; background: var(--line); }
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .status-badge.executing { background: rgba(255,170,0,0.15); color: var(--busy); }
+  .status-badge.executing::before { content: '●'; animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  .status-budget {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    max-width: 200px;
+    margin-left: auto;
+  }
+  .status-budget-bar {
+    flex: 1;
+    height: 3px;
+    background: var(--surface-2);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .status-budget-fill {
+    height: 100%;
+    width: 23.4%;
+    background: var(--accent);
+    border-radius: 2px;
+    box-shadow: 0 0 8px rgba(0,212,255,0.5);
+  }
+  .status-budget-text {
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .status-budget-text strong { color: var(--accent); }
+
+  .status-controls {
+    display: flex;
+    gap: 4px;
+    margin-left: 8px;
+  }
+  .status-btn {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.15s;
+  }
+  .status-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .status-btn.danger:hover { border-color: var(--bad); color: var(--bad); }
+
+  /* MAIN LAYOUT */
+  .app-body {
+    display: grid;
+    grid-template-columns: 48px 1fr 320px;
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* ICON RAIL */
+  .nav-rail {
+    background: var(--surface);
+    border-right: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 8px 0;
+    gap: 4px;
+  }
+  .nav-btn {
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 16px;
+    transition: all 0.15s;
+    position: relative;
+  }
+  .nav-btn:hover {
+    border-color: var(--line);
+    color: var(--text);
+    background: var(--surface-2);
+  }
+  .nav-btn.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-dim);
+  }
+  .nav-btn.active::after {
+    content: '';
+    position: absolute;
+    left: -8px;
+    top: 8px;
+    bottom: 8px;
+    width: 2px;
+    background: var(--accent);
+    border-radius: 1px;
+    box-shadow: 0 0 8px rgba(0,212,255,0.5);
+  }
+  .nav-sep { width: 24px; height: 1px; background: var(--line); margin: 4px 0; }
+  .nav-spacer { flex: 1; }
+
+  /* STAGE */
+  .stage {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    position: relative;
+  }
+  .stage-header {
+    height: 32px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 12px;
+  }
+  .stage-title {
+    font-family: var(--sans);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--muted);
+  }
+  .stage-tabs {
+    display: flex;
+    gap: 2px;
+    margin-left: auto;
+  }
+  .stage-tab {
+    padding: 4px 10px;
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .stage-tab:hover { color: var(--text); border-color: var(--line); }
+  .stage-tab.active { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
+
+  .stage-canvas {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* GRAPH NODES */
+  .graph-node {
+    position: absolute;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 12px 16px;
+    min-width: 140px;
+    transition: all 0.2s;
+  }
+  .graph-node::before, .graph-node::after {
+    content: '';
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    border-color: var(--accent);
+    border-style: solid;
+  }
+  .graph-node::before { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
+  .graph-node::after { bottom: -1px; right: -1px; border-width: 0 2px 2px 0; }
+  .graph-node.working { border-color: var(--busy); box-shadow: 0 0 20px rgba(255,170,0,0.15); }
+  .graph-node.working::before, .graph-node.working::after { border-color: var(--busy); }
+  .graph-node.done { border-color: var(--ok); }
+  .graph-node.done::before, .graph-node.done::after { border-color: var(--ok); }
+  .graph-node.waiting { border-color: var(--plan); box-shadow: 0 0 20px rgba(68,136,255,0.15); }
+  .graph-node.waiting::before, .graph-node.waiting::after { border-color: var(--plan); }
+
+  .node-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .node-avatar {
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+  }
+  .node-role {
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .node-state {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 1px 5px;
+    border-radius: 2px;
+    margin-left: auto;
+  }
+  .node-state.working { background: rgba(255,170,0,0.15); color: var(--busy); }
+  .node-state.done { background: rgba(0,204,136,0.15); color: var(--ok); }
+  .node-state.waiting { background: rgba(68,136,255,0.15); color: var(--plan); }
+  .node-task {
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .node-model {
+    font-size: 10px;
+    color: var(--muted);
+    opacity: 0.7;
+  }
+
+  /* SVG EDGES */
+  .edge-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .edge-path {
+    stroke: var(--line);
+    stroke-width: 1.5;
+    fill: none;
+  }
+  .edge-packet {
+    fill: var(--accent);
+    filter: drop-shadow(0 0 4px var(--accent));
+  }
+
+  /* BOTTOM SHEET */
+  .bottom-sheet {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 200px;
+    background: var(--surface);
+    border-top: 1px solid var(--accent);
+    border-radius: 8px 8px 0 0;
+    box-shadow: 0 -4px 30px rgba(0,0,0,0.3);
+  }
+  .bottom-sheet::before, .bottom-sheet::after {
+    content: '';
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border-color: var(--accent);
+    border-style: solid;
+  }
+  .bottom-sheet::before { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
+  .bottom-sheet::after { top: -1px; right: -1px; border-width: 2px 2px 0 0; }
+  .sheet-header {
+    height: 36px;
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .sheet-title {
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .sheet-close {
+    margin-left: auto;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .sheet-body {
+    padding: 16px;
+  }
+
+  /* CONTEXT PANEL */
+  .context-panel {
+    background: var(--surface);
+    border-left: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+  }
+  .context-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--line);
+  }
+  .context-tab {
+    flex: 1;
+    padding: 10px 0;
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .context-tab:hover { color: var(--text); }
+  .context-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .context-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+  }
+
+  .ctx-section {
+    margin-bottom: 20px;
+  }
+  .ctx-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  .plan-task {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    margin-bottom: 6px;
+  }
+  .plan-task-num {
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .plan-task.active .plan-task-num {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .plan-task.done .plan-task-num {
+    background: rgba(0,204,136,0.15);
+    border-color: var(--ok);
+    color: var(--ok);
+  }
+  .plan-task-text {
+    font-size: 11px;
+    flex: 1;
+  }
+  .plan-task.active .plan-task-text { color: var(--text); }
+  .plan-task.done .plan-task-text { color: var(--muted); text-decoration: line-through; }
+
+  .file-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 3px;
+    font-size: 11px;
+  }
+  .file-row:hover { background: var(--surface-2); }
+  .file-path { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-add { color: var(--ok); font-size: 10px; }
+  .file-del { color: var(--bad); font-size: 10px; }
+
+  .spend-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 11px;
+  }
+  .spend-row:last-child { border-bottom: none; }
+  .spend-role { color: var(--muted); }
+  .spend-amount { font-variant-numeric: tabular-nums; }
+
+  .metric-big {
+    font-family: var(--mono);
+    font-size: 24px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
+    margin-bottom: 4px;
+  }
+  .metric-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+  }
+
+  /* AMBIENT */
+  .measure-top {
+    position: absolute;
+    top: 4px;
+    left: 16px;
+    right: 16px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--muted);
+    font-size: 8px;
+    opacity: 0.5;
+  }
+  .measure-line { flex: 1; height: 1px; background: var(--line); position: relative; }
+  .measure-line::before, .measure-line::after {
+    content: '';
+    position: absolute;
+    width: 1px;
+    height: 3px;
+    background: var(--line);
+    top: -1px;
+  }
+  .measure-line::before { left: 0; }
+  .measure-line::after { right: 0; }
+</style>
+</head>
+<body>
+
+<!-- STATUS BAR -->
+<div class="status-bar">
+  <div class="status-brand">FULKRUM</div>
+  <div class="status-sep"></div>
+  <div class="status-run"><strong>run-a3f8c2</strong></div>
+  <div class="status-sep"></div>
+  <div class="status-badge executing">Executing</div>
+  <div class="status-sep"></div>
+  <div class="status-run">Task <strong>2/4</strong></div>
+  <div class="status-budget">
+    <div class="status-budget-bar">
+      <div class="status-budget-fill"></div>
+    </div>
+    <div class="status-budget-text"><strong>$2.34</strong> / $10.00</div>
+  </div>
+  <div class="status-controls">
+    <button class="status-btn" title="Pause">⏸</button>
+    <button class="status-btn danger" title="Stop">⏹</button>
+    <button class="status-btn" title="Settings">⚙</button>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div class="app-body">
+
+  <!-- ICON RAIL -->
+  <nav class="nav-rail">
+    <button class="nav-btn active" title="Projects">◉</button>
+    <div class="nav-sep"></div>
+    <button class="nav-btn" title="Runs">◎</button>
+    <div class="nav-sep"></div>
+    <button class="nav-btn" title="Store">◈</button>
+    <button class="nav-btn" title="Arsenal">⬡</button>
+    <button class="nav-btn" title="Automations">↻</button>
+    <div class="nav-spacer"></div>
+    <div class="nav-sep"></div>
+    <button class="nav-btn" title="Settings">⚙</button>
+  </nav>
+
+  <!-- STAGE -->
+  <div class="stage">
+    <div class="stage-header">
+      <div class="stage-title">The Map</div>
+      <div class="stage-tabs">
+        <button class="stage-tab active">Graph</button>
+        <button class="stage-tab">Chat</button>
+        <button class="stage-tab">Activity</button>
+      </div>
+    </div>
+    <div class="stage-canvas">
+      <!-- Measurement marks -->
+      <div class="measure-top">
+        <span>0</span>
+        <div class="measure-line"></div>
+        <span>25%</span>
+        <div class="measure-line"></div>
+        <span>50%</span>
+        <div class="measure-line"></div>
+        <span>75%</span>
+        <div class="measure-line"></div>
+        <span>100%</span>
+      </div>
+
+      <!-- SVG Edges -->
+      <svg class="edge-layer">
+        <path class="edge-path" d="M 200 200 C 300 200, 350 280, 450 280" stroke-dasharray="4 4"/>
+        <path class="edge-path" d="M 200 200 C 300 200, 350 380, 450 380" stroke-dasharray="4 4"/>
+        <path class="edge-path" d="M 580 280 C 650 280, 680 340, 750 340" stroke-dasharray="4 4"/>
+        <path class="edge-path" d="M 580 380 C 650 380, 680 340, 750 340" stroke-dasharray="4 4"/>
+        <!-- Animated packet -->
+        <circle class="edge-packet" r="3">
+          <animateMotion dur="2s" repeatCount="indefinite" path="M 200 200 C 300 200, 350 280, 450 280"/>
+        </circle>
+      </svg>
+
+      <!-- Graph Nodes -->
+      <div class="graph-node done" style="left: 80px; top: 160px;">
+        <div class="node-header">
+          <div class="node-avatar">🧑</div>
+          <div class="node-role">Head</div>
+          <div class="node-state done">done</div>
+        </div>
+        <div class="node-task">Plan approved</div>
+        <div class="node-model">claude-sonnet-4</div>
+      </div>
+
+      <div class="graph-node done" style="left: 380px; top: 120px;">
+        <div class="node-header">
+          <div class="node-avatar">🔍</div>
+          <div class="node-role">Research</div>
+          <div class="node-state done">done</div>
+        </div>
+        <div class="node-task">Auth patterns found</div>
+        <div class="node-model">claude-haiku-4</div>
+      </div>
+
+      <div class="graph-node working" style="left: 380px; top: 320px;">
+        <div class="node-header">
+          <div class="node-avatar">🔨</div>
+          <div class="node-role">Builder</div>
+          <div class="node-state working">● working</div>
+        </div>
+        <div class="node-task">JWT middleware</div>
+        <div class="node-model">claude-sonnet-4</div>
+      </div>
+
+      <div class="graph-node waiting" style="left: 680px; top: 280px;">
+        <div class="node-header">
+          <div class="node-avatar">✏️</div>
+          <div class="node-role">Editor</div>
+          <div class="node-state waiting">waiting</div>
+        </div>
+        <div class="node-task">Awaiting review</div>
+        <div class="node-model">claude-haiku-4</div>
+      </div>
+
+      <!-- Bottom Sheet -->
+      <div class="bottom-sheet">
+        <div class="sheet-header">
+          <div class="node-avatar">🔨</div>
+          <div class="sheet-title">Builder — JWT Middleware</div>
+          <div class="status-badge executing">Working</div>
+          <button class="sheet-close">✕</button>
+        </div>
+        <div class="sheet-body">
+          <div class="ctx-label">Recent Tool Calls</div>
+          <div style="font-size: 11px; color: var(--muted); margin-bottom: 4px;">
+            <span style="color: var(--ok)">✓</span> workspace.read <span class="code">src/middleware/auth.ts</span>
+          </div>
+          <div style="font-size: 11px; color: var(--muted); margin-bottom: 4px;">
+            <span style="color: var(--ok)">✓</span> workspace.write <span class="code">src/middleware/auth.ts</span> <span class="file-add">+42</span> <span class="file-del">-12</span>
+          </div>
+          <div style="font-size: 11px; color: var(--busy)">
+            <span>●</span> shell.exec <span class="code">npm test</span> <span style="color: var(--muted)">running…</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONTEXT PANEL -->
+  <aside class="context-panel">
+    <div class="context-tabs">
+      <button class="context-tab active">Plan</button>
+      <button class="context-tab">Files</button>
+      <button class="context-tab">Spend</button>
+    </div>
+    <div class="context-content">
+      <div class="ctx-section">
+        <div class="ctx-label">Objective</div>
+        <div style="font-family: var(--sans); font-size: 14px; font-weight: 600; margin-bottom: 12px;">Fix authentication flow</div>
+        <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+          <span class="status-badge" style="background: rgba(0,204,136,0.15); color: var(--ok);">v3 Approved</span>
+          <span style="font-size: 10px; color: var(--muted); padding: 2px 6px; background: var(--surface-2); border-radius: 3px;">#a1b2c3</span>
+        </div>
+      </div>
+
+      <div class="ctx-section">
+        <div class="ctx-label">Tasks</div>
+        <div class="plan-task done">
+          <div class="plan-task-num">✓</div>
+          <div class="plan-task-text">Research auth patterns</div>
+        </div>
+        <div class="plan-task active">
+          <div class="plan-task-num">2</div>
+          <div class="plan-task-text">Implement JWT middleware</div>
+        </div>
+        <div class="plan-task">
+          <div class="plan-task-num">3</div>
+          <div class="plan-task-text">Write tests</div>
+        </div>
+        <div class="plan-task">
+          <div class="plan-task-num">4</div>
+          <div class="plan-task-text">Update documentation</div>
+        </div>
+      </div>
+
+      <div class="ctx-section">
+        <div class="ctx-label">Cost Estimate</div>
+        <div class="metric-big">$1.20 – $3.40</div>
+        <div class="metric-label">Estimated range</div>
+      </div>
+
+      <div class="ctx-section">
+        <div class="ctx-label">Files Touched</div>
+        <div class="file-row">
+          <span style="color: var(--muted); font-size: 10px;">TS</span>
+          <span class="file-path">src/middleware/auth.ts</span>
+          <span class="file-add">+42</span>
+          <span class="file-del">-12</span>
+        </div>
+        <div class="file-row">
+          <span style="color: var(--muted); font-size: 10px;">TS</span>
+          <span class="file-path">src/routes/login.ts</span>
+          <span class="file-add">+8</span>
+          <span class="file-del">-3</span>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+</div>
+
+</body>
+</html>

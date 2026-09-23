@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport"/>
+<title>Fulkrum — Mobile Orchestrator</title>
+<!-- Fonts -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Inter:wght@100..900&family=JetBrains+Mono:wght@100..900&display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS with CDN plugin -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "secondary-fixed-dim": "#cebdff",
+            "surface-tint": "#d0bcff",
+            "secondary-fixed": "#e8ddff",
+            "secondary-container": "#4f319c",
+            "on-tertiary-fixed": "#002113",
+            "surface-container-high": "#2a292f",
+            "primary": "#d0bcff",
+            "outline-variant": "#494454",
+            "on-primary-fixed-variant": "#5516be",
+            "on-tertiary-container": "#00311f",
+            "tertiary-fixed-dim": "#4edea3",
+            "inverse-on-surface": "#303035",
+            "on-primary-container": "#340080",
+            "surface-container-low": "#1b1b20",
+            "surface-container-highest": "#35343a",
+            "surface-variant": "#35343a",
+            "surface-dim": "#131318",
+            "on-background": "#e4e1e9",
+            "on-tertiary-fixed-variant": "#005236",
+            "background": "#131318",
+            "on-secondary-container": "#bea8ff",
+            "tertiary-container": "#00a572",
+            "secondary": "#cebdff",
+            "surface": "#131318",
+            "on-primary-fixed": "#23005c",
+            "on-secondary-fixed": "#21005e",
+            "surface-container": "#1f1f24",
+            "on-tertiary": "#003824",
+            "on-secondary-fixed-variant": "#4f319c",
+            "on-error": "#690005",
+            "on-error-container": "#ffdad6",
+            "primary-fixed-dim": "#d0bcff",
+            "inverse-surface": "#e4e1e9",
+            "primary-container": "#a078ff",
+            "surface-container-lowest": "#0e0e13",
+            "on-primary": "#3c0091",
+            "primary-fixed": "#e9ddff",
+            "on-surface": "#e4e1e9",
+            "error": "#ffb4ab",
+            "outline": "#958ea0",
+            "tertiary": "#4edea3",
+            "surface-bright": "#39393e",
+            "tertiary-fixed": "#6ffbbe",
+            "error-container": "#93000a",
+            "inverse-primary": "#6d3bd7",
+            "on-surface-variant": "#cbc3d7",
+            "on-secondary": "#381385"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.25rem",
+            "lg": "0.5rem",
+            "xl": "0.75rem",
+            "full": "9999px"
+          },
+          "spacing": {
+            "space-sm": "0.5rem",
+            "margin-mobile": "1rem",
+            "space-md": "0.75rem",
+            "margin": "1.5rem",
+            "gutter-mobile": "0.75rem",
+            "space-xl": "2rem",
+            "space-xs": "0.25rem",
+            "space-lg": "1.25rem",
+            "gutter": "1rem"
+          },
+          "fontFamily": {
+            "headline-xl-mobile": ["Geist"],
+            "headline-lg": ["Geist"],
+            "label-lg": ["JetBrains Mono"],
+            "body-lg": ["Inter"],
+            "body-md": ["Inter"],
+            "label-sm": ["JetBrains Mono"],
+            "headline-xl": ["Geist"],
+            "body-sm": ["Inter"],
+            "headline-md": ["Geist"],
+            "label-md": ["JetBrains Mono"]
+          },
+          "fontSize": {
+            "headline-xl-mobile": ["28px", { "lineHeight": "36px", "letterSpacing": "-0.02em", "fontWeight": "600" }],
+            "headline-lg": ["24px", { "lineHeight": "32px", "letterSpacing": "-0.02em", "fontWeight": "600" }],
+            "label-lg": ["13px", { "lineHeight": "18px", "letterSpacing": "-0.01em", "fontWeight": "500" }],
+            "body-lg": ["15px", { "lineHeight": "24px", "letterSpacing": "-0.005em", "fontWeight": "400" }],
+            "body-md": ["13px", { "lineHeight": "20px", "letterSpacing": "0", "fontWeight": "400" }],
+            "label-sm": ["10px", { "lineHeight": "14px", "letterSpacing": "0.04em", "fontWeight": "500" }],
+            "headline-xl": ["36px", { "lineHeight": "44px", "letterSpacing": "-0.03em", "fontWeight": "600" }],
+            "body-sm": ["12px", { "lineHeight": "18px", "letterSpacing": "0.01em", "fontWeight": "400" }],
+            "headline-md": ["18px", { "lineHeight": "26px", "letterSpacing": "-0.01em", "fontWeight": "500" }],
+            "label-md": ["11px", { "lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "500" }]
+          }
+        }
+      }
+    }
+  </script>
+<style>
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+      display: inline-block;
+      vertical-align: middle;
+      line-height: 1;
+    }
+    
+    /* Precision pulse animation */
+    @keyframes pulse-subtle {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.55; transform: scale(0.92); }
+    }
+    .animate-pulse-subtle {
+      animation: pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+
+    /* Glow aura */
+    .glow-primary {
+      box-shadow: 0 0 16px -4px rgba(208, 188, 255, 0.35);
+    }
+    .glow-tertiary {
+      box-shadow: 0 0 14px -3px rgba(78, 222, 163, 0.45);
+    }
+
+    /* Custom scrollbar for mobile micro-rails */
+    .no-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .no-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+  </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-surface text-on-surface antialiased selection:bg-primary-container selection:text-on-primary-container min-h-screen flex flex-col justify-between overflow-x-hidden pb-36">
+<!-- OVERLAY NAVIGATION DRAWER (Hidden by default, toggleable) -->
+<aside class="fixed inset-y-0 left-0 w-72 z-50 bg-surface-container-low border-r border-outline-variant/20 shadow-2xl transform -translate-x-full transition-transform duration-300 ease-out flex flex-col p-margin-mobile space-y-space-md" id="nav-drawer">
+<!-- Drawer Header -->
+<div class="flex items-center justify-between pb-space-sm border-b border-outline-variant/20">
+<div class="flex items-center gap-space-sm">
+<div class="w-8 h-8 rounded-lg bg-secondary-container/40 flex items-center justify-center border border-outline-variant/30 glow-primary">
+<span class="material-symbols-outlined text-primary text-lg" data-icon="hub">hub</span>
+</div>
+<div>
+<h2 class="text-headline-md font-headline-md font-semibold text-primary tracking-tight">Fulkrum Node 01</h2>
+<p class="text-label-sm font-label-sm text-on-surface-variant">Orchestration Master</p>
+</div>
+</div>
+<button aria-label="Close Drawer" class="p-1 rounded-lg text-on-surface-variant hover:text-on-surface active:scale-95 transition-transform" onclick="toggleDrawer()">
+<span class="material-symbols-outlined text-xl" data-icon="close">close</span>
+</button>
+</div>
+<!-- Daily Cap Pill -->
+<div class="px-space-md py-space-xs rounded-full bg-surface-container border border-outline-variant/20 flex items-center justify-between">
+<span class="text-label-sm font-label-sm text-on-surface-variant">Cap Exhaustion</span>
+<span class="text-label-sm font-label-sm text-tertiary font-medium">$0.42 / $2.00 Daily Cap</span>
+</div>
+<!-- Navigation Tab Links from JSON -->
+<nav class="flex-1 space-y-1 overflow-y-auto no-scrollbar pt-2">
+<!-- Item 1: Orchestrator (Active) -->
+<a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg bg-secondary-container/40 text-on-secondary-container dark:text-secondary font-medium border border-outline-variant/30" href="#">
+<span class="material-symbols-outlined text-lg" data-icon="hub">hub</span>
+<span class="text-body-md font-body-md">Orchestrator</span>
+</a>
+<!-- Item 2: Agent Fleets -->
+<a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-on-surface-variant dark:text-on-surface-variant hover:text-on-surface hover:bg-surface-container active:bg-surface-container-high transition-colors" href="#">
+<span class="material-symbols-outlined text-lg" data-icon="smart_toy">smart_toy</span>
+<span class="text-body-md font-body-md">Agent Fleets</span>
+</a>
+<!-- Item 3: Telemetry & Logs -->
+<a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-on-surface-variant dark:text-on-surface-variant hover:text-on-surface hover:bg-surface-container active:bg-surface-container-high transition-colors" href="#">
+<span class="material-symbols-outlined text-lg" data-icon="monitoring">monitoring</span>
+<span class="text-body-md font-body-md">Telemetry & Logs</span>
+</a>
+<!-- Item 4: System Health -->
+<a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-on-surface-variant dark:text-on-surface-variant hover:text-on-surface hover:bg-surface-container active:bg-surface-container-high transition-colors" href="#">
+<span class="material-symbols-outlined text-lg" data-icon="vital_signs">vital_signs</span>
+<span class="text-body-md font-body-md">System Health</span>
+</a>
+<!-- Item 5: Settings -->
+<a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-on-surface-variant dark:text-on-surface-variant hover:text-on-surface hover:bg-surface-container active:bg-surface-container-high transition-colors" href="#">
+<span class="material-symbols-outlined text-lg" data-icon="tune">tune</span>
+<span class="text-body-md font-body-md">Settings</span>
+</a>
+</nav>
+<!-- Drawer Footer Profile -->
+<div class="pt-space-sm border-t border-outline-variant/20 flex items-center justify-between">
+<div class="flex items-center gap-space-sm">
+<div class="w-8 h-8 rounded-full bg-secondary-container flex items-center justify-center text-secondary font-headline-md font-semibold text-xs border border-outline-variant/40">
+          CA
+        </div>
+<div>
+<div class="text-label-md font-label-md text-on-surface">Cluster Admin</div>
+<div class="text-label-sm font-label-sm text-tertiary">daemon: connected</div>
+</div>
+</div>
+<span class="material-symbols-outlined text-outline text-lg" data-icon="verified_user">verified_user</span>
+</div>
+</aside>
+<!-- DRAWER BACKDROP -->
+<div class="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 hidden transition-opacity" id="drawer-backdrop" onclick="toggleDrawer()"></div>
+<!-- 1. GLASSMORHPIC STICKY HEADER (Shared Component: TopAppBar with mobile adaptions) -->
+<header class="docked full-width top-0 sticky z-40 bg-surface-container-low/80 dark:bg-surface-container-low/80 backdrop-blur-md shadow-sm border-b border-outline-variant/30 transition-all">
+<div class="flex justify-between items-center w-full px-margin-mobile py-space-sm h-14">
+<!-- Leading Section: Menu Drawer Trigger + Brand Logo -->
+<div class="flex items-center gap-space-sm">
+<button aria-label="Open Navigation" class="p-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-highest hover:text-on-surface active:scale-95 transition-all" onclick="toggleDrawer()">
+<span class="material-symbols-outlined text-xl" data-icon="menu">menu</span>
+</button>
+<div class="flex items-center gap-2">
+<div class="relative flex items-center justify-center">
+<span class="material-symbols-outlined text-primary text-xl" data-icon="account_tree">account_tree</span>
+<!-- Live daemon green dot indicator -->
+<span class="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-tertiary glow-tertiary animate-pulse-subtle"></span>
+</div>
+<span class="text-headline-md font-headline-md font-semibold text-on-surface dark:text-on-surface tracking-tight">Fulkrum</span>
+</div>
+</div>
+<!-- Center Sub-Tag: Repository Directory Path (Mobile subtle) -->
+<div class="hidden xs:flex items-center px-2 py-0.5 rounded bg-surface-container-lowest/80 border border-outline-variant/20">
+<span class="text-label-sm font-label-sm text-outline-variant font-mono">~/orchestrator/v2-core</span>
+</div>
+<!-- Trailing Action: Spend Counter Meter & Quick Action -->
+<div class="flex items-center gap-space-sm">
+<!-- Live spend counter chip with mini circular progress svg -->
+<div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-container border border-outline-variant/30">
+<svg class="w-3.5 h-3.5 -rotate-90 text-surface-container-high" viewbox="0 0 24 24">
+<circle cx="12" cy="12" fill="transparent" r="9" stroke="currentColor" stroke-width="3"></circle>
+<circle cx="12" cy="12" fill="transparent" r="9" stroke="#4edea3" stroke-dasharray="56.54" stroke-dashoffset="44.66" stroke-linecap="round" stroke-width="3"></circle>
+</svg>
+<span class="text-label-sm font-label-sm text-on-surface font-mono">$0.42</span>
+<span class="text-label-sm font-label-sm text-outline">/ $2.00</span>
+</div>
+<button aria-label="Settings Trigger" class="p-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-highest hover:text-on-surface active:scale-95 transition-all">
+<span class="material-symbols-outlined text-lg" data-icon="tune">tune</span>
+</button>
+</div>
+</div>
+</header>
+<!-- MAIN SCROLLABLE CONTENT CANVAS -->
+<main class="flex-1 flex flex-col w-full max-w-2xl mx-auto px-margin-mobile pt-space-sm space-y-space-md">
+<!-- 2. AGENT PIPELINE TRACKER (Sticky HUD Strip) -->
+<section class="rounded-xl bg-surface-container-low/90 border border-outline-variant/30 backdrop-blur-md p-space-sm shadow-sm space-y-space-sm">
+<!-- Metadata Row: Hash + Progress -->
+<div class="flex items-center justify-between text-label-sm font-label-sm px-1">
+<div class="flex items-center gap-1.5 text-on-surface-variant">
+<span>Active Pipeline:</span>
+<button class="inline-flex items-center gap-1 font-mono text-primary bg-secondary-container/30 px-1.5 py-0.5 rounded border border-outline-variant/20 hover:border-primary/50 transition-colors" title="Copy Plan Hash">
+<span>#7f8a9e01</span>
+<span class="material-symbols-outlined text-xs" data-icon="content_copy">content_copy</span>
+</button>
+</div>
+<div class="flex items-center gap-2">
+<span class="text-tertiary font-mono">50% Completed</span>
+<div class="w-14 h-1.5 bg-surface-container-high rounded-full overflow-hidden">
+<div class="w-1/2 h-full bg-tertiary glow-tertiary"></div>
+</div>
+</div>
+</div>
+<!-- Agent Steps Flow (Horizontal scrollable micro-rail) -->
+<div class="flex items-center justify-between overflow-x-auto no-scrollbar pt-1 pb-1 px-1 gap-1">
+<!-- Step 1: Head AI (Completed) -->
+<div class="flex items-center gap-1.5 shrink-0">
+<div class="flex items-center gap-1 px-2 py-1 rounded-full bg-tertiary/10 border border-tertiary/40 text-tertiary text-label-sm font-label-sm">
+<span class="material-symbols-outlined text-xs" data-icon="check_circle">check_circle</span>
+<span class="font-medium">Head AI</span>
+</div>
+</div>
+<!-- Connector Line 1 -->
+<div class="flex-1 min-w-[14px] border-t border-dashed border-tertiary/50"></div>
+<!-- Step 2: Scout (Completed) -->
+<div class="flex items-center gap-1.5 shrink-0">
+<div class="flex items-center gap-1 px-2 py-1 rounded-full bg-tertiary/10 border border-tertiary/40 text-tertiary text-label-sm font-label-sm">
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary"></span>
+<span class="font-medium">Scout</span>
+</div>
+</div>
+<!-- Connector Line 2 (Active gradient line) -->
+<div class="flex-1 min-w-[14px] border-t border-dashed border-primary/70"></div>
+<!-- Step 3: Forge (Active) -->
+<div class="flex items-center gap-1 shrink-0">
+<div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/15 border border-primary text-primary text-label-sm font-label-sm glow-primary">
+<span class="w-2 h-2 rounded-full bg-primary animate-pulse-subtle"></span>
+<span class="font-semibold">Forge</span>
+<span class="text-[9px] px-1 py-0.2 bg-primary-container text-on-primary-container rounded font-mono font-bold">4/8</span>
+</div>
+</div>
+<!-- Connector Line 3 -->
+<div class="flex-1 min-w-[14px] border-t border-dashed border-outline-variant/40"></div>
+<!-- Step 4: Debugger (Queued) -->
+<div class="flex items-center gap-1.5 shrink-0 opacity-40">
+<div class="flex items-center gap-1 px-2 py-1 rounded-full bg-surface-container border border-outline-variant/30 text-on-surface-variant text-label-sm font-label-sm">
+<span class="w-1.5 h-1.5 rounded-full bg-outline"></span>
+<span>Debugger</span>
+</div>
+</div>
+</div>
+</section>
+<!-- 3. AGENT SWITCHER DOCK (Pill Carousel) -->
+<section class="flex items-center gap-2 overflow-x-auto no-scrollbar py-0.5">
+<!-- Active Head AI Agent -->
+<button class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-container-high border-2 border-primary text-on-surface text-label-md font-label-md shrink-0 shadow-sm glow-primary">
+<span class="w-2 h-2 rounded-full bg-primary animate-pulse-subtle"></span>
+<span class="font-semibold text-primary">Head AI</span>
+<span class="text-[9px] px-1.5 py-0.5 rounded bg-surface-container-lowest text-on-surface-variant border border-outline-variant/20 font-mono">Sonnet 3.5</span>
+</button>
+<!-- Scout Agent -->
+<button class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-container border border-outline-variant/30 text-on-surface-variant hover:text-on-surface text-label-md font-label-md shrink-0">
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary"></span>
+<span>Scout</span>
+<span class="text-[9px] px-1.5 py-0.5 rounded bg-surface-container-lowest text-outline border border-outline-variant/20 font-mono">4o-mini</span>
+</button>
+<!-- Forge Agent -->
+<button class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-container border border-outline-variant/30 text-on-surface-variant hover:text-on-surface text-label-md font-label-md shrink-0">
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary glow-tertiary"></span>
+<span>Forge</span>
+<span class="text-[9px] px-1.5 py-0.5 rounded bg-tertiary/10 text-tertiary border border-tertiary/20 font-mono">Running</span>
+</button>
+<!-- Add Agent Pill Button -->
+<button class="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-dashed border-outline-variant hover:border-primary text-outline hover:text-primary text-label-md font-label-md shrink-0 transition-colors">
+<span class="material-symbols-outlined text-sm" data-icon="add">add</span>
+<span>Add</span>
+</button>
+</section>
+<!-- 4. DYNAMIC CHAT & EXECUTION STREAM -->
+<section class="space-y-space-md">
+<!-- User Command Message -->
+<div class="flex justify-end">
+<div class="max-w-[85%] rounded-2xl rounded-tr-sm bg-secondary-container/30 border border-primary/20 px-space-md py-space-sm shadow-sm backdrop-blur-sm">
+<p class="text-body-md font-body-md text-on-surface">Refactor auth middleware and generate rate-limiting unit tests with Forge</p>
+<div class="flex items-center justify-end gap-1 mt-1">
+<span class="text-label-sm font-label-sm text-outline-variant font-mono">14:02:18</span>
+<span class="material-symbols-outlined text-xs text-primary" data-icon="done_all">done_all</span>
+</div>
+</div>
+</div>
+<!-- Agent Response & Plan Card -->
+<div class="flex flex-col space-y-space-sm">
+<!-- Agent Identity Header -->
+<div class="flex items-center gap-2">
+<div class="w-6 h-6 rounded-md bg-secondary-container/60 border border-primary/40 flex items-center justify-center glow-primary">
+<span class="material-symbols-outlined text-sm text-primary" data-icon="smart_toy">smart_toy</span>
+</div>
+<span class="text-label-md font-label-md font-semibold text-primary">Head AI</span>
+<span class="text-label-sm font-label-sm text-outline font-mono">synthesizing context</span>
+</div>
+<!-- Thought & Markdown explanation -->
+<div class="rounded-xl bg-surface-container border border-outline-variant/30 p-space-md space-y-space-sm shadow-sm">
+<p class="text-body-md font-body-md text-on-surface leading-relaxed">
+            I've isolated the JWT refresh boundary flaw. <code class="text-label-sm font-mono text-tertiary bg-surface-container-lowest px-1.5 py-0.5 rounded">TokenBucket</code> algorithms are scaffolded in memory. Proceeding with unit mock synthesis under isolated sandbox containers.
+          </p>
+<!-- Plan Checklist Card -->
+<div class="rounded-lg bg-surface-container-lowest/80 border border-outline-variant/30 p-space-sm space-y-2 mt-2">
+<div class="flex items-center justify-between pb-1 border-b border-outline-variant/20">
+<span class="text-label-md font-label-md font-semibold text-on-surface flex items-center gap-1.5">
+<span class="material-symbols-outlined text-base text-primary" data-icon="task_alt">task_alt</span>
+                Execution Plan (4/8 active)
+              </span>
+<button aria-label="Toggle plan view" class="text-outline-variant hover:text-on-surface">
+<span class="material-symbols-outlined text-sm" data-icon="expand_less">expand_less</span>
+</button>
+</div>
+<!-- Task Items -->
+<div class="space-y-1.5 text-body-sm font-body-sm pt-0.5">
+<div class="flex items-start gap-2">
+<span class="material-symbols-outlined text-base text-tertiary shrink-0 mt-0.5" data-icon="check_box">check_box</span>
+<span class="line-through text-outline">Analyzed token expiration vulnerability in <code class="font-mono text-xs">/src/auth/jwt.ts</code></span>
+</div>
+<div class="flex items-start gap-2">
+<span class="material-symbols-outlined text-base text-tertiary shrink-0 mt-0.5" data-icon="check_box">check_box</span>
+<span class="line-through text-outline">Synthesized Scout context and Redis rate-limiting specs</span>
+</div>
+<div class="flex items-start gap-2 text-on-surface font-medium">
+<div class="mt-1 w-3.5 h-3.5 rounded-sm border border-primary flex items-center justify-center shrink-0">
+<span class="w-2 h-2 rounded-full bg-primary animate-pulse-subtle"></span>
+</div>
+<span>Generating token bucket limiter tests via Forge (<code class="font-mono text-xs text-primary bg-primary-container/20 px-1 rounded">auth.test.ts</code>)</span>
+</div>
+<div class="flex items-start gap-2 text-outline-variant">
+<span class="material-symbols-outlined text-base text-outline-variant shrink-0 mt-0.5" data-icon="check_box_outline_blank">check_box_outline_blank</span>
+<span>Run Debugger fuzz test suite on mock endpoints</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Actionable Approval Card (Elevated Sandbox Intervention) -->
+<div class="rounded-xl bg-surface-container border border-primary-container/60 shadow-lg p-space-md space-y-space-sm relative overflow-hidden">
+<div class="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-primary via-tertiary to-primary"></div>
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-1.5">
+<span class="material-symbols-outlined text-base text-primary" data-icon="warning">warning</span>
+<span class="text-label-md font-label-md font-semibold text-primary uppercase tracking-wider">Action Required: CLI Execution</span>
+</div>
+<span class="text-label-sm font-label-sm font-mono text-outline">id: req_9812</span>
+</div>
+<p class="text-body-sm font-body-sm text-on-surface-variant">Forge worker requests elevated privileges to execute jest coverage within sandbox:</p>
+<!-- Command snippet box -->
+<div class="p-2.5 rounded-lg bg-surface-container-lowest border border-outline-variant/30 flex items-center justify-between font-mono text-label-sm">
+<span class="text-tertiary overflow-x-auto whitespace-nowrap mr-2">$ npx jest tests/auth.test.ts --coverage --detectOpenHandles</span>
+<button class="text-outline-variant hover:text-on-surface shrink-0" title="Copy command">
+<span class="material-symbols-outlined text-sm" data-icon="content_copy">content_copy</span>
+</button>
+</div>
+<div class="flex items-center justify-between text-label-sm font-label-sm text-outline-variant font-mono">
+<span>Target: <span class="text-on-surface">forge-worker-04</span> (isolated sandbox)</span>
+</div>
+<!-- Approval Buttons -->
+<div class="grid grid-cols-2 gap-space-sm pt-1">
+<button class="w-full py-2 px-3 rounded-full border border-error/40 text-error hover:bg-error-container/20 text-label-md font-label-md active:scale-95 transition-all text-center">
+            Deny
+          </button>
+<button class="w-full py-2 px-3 rounded-full bg-tertiary-container hover:bg-tertiary text-on-tertiary text-label-md font-label-md font-semibold active:scale-95 transition-all text-center glow-tertiary flex items-center justify-center gap-1.5">
+<span class="material-symbols-outlined text-base" data-icon="play_arrow">play_arrow</span>
+<span>Approve & Run</span>
+</button>
+</div>
+</div>
+<!-- 5. ACTIVE ARTIFACTS & INSPECTOR DRAWER PREVIEW -->
+<div class="rounded-xl bg-surface-container border border-outline-variant/30 overflow-hidden shadow-sm">
+<!-- Accordion Header -->
+<div class="flex items-center justify-between p-space-sm bg-surface-container-high/60 border-b border-outline-variant/20">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-base text-primary" data-icon="inventory_2">inventory_2</span>
+<span class="text-label-md font-label-md font-semibold text-on-surface">Active Artifacts</span>
+</div>
+<!-- Micro tabs -->
+<div class="flex items-center gap-1">
+<span class="px-2 py-0.5 rounded bg-surface-container-highest text-primary text-label-sm font-label-sm font-mono border border-primary/30">Diffs (2)</span>
+<span class="px-2 py-0.5 rounded text-outline-variant text-label-sm font-label-sm font-mono hover:text-on-surface">Logs</span>
+<span class="px-2 py-0.5 rounded text-outline-variant text-label-sm font-label-sm font-mono hover:text-on-surface">Security</span>
+</div>
+</div>
+<!-- Embedded Syntax Diff Snippet -->
+<div class="bg-surface-container-lowest p-space-sm font-mono text-label-sm leading-5 overflow-x-auto no-scrollbar border-b border-outline-variant/20">
+<div class="text-outline-variant text-[10px] pb-1 font-mono">@@ src/auth/rate-limiter.ts:24,7 @@</div>
+<!-- Red line deletion -->
+<div class="flex items-center bg-error-container/20 text-error px-1 py-0.5 rounded">
+<span class="w-6 text-outline-variant select-none">24</span>
+<span class="select-none mr-2 font-bold">-</span>
+<span class="whitespace-pre">const rateLimiter = null;</span>
+</div>
+<!-- Green line addition -->
+<div class="flex items-center bg-tertiary-container/20 text-tertiary px-1 py-0.5 rounded mt-0.5">
+<span class="w-6 text-outline-variant select-none">24</span>
+<span class="select-none mr-2 font-bold">+</span>
+<span class="whitespace-pre">export const rateLimiter = new TokenBucket({ capacity: 100, interval: 60 });</span>
+</div>
+</div>
+<!-- Micro Telemetry Metric Strip -->
+<div class="px-space-sm py-1.5 bg-surface-container-low flex items-center justify-between text-label-sm font-label-sm font-mono text-outline">
+<div class="flex items-center gap-1">
+<span>Latency</span>
+<span class="text-on-surface font-semibold">142ms</span>
+</div>
+<span>•</span>
+<div class="flex items-center gap-1">
+<span>Tokens</span>
+<span class="text-on-surface font-semibold">2.4k</span>
+</div>
+<span>•</span>
+<div class="flex items-center gap-1">
+<span>Cache Hit</span>
+<span class="text-tertiary font-semibold">94%</span>
+</div>
+</div>
+</div>
+</section>
+</main>
+<!-- 6. FLOATING MOBILE PROMPT CONSOLE (Stationed directly above the Bottom Navigation Bar) -->
+<div class="fixed bottom-16 left-0 w-full z-40 px-margin-mobile pb-2 pointer-events-none">
+<div class="max-w-2xl mx-auto pointer-events-auto">
+<div class="rounded-2xl bg-surface-container-low/95 border border-outline-variant/40 shadow-2xl backdrop-blur-xl p-2 space-y-1.5">
+<!-- Top Toolbar inside Prompt box -->
+<div class="flex items-center justify-between px-1">
+<!-- Steer target pill dropdown -->
+<button class="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-surface-container border border-outline-variant/30 text-label-sm font-label-sm text-on-surface hover:border-primary/50 transition-colors">
+<span class="w-1.5 h-1.5 rounded-full bg-primary animate-pulse-subtle"></span>
+<span>Steer: <strong class="text-primary">Head AI</strong></span>
+<span class="material-symbols-outlined text-xs text-outline" data-icon="arrow_drop_down">arrow_drop_down</span>
+</button>
+<!-- Quick context triggers -->
+<div class="flex items-center gap-1">
+<button class="p-1 rounded text-outline-variant hover:text-on-surface hover:bg-surface-container active:scale-95 transition-all" title="Mention agent">
+<span class="material-symbols-outlined text-base" data-icon="alternate_email">alternate_email</span>
+</button>
+<button class="p-1 rounded text-outline-variant hover:text-on-surface hover:bg-surface-container active:scale-95 transition-all" title="Attach file or context">
+<span class="material-symbols-outlined text-base" data-icon="attach_file">attach_file</span>
+</button>
+</div>
+</div>
+<!-- Input row with Mic & Send Pill -->
+<div class="flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-xl bg-surface-container-lowest border border-outline-variant/20 focus-within:border-primary transition-colors">
+<input class="flex-1 bg-transparent border-none text-body-md font-body-md text-on-surface placeholder:text-outline-variant focus:outline-none focus:ring-0 p-0" placeholder="Direct Head AI..." type="text"/>
+<!-- Voice Mic Trigger -->
+<button aria-label="Voice input" class="p-1.5 rounded-lg text-outline-variant hover:text-on-surface active:scale-95 transition-all">
+<span class="material-symbols-outlined text-lg" data-icon="mic">mic</span>
+</button>
+<!-- Vibrant Primary Purple Send Button -->
+<button aria-label="Execute prompt" class="h-8 w-8 rounded-full bg-primary-container text-on-primary-container hover:bg-primary hover:text-on-primary flex items-center justify-center shrink-0 active:scale-90 transition-all glow-primary">
+<span class="material-symbols-outlined text-lg font-bold" data-icon="arrow_upward">arrow_upward</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+<!-- 7. BOTTOM NAVIGATION DOCK (Shared Component: BottomNavBar with exact JSON tokens) -->
+<nav class="fixed bottom-0 left-0 w-full z-50 flex justify-around items-center px-margin-mobile py-space-xs pb-safe h-16 bg-surface-container-low/90 dark:bg-surface-container-low/90 backdrop-blur-lg shadow-lg border-t border-outline-variant/20">
+<!-- Destination 1: Chat (Active Intent: matches Orchestrator Chat Execution view) -->
+<a class="flex flex-col items-center justify-center text-primary dark:text-primary font-medium gap-0.5 relative active:scale-95 transition-transform duration-150" href="#">
+<div class="relative">
+<span class="material-symbols-outlined text-2xl" data-icon="terminal">terminal</span>
+</div>
+<span class="text-label-sm font-label-sm">Chat</span>
+</a>
+<!-- Destination 2: Artifacts (With Badge count '2') -->
+<a class="flex flex-col items-center justify-center text-on-surface-variant dark:text-on-surface-variant hover:text-on-surface gap-0.5 relative active:scale-95 transition-transform duration-150" href="#">
+<div class="relative">
+<span class="material-symbols-outlined text-2xl" data-icon="inventory_2">inventory_2</span>
+<span class="absolute -top-1 -right-2 px-1 py-0.1 bg-secondary-container text-secondary text-[9px] font-mono font-bold rounded-full border border-outline-variant/30">2</span>
+</div>
+<span class="text-label-sm font-label-sm">Artifacts</span>
+</a>
+<!-- Destination 3: Approvals (With Badge Alert '1') -->
+<a class="flex flex-col items-center justify-center text-on-surface-variant dark:text-on-surface-variant hover:text-on-surface gap-0.5 relative active:scale-95 transition-transform duration-150" href="#">
+<div class="relative">
+<span class="material-symbols-outlined text-2xl" data-icon="fact_check">fact_check</span>
+<span class="absolute -top-1 -right-1.5 w-2 h-2 bg-error rounded-full ring-2 ring-surface-container-low"></span>
+</div>
+<span class="text-label-sm font-label-sm">Approvals</span>
+</a>
+<!-- Destination 4: Settings -->
+<a class="flex flex-col items-center justify-center text-on-surface-variant dark:text-on-surface-variant hover:text-on-surface gap-0.5 relative active:scale-95 transition-transform duration-150" href="#">
+<span class="material-symbols-outlined text-2xl" data-icon="settings">settings</span>
+<span class="text-label-sm font-label-sm">Settings</span>
+</a>
+</nav>
+<!-- MICRO DAEMON FOOTER STATUS TICKER (Floats subtly behind nav bar safe area) -->
+<div class="fixed bottom-0.5 left-0 right-0 z-50 pointer-events-none flex justify-center pb-0.5">
+<div class="flex items-center gap-1 text-[8px] font-mono text-outline-variant/60">
+<span class="w-1 h-1 rounded-full bg-tertiary"></span>
+<span>Daemon online • 4ms latency</span>
+</div>
+</div>
+<!-- Micro Interaction Script for Drawer -->
+<script>
+    function toggleDrawer() {
+      const drawer = document.getElementById('nav-drawer');
+      const backdrop = document.getElementById('drawer-backdrop');
+      const isOpen = !drawer.classList.contains('-translate-x-full');
+      
+      if (isOpen) {
+        drawer.classList.add('-translate-x-full');
+        backdrop.classList.add('hidden');
+      } else {
+        drawer.classList.remove('-translate-x-full');
+        backdrop.classList.remove('hidden');
+      }
+    }
+  </script>
+</body></html>

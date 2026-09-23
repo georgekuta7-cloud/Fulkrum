@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Worker Slots — Design Iteration 2</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0e14; --surface: #0f1419; --surface-2: #151c24; --surface-3: #1a2330;
+    --line: #1e2a36; --line-soft: #162028; --grid: #0d1520;
+    --text: #c8d6e0; --muted: #5a7080;
+    --accent: #00d4ff; --accent-dim: #003344;
+    --ok: #00cc88; --busy: #ffaa00; --warn: #ff6644; --bad: #ff3355; --plan: #4488ff;
+    --mono: 'JetBrains Mono', monospace; --sans: 'Instrument Sans', sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text); font-family: var(--mono);
+    font-size: 13px; line-height: 1.5; padding: 40px;
+    background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 20px 20px;
+    display: flex; justify-content: center;
+  }
+  .container { max-width: 560px; width: 100%; }
+
+  /* Header */
+  .casting-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--line);
+  }
+  .casting-title {
+    font-family: var(--sans); font-size: 18px; font-weight: 700; letter-spacing: -0.3px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .casting-title::before {
+    content: ''; width: 3px; height: 20px; background: var(--accent);
+    border-radius: 2px; box-shadow: 0 0 8px rgba(0,212,255,0.5);
+  }
+  .worker-count {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .count-display {
+    font-family: var(--sans); font-size: 32px; font-weight: 700;
+    color: var(--accent); min-width: 40px; text-align: center;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 0 20px rgba(0,212,255,0.3);
+  }
+  .count-btn {
+    width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px;
+    color: var(--text); cursor: pointer; font-size: 20px; transition: all 0.15s;
+  }
+  .count-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+  .count-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  /* Worker slots */
+  .slots { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
+  .slot {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+    padding: 16px 20px; position: relative; overflow: hidden;
+    transition: all 0.2s;
+  }
+  .slot::before {
+    content: ''; position: absolute; top: 0; left: 0; bottom: 0; width: 3px;
+  }
+  .slot.research::before { background: var(--accent); box-shadow: 0 0 8px rgba(0,212,255,0.3); }
+  .slot.builder::before { background: var(--busy); box-shadow: 0 0 8px rgba(255,170,0,0.3); }
+  .slot:hover { border-color: var(--muted); }
+
+  .slot-header {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 14px;
+  }
+  .slot-avatar {
+    width: 40px; height: 40px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center; font-size: 20px;
+  }
+  .slot.research .slot-avatar { background: rgba(0,212,255,0.15); border: 1px solid var(--accent); }
+  .slot.builder .slot-avatar { background: rgba(255,170,0,0.15); border: 1px solid var(--busy); }
+  .slot-info { flex: 1; }
+  .slot-name {
+    font-family: var(--sans); font-size: 15px; font-weight: 600; letter-spacing: -0.2px;
+  }
+  .slot-subtitle {
+    font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 2px;
+  }
+  .slot-delete {
+    width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+    background: transparent; border: 1px solid transparent; border-radius: 6px;
+    color: var(--muted); cursor: pointer; transition: all 0.15s; font-size: 14px;
+  }
+  .slot-delete:hover { border-color: var(--bad); color: var(--bad); background: rgba(255,51,85,0.1); }
+
+  .slot-config {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+  }
+  .field-label {
+    font-family: var(--mono); font-size: 9px; text-transform: uppercase;
+    letter-spacing: 1.5px; color: var(--muted); margin-bottom: 6px;
+  }
+  .select-wrap {
+    position: relative;
+  }
+  .select-wrap select {
+    width: 100%; padding: 8px 12px; background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 6px; color: var(--text);
+    font-family: var(--mono); font-size: 12px; cursor: pointer;
+    appearance: none; transition: all 0.15s;
+  }
+  .select-wrap select:hover { border-color: var(--muted); }
+  .select-wrap select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(0,212,255,0.1); outline: none; }
+  .select-wrap::after {
+    content: '▾'; position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+    color: var(--muted); pointer-events: none; font-size: 12px;
+  }
+
+  .slot-meta {
+    display: flex; align-items: center; gap: 16px; margin-top: 14px;
+    padding-top: 12px; border-top: 1px solid var(--line-soft);
+    font-family: var(--mono); font-size: 10px; color: var(--muted);
+  }
+  .meta-item { display: flex; align-items: center; gap: 5px; }
+  .meta-dot { width: 6px; height: 6px; border-radius: 50%; }
+  .meta-dot.ok { background: var(--ok); box-shadow: 0 0 4px rgba(0,204,136,0.5); }
+  .meta-dot.warn { background: var(--warn); }
+
+  /* Cost estimate */
+  .cost-bar {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+    padding: 16px 20px; margin-bottom: 16px;
+  }
+  .cost-row {
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .cost-label { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .cost-value {
+    font-family: var(--sans); font-size: 22px; font-weight: 700; color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  .cost-range { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+  /* Add button */
+  .add-worker {
+    width: 100%; padding: 14px; background: transparent;
+    border: 2px dashed var(--line); border-radius: 8px; color: var(--muted);
+    font-family: var(--mono); font-size: 12px; cursor: pointer; transition: all 0.15s;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+  }
+  .add-worker:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+  .add-worker:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  /* Tooltip */
+  .hint {
+    font-family: var(--mono); font-size: 10px; color: var(--muted);
+    text-align: center; margin-top: 12px;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <!-- Header -->
+  <div class="casting-header">
+    <div class="casting-title">Workers</div>
+    <div class="worker-count">
+      <button class="count-btn" onclick="changeCount(-1)">−</button>
+      <div class="count-display" id="count">3</div>
+      <button class="count-btn" onclick="changeCount(1)">+</button>
+    </div>
+  </div>
+
+  <!-- Worker slots -->
+  <div class="slots" id="slots">
+    <div class="slot research">
+      <div class="slot-header">
+        <div class="slot-avatar">🔍</div>
+        <div class="slot-info">
+          <div class="slot-name">Research</div>
+          <div class="slot-subtitle">Scout & analyze</div>
+        </div>
+        <button class="slot-delete" onclick="this.closest('.slot').remove(); updateCount()">✕</button>
+      </div>
+      <div class="slot-config">
+        <div>
+          <div class="field-label">Role</div>
+          <div class="select-wrap">
+            <select onchange="updateRole(this)">
+              <option value="research">Research</option>
+              <option value="builder">Builder</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <div class="field-label">AI Model</div>
+          <div class="select-wrap">
+            <select>
+              <option>GPT-5 · OpenAI</option>
+              <option>Claude Sonnet 4 · Anthropic</option>
+              <option>Grok 4 · xAI</option>
+              <option>Gemini 2.5 Pro · Google</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="slot-meta">
+        <div class="meta-item"><div class="meta-dot ok"></div> Ready</div>
+        <div class="meta-item">~$0.02/call</div>
+        <div class="meta-item">4 calls est.</div>
+      </div>
+    </div>
+
+    <div class="slot builder">
+      <div class="slot-header">
+        <div class="slot-avatar">🔨</div>
+        <div class="slot-info">
+          <div class="slot-name">Builder</div>
+          <div class="slot-subtitle">Code & implement</div>
+        </div>
+        <button class="slot-delete" onclick="this.closest('.slot').remove(); updateCount()">✕</button>
+      </div>
+      <div class="slot-config">
+        <div>
+          <div class="field-label">Role</div>
+          <div class="select-wrap">
+            <select onchange="updateRole(this)">
+              <option value="research">Research</option>
+              <option value="builder" selected>Builder</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <div class="field-label">AI Model</div>
+          <div class="select-wrap">
+            <select>
+              <option>Claude Sonnet 4 · Anthropic</option>
+              <option>GPT-5 · OpenAI</option>
+              <option>Grok 4 · xAI</option>
+              <option>Gemini 2.5 Pro · Google</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="slot-meta">
+        <div class="meta-item"><div class="meta-dot ok"></div> Ready</div>
+        <div class="meta-item">~$0.05/call</div>
+        <div class="meta-item">6 calls est.</div>
+      </div>
+    </div>
+
+    <div class="slot research">
+      <div class="slot-header">
+        <div class="slot-avatar">🔍</div>
+        <div class="slot-info">
+          <div class="slot-name">Research</div>
+          <div class="slot-subtitle">Scout & analyze</div>
+        </div>
+        <button class="slot-delete" onclick="this.closest('.slot').remove(); updateCount()">✕</button>
+      </div>
+      <div class="slot-config">
+        <div>
+          <div class="field-label">Role</div>
+          <div class="select-wrap">
+            <select onchange="updateRole(this)">
+              <option value="research" selected>Research</option>
+              <option value="builder">Builder</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <div class="field-label">AI Model</div>
+          <div class="select-wrap">
+            <select>
+              <option>GPT-5 · OpenAI</option>
+              <option>Claude Sonnet 4 · Anthropic</option>
+              <option>Grok 4 · xAI</option>
+              <option>Gemini 2.5 Pro · Google</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="slot-meta">
+        <div class="meta-item"><div class="meta-dot warn"></div> No key</div>
+        <div class="meta-item">~$0.02/call</div>
+        <div class="meta-item">3 calls est.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add worker -->
+  <button class="add-worker" onclick="addWorker()" id="addBtn">
+    <span style="font-size: 16px;">+</span> Add worker
+  </button>
+
+  <!-- Cost estimate -->
+  <div class="cost-bar">
+    <div class="cost-row">
+      <div>
+        <div class="cost-label">Total estimate</div>
+        <div class="cost-range">3 workers · 13 calls</div>
+      </div>
+      <div class="cost-value">$0.12 – $0.45</div>
+    </div>
+  </div>
+
+  <div class="hint">Workers run in parallel. Dependencies run in order.</div>
+</div>
+
+<script>
+  let count = 3;
+  const maxWorkers = 8;
+  const roles = {
+    research: { name: 'Research', emoji: '🔍', subtitle: 'Scout & analyze', cost: '$0.02/call', calls: '4 calls est.' },
+    builder: { name: 'Builder', emoji: '🔨', subtitle: 'Code & implement', cost: '$0.05/call', calls: '6 calls est.' }
+  };
+
+  function changeCount(delta) {
+    if (delta > 0 && count < maxWorkers) addWorker();
+    if (delta < 0 && count > 1) removeLastWorker();
+  }
+
+  function addWorker() {
+    if (count >= maxWorkers) return;
+    count++;
+    const role = count % 2 === 0 ? 'builder' : 'research';
+    const r = roles[role];
+    const slot = document.createElement('div');
+    slot.className = `slot ${role}`;
+    slot.innerHTML = `
+      <div class="slot-header">
+        <div class="slot-avatar">${r.emoji}</div>
+        <div class="slot-info">
+          <div class="slot-name">${r.name}</div>
+          <div class="slot-subtitle">${r.subtitle}</div>
+        </div>
+        <button class="slot-delete" onclick="this.closest('.slot').remove(); updateCount()">✕</button>
+      </div>
+      <div class="slot-config">
+        <div>
+          <div class="field-label">Role</div>
+          <div class="select-wrap">
+            <select onchange="updateRole(this)">
+              <option value="research" ${role === 'research' ? 'selected' : ''}>Research</option>
+              <option value="builder" ${role === 'builder' ? 'selected' : ''}>Builder</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <div class="field-label">AI Model</div>
+          <div class="select-wrap">
+            <select>
+              <option>GPT-5 · OpenAI</option>
+              <option>Claude Sonnet 4 · Anthropic</option>
+              <option>Grok 4 · xAI</option>
+              <option>Gemini 2.5 Pro · Google</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="slot-meta">
+        <div class="meta-item"><div class="meta-dot ok"></div> Ready</div>
+        <div class="meta-item">${r.cost}</div>
+        <div class="meta-item">${r.calls}</div>
+      </div>`;
+    document.getElementById('slots').appendChild(slot);
+    updateCount();
+  }
+
+  function removeLastWorker() {
+    const slots = document.getElementById('slots');
+    if (slots.children.length > 1) {
+      slots.lastElementChild.remove();
+      count--;
+      updateCount();
+    }
+  }
+
+  function updateCount() {
+    count = document.getElementById('slots').children.length;
+    document.getElementById('count').textContent = count;
+    document.getElementById('addBtn').disabled = count >= maxWorkers;
+  }
+
+  function updateRole(select) {
+    const slot = select.closest('.slot');
+    const role = select.value;
+    const r = roles[role];
+    slot.className = `slot ${role}`;
+    slot.querySelector('.slot-avatar').textContent = r.emoji;
+    slot.querySelector('.slot-name').textContent = r.name;
+    slot.querySelector('.slot-subtitle').textContent = r.subtitle;
+    slot.querySelectorAll('.meta-item')[1].textContent = r.cost;
+    slot.querySelectorAll('.meta-item')[2].textContent = r.calls;
+  }
+</script>
+</body>
+</html>

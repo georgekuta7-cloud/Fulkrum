@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>AgentHub Engine - Platform Configuration</title>
+<!-- Fonts: Inter & JetBrains Mono -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&amp;family=JetBrains+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+<!-- Material Symbols Outlined -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS v3 with Plugins -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "on-tertiary": "#003824",
+            "on-secondary": "#003640",
+            "surface-container-high": "#262a35",
+            "surface-bright": "#353945",
+            "background": "#0f131e",
+            "on-error-container": "#ffdad6",
+            "surface-container-low": "#171b26",
+            "on-tertiary-fixed": "#002113",
+            "on-secondary-container": "#00424e",
+            "primary-fixed": "#e9ddff",
+            "surface-container": "#1b1f2b",
+            "on-secondary-fixed": "#001f26",
+            "tertiary-fixed-dim": "#4edea3",
+            "on-primary-fixed": "#23005c",
+            "on-error": "#690005",
+            "inverse-on-surface": "#2c303c",
+            "surface-variant": "#313441",
+            "surface-container-lowest": "#0a0e19",
+            "secondary-fixed": "#acedff",
+            "on-primary-container": "#340080",
+            "inverse-primary": "#6d3bd7",
+            "secondary": "#4cd7f6",
+            "on-surface-variant": "#cbc3d7",
+            "on-primary-fixed-variant": "#5516be",
+            "on-primary": "#3c0091",
+            "surface-dim": "#0f131e",
+            "on-surface": "#dfe2f2",
+            "error-container": "#93000a",
+            "error": "#ffb4ab",
+            "on-background": "#dfe2f2",
+            "surface-tint": "#d0bcff",
+            "primary": "#d0bcff",
+            "secondary-fixed-dim": "#4cd7f6",
+            "on-secondary-fixed-variant": "#004e5c",
+            "on-tertiary-container": "#00311f",
+            "surface": "#0f131e",
+            "tertiary-container": "#00a572",
+            "primary-fixed-dim": "#d0bcff",
+            "tertiary-fixed": "#6ffbbe",
+            "outline-variant": "#494454",
+            "surface-container-highest": "#313441",
+            "inverse-surface": "#dfe2f2",
+            "on-tertiary-fixed-variant": "#005236",
+            "secondary-container": "#03b5d3",
+            "outline": "#958ea0",
+            "tertiary": "#4edea3",
+            "primary-container": "#a078ff"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.125rem",
+            "lg": "0.25rem",
+            "xl": "0.5rem",
+            "full": "0.75rem"
+          },
+          "spacing": {
+            "margin": "2rem",
+            "gutter-mobile": "0.75rem",
+            "space-md": "1rem",
+            "gutter": "1.5rem",
+            "space-xs": "0.25rem",
+            "space-xl": "2.5rem",
+            "margin-mobile": "1rem",
+            "space-sm": "0.5rem",
+            "space-lg": "1.5rem"
+          },
+          "fontFamily": {
+            "headline-xl-mobile": ["Inter"],
+            "display-lg": ["Inter"],
+            "body-md": ["Inter"],
+            "label-sm": ["JetBrains Mono"],
+            "headline-md": ["Inter"],
+            "code-inline": ["JetBrains Mono"],
+            "body-sm": ["Inter"],
+            "label-md": ["JetBrains Mono"],
+            "headline-lg": ["Inter"],
+            "display-lg-mobile": ["Inter"],
+            "headline-xl": ["Inter"],
+            "body-lg": ["Inter"]
+          },
+          "fontSize": {
+            "headline-xl-mobile": ["28px", { "lineHeight": "36px", "letterSpacing": "-0.02em", "fontWeight": "600" }],
+            "display-lg": ["48px", { "lineHeight": "56px", "letterSpacing": "-0.03em", "fontWeight": "700" }],
+            "body-md": ["14px", { "lineHeight": "20px", "letterSpacing": "-0.005em", "fontWeight": "400" }],
+            "label-sm": ["11px", { "lineHeight": "14px", "letterSpacing": "0.02em", "fontWeight": "500" }],
+            "headline-md": ["20px", { "lineHeight": "28px", "letterSpacing": "-0.015em", "fontWeight": "600" }],
+            "code-inline": ["12px", { "lineHeight": "16px", "fontWeight": "400" }],
+            "body-sm": ["12px", { "lineHeight": "16px", "fontWeight": "400" }],
+            "label-md": ["13px", { "lineHeight": "18px", "letterSpacing": "-0.01em", "fontWeight": "500" }],
+            "headline-lg": ["24px", { "lineHeight": "32px", "letterSpacing": "-0.02em", "fontWeight": "600" }],
+            "display-lg-mobile": ["32px", { "lineHeight": "40px", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+            "headline-xl": ["36px", { "lineHeight": "44px", "letterSpacing": "-0.025em", "fontWeight": "600" }],
+            "body-lg": ["16px", { "lineHeight": "24px", "letterSpacing": "-0.01em", "fontWeight": "400" }]
+          }
+        },
+      },
+    }
+  </script>
+<style>
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: #0f131e;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: #313441;
+      border-radius: 4px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+      background: #494454;
+    }
+    .glow-purple {
+      box-shadow: 0 0 20px -3px rgba(160, 120, 255, 0.35);
+    }
+    .glow-cyan {
+      box-shadow: 0 0 12px 0 rgba(76, 215, 246, 0.4);
+    }
+    .glow-emerald {
+      box-shadow: 0 0 12px 0 rgba(78, 222, 163, 0.4);
+    }
+  </style>
+</head>
+<body class="bg-background text-on-background font-body-md text-body-md antialiased min-h-screen overflow-x-hidden selection:bg-primary selection:text-on-primary">
+<!-- TOP APP BAR (Shared Component: TopNavBar) -->
+<header class="fixed top-0 left-0 w-full z-40 flex items-center justify-between px-space-lg py-space-sm max-w-full bg-surface-container-lowest/80 dark:bg-surface-container-lowest/80 backdrop-blur-md border-b border-outline-variant/20 dark:border-outline-variant/20 shadow-sm">
+<div class="flex items-center gap-space-lg">
+<div class="font-headline-md text-headline-md font-bold text-on-surface dark:text-on-surface tracking-tight flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-primary" style="font-variation-settings: 'FILL' 1;">terminal</span>
+<span>AgentHub Engine</span>
+<span class="font-label-sm text-label-sm text-secondary bg-surface-container-high px-space-xs py-0.5 rounded border border-outline-variant/30 ml-2">v2.4.0</span>
+</div>
+<nav class="hidden md:flex items-center gap-space-md ml-6">
+<a class="text-on-surface-variant dark:text-on-surface-variant font-label-md text-label-md pb-1 hover:text-primary dark:hover:text-primary transition-colors duration-150" href="#overview">Overview</a>
+<a class="text-on-surface-variant dark:text-on-surface-variant font-label-md text-label-md pb-1 hover:text-primary dark:hover:text-primary transition-colors duration-150" href="#deployments">Deployments</a>
+<a class="text-on-surface-variant dark:text-on-surface-variant font-label-md text-label-md pb-1 hover:text-primary dark:hover:text-primary transition-colors duration-150" href="#workflows">Workflows</a>
+</nav>
+</div>
+<!-- Trailing Icon Actions -->
+<div class="flex items-center gap-space-sm">
+<button class="p-2 rounded hover:bg-surface-container-high text-primary hover:text-primary dark:hover:text-primary transition-colors duration-150 active:opacity-80 flex items-center justify-center relative" id="openDrawerButton" title="Tune Configuration">
+<span class="material-symbols-outlined">tune</span>
+<span class="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-primary animate-ping"></span>
+<span class="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-primary"></span>
+</button>
+<button class="p-2 rounded hover:bg-surface-container-high text-on-surface-variant hover:text-primary dark:hover:text-primary transition-colors duration-150 active:opacity-80 flex items-center justify-center" title="Notifications">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<button class="p-2 rounded hover:bg-surface-container-high text-on-surface-variant hover:text-primary dark:hover:text-primary transition-colors duration-150 active:opacity-80 flex items-center justify-center" title="Profile">
+<span class="material-symbols-outlined">account_circle</span>
+</button>
+</div>
+</header>
+<!-- BACKGROUND DASHBOARD (Agent Marketplace Overview) -->
+<main class="pt-20 px-space-md md:px-space-xl pb-16 max-w-[1440px] mx-auto opacity-70 pointer-events-none filter blur-[1px] select-none transition-all duration-300">
+<!-- Marketplace Hero Header -->
+<div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
+<div>
+<div class="flex items-center gap-2 mb-2">
+<span class="font-label-sm text-label-sm uppercase tracking-wider text-secondary px-2 py-0.5 rounded bg-surface-container border border-outline-variant/30">Live Clusters Active</span>
+<span class="flex items-center gap-1 font-label-sm text-label-sm text-tertiary">
+<span class="w-2 h-2 rounded-full bg-tertiary glow-emerald animate-pulse"></span> 99.98% Telemetry Sync
+          </span>
+</div>
+<h1 class="font-headline-xl text-headline-xl text-on-surface tracking-tight">Autonomous Agent Registry</h1>
+<p class="font-body-md text-body-md text-on-surface-variant mt-1">Discover, configure, and route low-latency distributed agent nodes.</p>
+</div>
+<div class="flex items-center gap-3">
+<div class="bg-surface-container-lowest border border-outline-variant/30 rounded-lg px-3 py-2 flex items-center gap-2 text-on-surface-variant">
+<span class="material-symbols-outlined text-sm">search</span>
+<span class="font-code-inline text-code-inline text-outline">Search neural routines...</span>
+<kbd class="font-label-sm text-label-sm bg-surface-container px-1.5 py-0.5 rounded text-outline border border-outline-variant/40">⌘K</kbd>
+</div>
+</div>
+</div>
+<!-- Bento Grid Agent Marketplace Sample -->
+<div class="grid grid-cols-1 md:grid-cols-3 gap-space-lg mb-8">
+<!-- Agent 1 -->
+<div class="bg-surface-container-low/70 border border-outline-variant/30 rounded-xl p-5 backdrop-blur-md">
+<div class="flex items-start justify-between mb-4">
+<div class="w-10 h-10 rounded-lg bg-surface-container-high border border-outline-variant/40 flex items-center justify-center text-primary">
+<span class="material-symbols-outlined">auto_awesome</span>
+</div>
+<span class="font-label-sm text-label-sm text-tertiary bg-surface-container px-2 py-1 rounded border border-tertiary/20">Operational</span>
+</div>
+<h3 class="font-headline-md text-headline-md text-on-surface mb-1">CodeSynthesizer Core</h3>
+<p class="font-body-sm text-body-sm text-on-surface-variant mb-4">Autonomous syntax verification, refactoring pipeline with tree-sitter AST bindings.</p>
+<div class="flex items-center justify-between pt-3 border-t border-outline-variant/20 font-label-sm text-label-sm text-outline">
+<span>Latency: 84ms</span>
+<span class="text-primary font-medium">9.4k calls/hr</span>
+</div>
+</div>
+<!-- Agent 2 -->
+<div class="bg-surface-container-low/70 border border-outline-variant/30 rounded-xl p-5 backdrop-blur-md">
+<div class="flex items-start justify-between mb-4">
+<div class="w-10 h-10 rounded-lg bg-surface-container-high border border-outline-variant/40 flex items-center justify-center text-secondary">
+<span class="material-symbols-outlined">schema</span>
+</div>
+<span class="font-label-sm text-label-sm text-secondary bg-surface-container px-2 py-1 rounded border border-secondary/20">Streaming</span>
+</div>
+<h3 class="font-headline-md text-headline-md text-on-surface mb-1">VectorHydra Indexer</h3>
+<p class="font-body-sm text-body-sm text-on-surface-variant mb-4">Multi-modal embedding ingestion pipeline with chunk deduplication &amp; hybrid scoring.</p>
+<div class="flex items-center justify-between pt-3 border-t border-outline-variant/20 font-label-sm text-label-sm text-outline">
+<span>Throughput: 1.2 GB/s</span>
+<span class="text-secondary font-medium">Active</span>
+</div>
+</div>
+<!-- Agent 3 -->
+<div class="bg-surface-container-low/70 border border-outline-variant/30 rounded-xl p-5 backdrop-blur-md">
+<div class="flex items-start justify-between mb-4">
+<div class="w-10 h-10 rounded-lg bg-surface-container-high border border-outline-variant/40 flex items-center justify-center text-tertiary">
+<span class="material-symbols-outlined">policy</span>
+</div>
+<span class="font-label-sm text-label-sm text-on-surface-variant bg-surface-container px-2 py-1 rounded border border-outline-variant/20">Standby</span>
+</div>
+<h3 class="font-headline-md text-headline-md text-on-surface mb-1">PromptGuard Sentinel</h3>
+<p class="font-body-sm text-body-sm text-on-surface-variant mb-4">Zero-day injection detection with latency-free token anomaly scoring filter.</p>
+<div class="flex items-center justify-between pt-3 border-t border-outline-variant/20 font-label-sm text-label-sm text-outline">
+<span>Coverage: 100%</span>
+<span class="text-tertiary font-medium">Ready</span>
+</div>
+</div>
+</div>
+</main>
+<!-- TRANSLUCENT OVERLAY BACKDROP -->
+<div class="fixed inset-0 bg-surface-container-lowest/70 backdrop-blur-sm z-40 transition-opacity duration-300" id="drawerBackdrop"></div>
+<!-- SLIDE-OVER SETTINGS DRAWER (Shared Component: SideNavBar adapted for Platform Settings) -->
+<aside aria-labelledby="drawer-title" aria-modal="true" class="fixed top-0 right-0 h-full z-50 flex flex-col justify-between w-full max-w-[520px] bg-surface-container-low dark:bg-surface-container-low border-l border-outline-variant/30 dark:border-outline-variant/30 shadow-2xl shadow-surface-container-lowest/90 transition-transform duration-300 ease-out" id="settingsDrawer" role="dialog">
+<!-- DRAWER HEADER -->
+<div class="px-space-lg pt-space-lg pb-space-md border-b border-outline-variant/20 dark:border-outline-variant/20 bg-surface-container-lowest/60 backdrop-blur-md">
+<div class="flex items-start justify-between mb-2">
+<div class="flex items-center gap-space-sm">
+<div class="w-9 h-9 rounded-lg bg-surface-container-high border border-outline-variant/40 flex items-center justify-center text-primary glow-purple">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">hub</span>
+</div>
+<div>
+<h2 class="font-headline-md text-headline-md font-semibold text-primary dark:text-primary tracking-tight" id="drawer-title">Hub Settings</h2>
+<p class="font-label-sm text-label-sm text-secondary">v2.4.0 • Autonomous Runtime</p>
+</div>
+</div>
+<div class="flex items-center gap-space-xs">
+<button class="px-space-sm py-1 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high font-label-sm text-label-sm transition-colors duration-150 flex items-center gap-1 active:scale-[0.98]" title="Reset to Defaults">
+<span class="material-symbols-outlined text-sm">restart_alt</span>
+<span>Reset</span>
+</button>
+<button aria-label="Close Panel" class="w-8 h-8 rounded-lg flex items-center justify-center text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors duration-150 active:scale-[0.98]" id="closeDrawerButton">
+<span class="material-symbols-outlined">close</span>
+</button>
+</div>
+</div>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-2">
+        Manage system resources, model endpoints, and spend budgets across active deployment pipelines.
+      </p>
+<!-- Quick Nav Strip (Shared Tabs: Storage & Memory, LLM Providers, Spend & Budgets) -->
+<nav aria-label="Settings Sections" class="grid grid-cols-3 gap-2 mt-4 pt-3 border-t border-outline-variant/20">
+<a class="flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg bg-surface-container-high text-primary dark:text-primary border-l-2 border-primary font-label-sm text-label-sm font-medium transition-colors" href="#section-storage">
+<span class="material-symbols-outlined text-sm" style="font-variation-settings: 'FILL' 1;">database</span>
+<span>Storage</span>
+</a>
+<a class="flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-high font-label-sm text-label-sm transition-colors" href="#section-providers">
+<span class="material-symbols-outlined text-sm">smart_toy</span>
+<span>Providers</span>
+</a>
+<a class="flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-high font-label-sm text-label-sm transition-colors" href="#section-budgets">
+<span class="material-symbols-outlined text-sm">payments</span>
+<span>Budgets</span>
+</a>
+</nav>
+</div>
+<!-- DRAWER SCROLLABLE CONTENT -->
+<div class="flex-1 overflow-y-auto px-space-lg py-space-md custom-scrollbar space-y-space-xl">
+<!-- SECTION 1: STORAGE & MEMORY -->
+<section class="space-y-4" id="section-storage">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary text-lg">database</span>
+<h3 class="font-headline-md text-headline-md text-on-surface">Storage &amp; Memory</h3>
+</div>
+<span class="font-label-sm text-label-sm text-secondary bg-surface-container px-2 py-0.5 rounded border border-secondary/20">Active Node</span>
+</div>
+<!-- Vector Database Selection -->
+<div class="space-y-2">
+<label class="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wider block">Vector Store Engine</label>
+<div class="grid grid-cols-3 gap-2">
+<!-- Pinecone (Selected) -->
+<button class="relative flex flex-col items-start p-2.5 rounded-lg border border-primary bg-primary/10 text-left transition-all glow-purple">
+<div class="flex items-center justify-between w-full mb-1">
+<span class="font-label-md text-label-md text-primary font-semibold">Pinecone</span>
+<span class="w-2 h-2 rounded-full bg-primary"></span>
+</div>
+<span class="font-label-sm text-label-sm text-on-surface-variant">p1.x4 pod</span>
+</button>
+<!-- Qdrant -->
+<button class="flex flex-col items-start p-2.5 rounded-lg border border-outline-variant/30 bg-surface-container hover:bg-surface-container-high text-left transition-colors">
+<div class="flex items-center justify-between w-full mb-1">
+<span class="font-label-md text-label-md text-on-surface">Qdrant</span>
+</div>
+<span class="font-label-sm text-label-sm text-outline">Self-hosted</span>
+</button>
+<!-- ChromaDB -->
+<button class="flex flex-col items-start p-2.5 rounded-lg border border-outline-variant/30 bg-surface-container hover:bg-surface-container-high text-left transition-colors">
+<div class="flex items-center justify-between w-full mb-1">
+<span class="font-label-md text-label-md text-on-surface">Chroma</span>
+</div>
+<span class="font-label-sm text-label-sm text-outline">Local sqlite</span>
+</button>
+</div>
+</div>
+<!-- Embedding Cache Size Meter -->
+<div class="bg-surface-container p-3.5 rounded-lg border border-outline-variant/20 space-y-2">
+<div class="flex items-center justify-between font-label-md text-label-md">
+<span class="text-on-surface">Embedding Cache Size</span>
+<span class="text-primary font-mono font-semibold">18.4 GB / 32 GB utilized (57.5%)</span>
+</div>
+<!-- Progress Bar -->
+<div class="w-full h-2 bg-surface-container-highest rounded-full overflow-hidden p-0.5">
+<div class="h-full bg-primary rounded-full transition-all duration-500 glow-purple" style="width: 57.5%;"></div>
+</div>
+<div class="flex items-center justify-between font-label-sm text-label-sm text-outline pt-1">
+<span>Cosine similarity index: <span class="text-tertiary">healthy</span></span>
+<span>Eviction policy: LRU</span>
+</div>
+</div>
+<!-- Toggles List -->
+<div class="bg-surface-container rounded-lg border border-outline-variant/20 divide-y divide-outline-variant/20">
+<!-- Toggle 1 -->
+<div class="p-3 flex items-center justify-between">
+<div>
+<p class="font-body-md text-body-md text-on-surface font-medium">Persistent Short-Term Memory</p>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Retain conversational scratchpads between sessions</p>
+</div>
+<!-- Active Toggle -->
+<button aria-pressed="true" class="w-9 h-5 bg-primary rounded-full relative flex items-center p-0.5 transition-colors glow-purple" type="button">
+<span class="w-4 h-4 bg-on-primary rounded-full transform translate-x-4 transition-transform"></span>
+</button>
+</div>
+<!-- Toggle 2 -->
+<div class="p-3 flex items-center justify-between">
+<div>
+<p class="font-body-md text-body-md text-on-surface font-medium">Vector Index Auto-Prune</p>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Garbage-collect dead documents with low recall scores</p>
+</div>
+<!-- Active Toggle -->
+<button aria-pressed="true" class="w-9 h-5 bg-primary rounded-full relative flex items-center p-0.5 transition-colors glow-purple" type="button">
+<span class="w-4 h-4 bg-on-primary rounded-full transform translate-x-4 transition-transform"></span>
+</button>
+</div>
+<!-- Toggle 3 -->
+<div class="p-3 flex items-center justify-between">
+<div>
+<p class="font-body-md text-body-md text-on-surface font-medium">Cold Archive S3 Sync</p>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Nightly snapshot replication into AWS Glacier bucket</p>
+</div>
+<!-- Inactive Toggle -->
+<button aria-pressed="false" class="w-9 h-5 bg-surface-container-high rounded-full relative flex items-center p-0.5 transition-colors border border-outline-variant/40" type="button">
+<span class="w-4 h-4 bg-outline rounded-full transform translate-x-0 transition-transform"></span>
+</button>
+</div>
+</div>
+<!-- Action Buttons -->
+<div class="flex items-center gap-2">
+<button class="flex-1 px-3 py-2 rounded-lg bg-surface-container-high hover:bg-surface-bright text-on-surface font-label-md text-label-md transition-colors border border-outline-variant/30 flex items-center justify-center gap-1.5 active:scale-[0.98]">
+<span class="material-symbols-outlined text-sm text-error">delete_sweep</span>
+<span>Clear Cache</span>
+</button>
+<button class="flex-1 px-3 py-2 rounded-lg bg-surface-container-high hover:bg-surface-bright text-on-surface font-label-md text-label-md transition-colors border border-outline-variant/30 flex items-center justify-center gap-1.5 active:scale-[0.98]">
+<span class="material-symbols-outlined text-sm">hard_drive</span>
+<span>Manage Volumes</span>
+</button>
+</div>
+</section>
+<div class="h-px bg-outline-variant/20"></div>
+<!-- SECTION 2: LLM & AGENT PROVIDERS -->
+<section class="space-y-4" id="section-providers">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-secondary text-lg">smart_toy</span>
+<h3 class="font-headline-md text-headline-md text-on-surface">LLM Providers</h3>
+</div>
+<span class="font-label-sm text-label-sm text-on-surface-variant">3 configured</span>
+</div>
+<div class="space-y-2.5">
+<!-- Provider 1: Anthropic -->
+<div class="bg-surface-container p-3.5 rounded-lg border border-outline-variant/30 hover:border-primary/40 transition-colors">
+<div class="flex items-start justify-between mb-2">
+<div class="flex items-center gap-2">
+<div class="w-7 h-7 rounded bg-surface-container-high border border-outline-variant/40 flex items-center justify-center text-primary font-bold text-xs">
+                  AN
+                </div>
+<div>
+<h4 class="font-headline-md text-sm text-on-surface">Anthropic</h4>
+<p class="font-label-sm text-label-sm text-outline">Claude 3.5 Sonnet / Haiku</p>
+</div>
+</div>
+<!-- Status & Toggle -->
+<div class="flex items-center gap-2">
+<span class="flex items-center gap-1 font-label-sm text-label-sm text-tertiary bg-tertiary/10 px-2 py-0.5 rounded border border-tertiary/20">
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary glow-emerald"></span> Connected
+                </span>
+<button aria-pressed="true" class="w-8 h-4.5 bg-primary rounded-full relative flex items-center p-0.5 transition-colors glow-purple" type="button">
+<span class="w-3.5 h-3.5 bg-on-primary rounded-full transform translate-x-3.5 transition-transform"></span>
+</button>
+</div>
+</div>
+<div class="flex items-center justify-between font-label-sm text-label-sm bg-surface-container-lowest px-2.5 py-1.5 rounded border border-outline-variant/20">
+<span class="text-outline font-mono">sk-ant-••••••••8f2a</span>
+<button class="text-on-surface-variant hover:text-primary transition-colors flex items-center gap-1">
+<span class="material-symbols-outlined text-xs">edit</span>
+<span>Edit</span>
+</button>
+</div>
+</div>
+<!-- Provider 2: OpenAI -->
+<div class="bg-surface-container p-3.5 rounded-lg border border-outline-variant/30 hover:border-primary/40 transition-colors">
+<div class="flex items-start justify-between mb-2">
+<div class="flex items-center gap-2">
+<div class="w-7 h-7 rounded bg-surface-container-high border border-outline-variant/40 flex items-center justify-center text-secondary font-bold text-xs">
+                  OA
+                </div>
+<div>
+<h4 class="font-headline-md text-sm text-on-surface">OpenAI</h4>
+<p class="font-label-sm text-label-sm text-outline">GPT-4o / o1</p>
+</div>
+</div>
+<!-- Status & Toggle -->
+<div class="flex items-center gap-2">
+<span class="flex items-center gap-1 font-label-sm text-label-sm text-tertiary bg-tertiary/10 px-2 py-0.5 rounded border border-tertiary/20">
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary glow-emerald"></span> Connected
+                </span>
+<button aria-pressed="true" class="w-8 h-4.5 bg-primary rounded-full relative flex items-center p-0.5 transition-colors glow-purple" type="button">
+<span class="w-3.5 h-3.5 bg-on-primary rounded-full transform translate-x-3.5 transition-transform"></span>
+</button>
+</div>
+</div>
+<div class="flex items-center justify-between font-label-sm text-label-sm bg-surface-container-lowest px-2.5 py-1.5 rounded border border-outline-variant/20">
+<span class="text-outline font-mono">sk-proj-••••••••3c99</span>
+<button class="text-on-surface-variant hover:text-primary transition-colors flex items-center gap-1">
+<span class="material-symbols-outlined text-xs">edit</span>
+<span>Edit</span>
+</button>
+</div>
+</div>
+<!-- Provider 3: DeepSeek / Ollama -->
+<div class="bg-surface-container p-3.5 rounded-lg border border-outline-variant/30 hover:border-primary/40 transition-colors">
+<div class="flex items-start justify-between mb-2">
+<div class="flex items-center gap-2">
+<div class="w-7 h-7 rounded bg-surface-container-high border border-outline-variant/40 flex items-center justify-center text-on-surface-variant font-bold text-xs">
+                  OL
+                </div>
+<div>
+<h4 class="font-headline-md text-sm text-on-surface">DeepSeek / Ollama</h4>
+<p class="font-label-sm text-label-sm text-outline">Local Self-Hosted (DeepSeek-R1-70b)</p>
+</div>
+</div>
+<!-- Status & Toggle -->
+<div class="flex items-center gap-2">
+<span class="flex items-center gap-1 font-label-sm text-label-sm text-outline bg-surface-container-high px-2 py-0.5 rounded border border-outline-variant/30">
+<span class="w-1.5 h-1.5 rounded-full bg-outline"></span> Standby
+                </span>
+<button aria-pressed="false" class="w-8 h-4.5 bg-surface-container-high rounded-full relative flex items-center p-0.5 transition-colors border border-outline-variant/40" type="button">
+<span class="w-3.5 h-3.5 bg-outline rounded-full transform translate-x-0 transition-transform"></span>
+</button>
+</div>
+</div>
+<div class="flex items-center justify-between font-label-sm text-label-sm bg-surface-container-lowest px-2.5 py-1.5 rounded border border-outline-variant/20">
+<span class="text-outline font-mono">http://127.0.0.1:11434</span>
+<button class="text-on-surface-variant hover:text-primary transition-colors flex items-center gap-1">
+<span class="material-symbols-outlined text-xs">tune</span>
+<span>Config</span>
+</button>
+</div>
+</div>
+</div>
+<button class="w-full py-2.5 px-3 rounded-lg border border-dashed border-outline-variant/50 hover:border-primary/60 bg-surface-container-low hover:bg-surface-container text-primary font-label-md text-label-md transition-all flex items-center justify-center gap-1.5 active:scale-[0.99]">
+<span class="material-symbols-outlined text-sm">add</span>
+<span>Connect New Provider</span>
+</button>
+</section>
+<div class="h-px bg-outline-variant/20"></div>
+<!-- SECTION 3: SPEND & BUDGETS -->
+<section class="space-y-4" id="section-budgets">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary-container text-lg">payments</span>
+<h3 class="font-headline-md text-headline-md text-on-surface">Spend &amp; Budgets</h3>
+</div>
+<span class="font-label-sm text-label-sm text-tertiary bg-surface-container px-2 py-0.5 rounded border border-tertiary/20">51.4% Spent</span>
+</div>
+<!-- Monthly Spend Meter -->
+<div class="bg-surface-container p-4 rounded-lg border border-outline-variant/30 space-y-3">
+<div class="flex items-baseline justify-between">
+<span class="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">Monthly Compute Pool</span>
+<div class="text-right">
+<span class="font-headline-md text-headline-md text-on-surface font-semibold">$1,284.50</span>
+<span class="font-label-sm text-label-sm text-outline"> / $2,500.00 Limit</span>
+</div>
+</div>
+<!-- Purple to Violet Gradient Progress -->
+<div class="w-full h-3 bg-surface-container-highest rounded-full overflow-hidden p-0.5">
+<div class="h-full bg-gradient-to-r from-primary-container to-primary rounded-full transition-all duration-500 glow-purple" style="width: 51.4%;"></div>
+</div>
+<!-- Token Usage Breakdown Chips -->
+<div class="grid grid-cols-3 gap-2 pt-2 border-t border-outline-variant/20">
+<div class="p-2 rounded bg-surface-container-lowest border border-outline-variant/20">
+<span class="font-label-sm text-label-sm text-outline block">Input Tokens</span>
+<span class="font-label-md text-label-md text-on-surface font-mono font-medium">84.2M</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant block mt-0.5">$336.80</span>
+</div>
+<div class="p-2 rounded bg-surface-container-lowest border border-outline-variant/20">
+<span class="font-label-sm text-label-sm text-secondary block">Reasoning</span>
+<span class="font-label-md text-label-md text-secondary font-mono font-medium">19.7M</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant block mt-0.5">$492.50</span>
+</div>
+<div class="p-2 rounded bg-surface-container-lowest border border-outline-variant/20">
+<span class="font-label-sm text-label-sm text-tertiary block">Output Tokens</span>
+<span class="font-label-md text-label-md text-tertiary font-mono font-medium">32.1M</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant block mt-0.5">$455.20</span>
+</div>
+</div>
+</div>
+<!-- Controls & Toggles -->
+<div class="bg-surface-container rounded-lg border border-outline-variant/20 divide-y divide-outline-variant/20">
+<!-- Toggle 1 -->
+<div class="p-3 flex items-center justify-between">
+<div>
+<p class="font-body-md text-body-md text-on-surface font-medium">Hard Limit Stop-Loss</p>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Terminate ongoing agent threads instantly when budget reaches 100%</p>
+</div>
+<button aria-pressed="true" class="w-9 h-5 bg-primary rounded-full relative flex items-center p-0.5 transition-colors glow-purple" type="button">
+<span class="w-4 h-4 bg-on-primary rounded-full transform translate-x-4 transition-transform"></span>
+</button>
+</div>
+<!-- Toggle 2 -->
+<div class="p-3 flex items-center justify-between">
+<div>
+<p class="font-body-md text-body-md text-on-surface font-medium">Low Budget Alert (at 80%)</p>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Dispatch webhooks to PagerDuty and Slack alerts channel</p>
+</div>
+<button aria-pressed="true" class="w-9 h-5 bg-primary rounded-full relative flex items-center p-0.5 transition-colors glow-purple" type="button">
+<span class="w-4 h-4 bg-on-primary rounded-full transform translate-x-4 transition-transform"></span>
+</button>
+</div>
+<!-- Toggle 3 -->
+<div class="p-3 flex items-center justify-between">
+<div>
+<p class="font-body-md text-body-md text-on-surface font-medium">Auto-scale Concurrency</p>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Temporarily burst token rate limits up to 2.5x during high task spikes</p>
+</div>
+<button aria-pressed="false" class="w-9 h-5 bg-surface-container-high rounded-full relative flex items-center p-0.5 transition-colors border border-outline-variant/40" type="button">
+<span class="w-4 h-4 bg-outline rounded-full transform translate-x-0 transition-transform"></span>
+</button>
+</div>
+</div>
+<!-- Budget Action Buttons -->
+<div class="flex items-center gap-2">
+<button class="flex-1 px-3 py-2 rounded-lg bg-surface-container-high hover:bg-surface-bright text-on-surface font-label-md text-label-md transition-colors border border-outline-variant/30 flex items-center justify-center gap-1.5 active:scale-[0.98]">
+<span class="material-symbols-outlined text-sm">tune</span>
+<span>Adjust Tier Limits</span>
+</button>
+<button class="flex-1 px-3 py-2 rounded-lg bg-surface-container-high hover:bg-surface-bright text-on-surface font-label-md text-label-md transition-colors border border-outline-variant/30 flex items-center justify-center gap-1.5 active:scale-[0.98]">
+<span class="material-symbols-outlined text-sm">download</span>
+<span>Download Invoice CSV</span>
+</button>
+</div>
+</section>
+<!-- Panel Footer Documentation Links (from Shared Component Footer) -->
+<div class="pt-2 flex items-center justify-between text-on-surface-variant font-label-sm text-label-sm border-t border-outline-variant/20">
+<a class="flex items-center gap-1 hover:text-primary transition-colors" href="#docs">
+<span class="material-symbols-outlined text-sm">menu_book</span>
+<span>Documentation</span>
+</a>
+<button class="flex items-center gap-1 hover:text-primary transition-colors" id="closePanelText">
+<span class="material-symbols-outlined text-sm">close</span>
+<span>Close Panel</span>
+</button>
+</div>
+</div>
+<!-- DRAWER STICKY FOOTER -->
+<div class="p-space-md border-t border-outline-variant/30 bg-surface-container-lowest/90 backdrop-blur-md flex items-center justify-end gap-3 z-10">
+<button class="px-space-md py-2.5 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high font-label-md text-label-md transition-colors duration-150 active:scale-[0.98]" id="cancelDrawerButton">
+        Discard Changes
+      </button>
+<button class="px-space-lg py-2.5 rounded-lg bg-primary text-on-primary font-label-md text-label-md font-semibold transition-all duration-150 hover:bg-primary-container active:scale-[0.98] glow-purple flex items-center gap-2" id="saveDrawerButton">
+<span class="material-symbols-outlined text-base">save</span>
+<span>Save Changes</span>
+</button>
+</div>
+</aside>
+<!-- Interactive JavaScript for micro-interactions & toggle handling -->
+<script>
+    const drawer = document.getElementById('settingsDrawer');
+    const backdrop = document.getElementById('drawerBackdrop');
+    const closeBtn = document.getElementById('closeDrawerButton');
+    const closePanelText = document.getElementById('closePanelText');
+    const cancelBtn = document.getElementById('cancelDrawerButton');
+    const openBtn = document.getElementById('openDrawerButton');
+    const saveBtn = document.getElementById('saveDrawerButton');
+
+    function closeDrawer() {
+      drawer.classList.add('translate-x-full');
+      backdrop.classList.add('opacity-0', 'pointer-events-none');
+    }
+
+    function openDrawer() {
+      drawer.classList.remove('translate-x-full');
+      backdrop.classList.remove('opacity-0', 'pointer-events-none');
+    }
+
+    [closeBtn, closePanelText, cancelBtn, backdrop].forEach(el => {
+      el?.addEventListener('click', closeDrawer);
+    });
+
+    openBtn?.addEventListener('click', openDrawer);
+
+    // Save button toast micro-feedback
+    saveBtn?.addEventListener('click', () => {
+      const originalHtml = saveBtn.innerHTML;
+      saveBtn.innerHTML = '<span class="material-symbols-outlined text-base">check_circle</span> Saved!';
+      saveBtn.classList.add('bg-tertiary', 'text-on-tertiary');
+      
+      setTimeout(() => {
+        saveBtn.innerHTML = originalHtml;
+        saveBtn.classList.remove('bg-tertiary', 'text-on-tertiary');
+        closeDrawer();
+      }, 700);
+    });
+
+    // Interactive toggle behavior
+    document.querySelectorAll('button[aria-pressed]').forEach(button => {
+      button.addEventListener('click', () => {
+        const isPressed = button.getAttribute('aria-pressed') === 'true';
+        button.setAttribute('aria-pressed', String(!isPressed));
+
+        const knob = button.querySelector('span');
+        if (!isPressed) {
+          button.classList.remove('bg-surface-container-high', 'border', 'border-outline-variant/40');
+          button.classList.add('bg-primary', 'glow-purple');
+          knob.classList.remove('bg-outline', 'translate-x-0');
+          knob.classList.add('bg-on-primary', 'translate-x-4', 'translate-x-3.5');
+        } else {
+          button.classList.add('bg-surface-container-high', 'border', 'border-outline-variant/40');
+          button.classList.remove('bg-primary', 'glow-purple');
+          knob.classList.add('bg-outline', 'translate-x-0');
+          knob.classList.remove('bg-on-primary', 'translate-x-4', 'translate-x-3.5');
+        }
+      });
+    });
+  </script>
+</body></html>

@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fulkrum — Components Preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0e14; --surface: #0f1419; --surface-2: #151c24; --line: #1e2a36; --grid: #0d1520;
+    --text: #c8d6e0; --muted: #5a7080; --accent: #00d4ff; --accent-dim: #003344;
+    --ok: #00cc88; --busy: #ffaa00; --warn: #ff6644; --bad: #ff3355; --plan: #4488ff;
+    --mono: 'JetBrains Mono', monospace; --sans: 'Instrument Sans', sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 13px; padding: 40px; background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px); background-size: 20px 20px; }
+  h1 { font-family: var(--sans); font-size: 28px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 8px; }
+  h2 { font-family: var(--sans); font-size: 16px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; color: var(--muted); margin: 48px 0 20px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+  .subtitle { color: var(--muted); margin-bottom: 40px; font-size: 14px; }
+  .row { display: flex; gap: 24px; margin-bottom: 32px; flex-wrap: wrap; }
+  .col { flex: 1; min-width: 400px; }
+  .col-narrow { flex: 0 0 380px; }
+
+  .corner-card { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; position: relative; overflow: hidden; }
+  .corner-card::before, .corner-card::after { content: ''; position: absolute; width: 10px; height: 10px; border-color: var(--accent); border-style: solid; }
+  .corner-card::before { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
+  .corner-card::after { bottom: -1px; right: -1px; border-width: 0 2px 2px 0; }
+
+  .card-header { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; }
+  .card-body { padding: 16px; }
+  .card-footer { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; align-items: center; }
+
+  .chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 3px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .chip-ok { background: rgba(0,204,136,0.15); color: var(--ok); }
+  .chip-busy { background: rgba(255,170,0,0.15); color: var(--busy); }
+  .chip-warn { background: rgba(255,102,68,0.15); color: var(--warn); }
+  .chip-bad { background: rgba(255,51,85,0.15); color: var(--bad); }
+  .chip-plan { background: rgba(68,136,255,0.15); color: var(--plan); }
+  .chip-accent { background: rgba(0,212,255,0.15); color: var(--accent); }
+
+  .btn { font-family: var(--mono); font-size: 12px; font-weight: 500; padding: 8px 16px; border: 1px solid var(--line); border-radius: 3px; cursor: pointer; transition: all 0.15s; background: transparent; color: var(--text); }
+  .btn-primary { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+  .btn-primary:hover { background: var(--accent); color: var(--bg); box-shadow: 0 0 20px rgba(0,212,255,0.3); }
+  .btn-ghost { color: var(--muted); }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-danger { background: rgba(255,51,85,0.1); border-color: var(--bad); color: var(--bad); }
+  .btn-sm { padding: 5px 10px; font-size: 11px; }
+  .kbd { font-family: var(--mono); font-size: 10px; padding: 1px 5px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 3px; color: var(--muted); }
+
+  .input { font-family: var(--mono); font-size: 12px; padding: 8px 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 3px; color: var(--text); width: 100%; }
+  .input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(0,212,255,0.1); }
+
+  .code-block { background: var(--surface-2); border: 1px solid var(--line); border-radius: 3px; padding: 12px; font-family: var(--mono); font-size: 11px; line-height: 1.6; overflow-x: auto; white-space: pre; color: var(--muted); }
+
+  .diff-line { padding: 1px 8px; font-family: var(--mono); font-size: 11px; }
+  .diff-line.add { background: rgba(0,204,136,0.08); color: var(--ok); }
+  .diff-line.del { background: rgba(255,51,85,0.08); color: var(--bad); }
+  .diff-line.ctx { color: var(--muted); }
+  .diff-line.meta { color: var(--muted); opacity: 0.6; font-size: 10px; }
+
+  .chat-msg { display: flex; gap: 12px; margin-bottom: 16px; }
+  .chat-avatar { width: 28px; height: 28px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
+  .chat-avatar.you { background: var(--accent-dim); border: 1px solid var(--accent); }
+  .chat-avatar.head { background: var(--surface-2); border: 1px solid var(--line); }
+  .chat-content { flex: 1; }
+  .chat-name { font-family: var(--sans); font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+  .chat-text { font-size: 12px; line-height: 1.6; }
+
+  .work-card { background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px; margin-bottom: 12px; overflow: hidden; }
+  .work-head { padding: 10px 14px; display: flex; align-items: center; gap: 10px; cursor: pointer; }
+  .work-title { font-family: var(--sans); font-size: 12px; font-weight: 600; flex: 1; }
+  .work-detail { padding: 0 14px 12px; display: none; }
+  .work-card.open .work-detail { display: block; }
+
+  .tool-line { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 11px; }
+  .tool-line:last-child { border-bottom: none; }
+  .tool-icon { width: 16px; text-align: center; }
+  .tool-name { color: var(--text); }
+  .tool-target { color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tool-stats { display: flex; gap: 6px; font-size: 10px; }
+  .tool-stats .add { color: var(--ok); }
+  .tool-stats .del { color: var(--bad); }
+
+  .warning-strip { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: rgba(255,102,68,0.1); border: 1px solid rgba(255,102,68,0.3); border-radius: 3px; margin-bottom: 12px; font-size: 11px; color: var(--warn); }
+
+  .empty-state { text-align: center; padding: 48px 24px; color: var(--muted); }
+  .empty-icon { font-size: 32px; margin-bottom: 12px; opacity: 0.5; }
+  .empty-text { font-family: var(--sans); font-size: 16px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+  .empty-sub { font-size: 12px; }
+
+  .progress { height: 3px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+  .progress-fill { height: 100%; background: var(--accent); border-radius: 2px; box-shadow: 0 0 8px rgba(0,212,255,0.5); }
+
+  .avatar-stack { display: flex; gap: -4px; }
+  .avatar-stack .av { width: 20px; height: 20px; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 11px; border: 2px solid var(--surface); margin-left: -4px; }
+  .avatar-stack .av:first-child { margin-left: 0; }
+
+  .crt-line { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .crt-line .prompt { color: var(--accent); }
+  .crt-line .cmd { color: var(--text); }
+  .crt-line .out { color: var(--ok); }
+  .crt-line .err { color: var(--bad); }
+</style>
+</head>
+<body>
+
+<h1>Components</h1>
+<p class="subtitle">Core UI surfaces — approval, chat, cards, diffs, feeds</p>
+
+<!-- APPROVAL DOCK -->
+<h2>Approval Dock</h2>
+<div class="row">
+  <div class="col">
+    <div class="corner-card" style="border-color: var(--warn);">
+      <div class="card-header">
+        <span style="font-size: 16px;">⚠</span>
+        <div>
+          <div style="font-family: var(--sans); font-weight: 600; font-size: 13px;">shell.exec</div>
+          <div style="font-size: 10px; color: var(--muted);">Rule: ask.shell-outside-autopilot</div>
+        </div>
+        <div style="margin-left: auto; display: flex; gap: 6px;">
+          <span class="chip chip-warn">Shell</span>
+          <span class="chip chip-accent">Fingerprint</span>
+        </div>
+      </div>
+      <div class="card-body">
+        <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 8px;">Resolved Arguments</div>
+        <div class="code-block">$ npm test
+$ npm run lint</div>
+        <div class="warning-strip" style="margin-top: 12px;">
+          ⚠ This command runs inside the sandbox container. No network access.
+        </div>
+        <div style="font-size: 10px; color: var(--muted); margin-top: 8px;">
+          Fingerprint: <span style="font-family: var(--mono);">sha256:a1b2c3d4e5f6…</span>
+        </div>
+      </div>
+      <div class="card-footer">
+        <button class="btn btn-primary">Approve <span class="kbd">A</span></button>
+        <button class="btn btn-ghost">For this run <span class="kbd">R</span></button>
+        <button class="btn btn-danger">Deny <span class="kbd">D</span></button>
+        <div style="margin-left: auto; font-size: 10px; color: var(--muted);">Escalate → always</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="corner-card" style="border-color: var(--plan);">
+      <div class="card-header">
+        <span style="font-size: 16px;">✎</span>
+        <div>
+          <div style="font-family: var(--sans); font-weight: 600; font-size: 13px;">workspace.write</div>
+          <div style="font-size: 10px; color: var(--muted);">src/middleware/auth.ts</div>
+        </div>
+        <div style="margin-left: auto; display: flex; gap: 6px;">
+          <span class="chip chip-plan">Write</span>
+        </div>
+      </div>
+      <div class="card-body">
+        <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 8px;">Diff Preview</div>
+        <div style="background: var(--bg); border: 1px solid var(--line); border-radius: 3px; overflow: hidden;">
+          <div class="diff-line meta">@@ -12,7 +12,15 @@ export function authMiddleware</div>
+          <div class="diff-line ctx">  const token = req.headers.authorization</div>
+          <div class="diff-line del">- if (!token) return next()</div>
+          <div class="diff-line add">+ if (!token) {</div>
+          <div class="diff-line add">+   return res.status(401).json({ error: 'No token' })</div>
+          <div class="diff-line add">+ }</div>
+          <div class="diff-line ctx">  try {</div>
+          <div class="diff-line add">+   const decoded = jwt.verify(token, SECRET)</div>
+          <div class="diff-line add">+   req.user = decoded</div>
+          <div class="diff-line ctx">    return next()</div>
+        </div>
+      </div>
+      <div class="card-footer">
+        <button class="btn btn-primary">Approve <span class="kbd">A</span></button>
+        <button class="btn btn-ghost">Edit & Approve</button>
+        <button class="btn btn-danger">Deny <span class="kbd">D</span></button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- CHAT FEED -->
+<h2>Chat Feed</h2>
+<div class="row">
+  <div class="col">
+    <div class="corner-card">
+      <div class="card-body">
+        <div class="chat-msg">
+          <div class="chat-avatar you">👤</div>
+          <div class="chat-content">
+            <div class="chat-name">You</div>
+            <div class="chat-text">Fix the authentication flow — it's dropping valid JWTs after 15 minutes.</div>
+          </div>
+        </div>
+
+        <div class="chat-msg">
+          <div class="chat-avatar head">🧑</div>
+          <div class="chat-content">
+            <div class="chat-name">Head AI</div>
+            <div class="chat-text">I'll analyze the auth flow and propose a fix. Let me draft a plan.</div>
+          </div>
+        </div>
+
+        <!-- Plan Card -->
+        <div class="corner-card" style="margin-bottom: 16px; border-color: var(--plan);">
+          <div class="card-header" style="background: rgba(68,136,255,0.05);">
+            <span class="chip chip-plan">Plan v3</span>
+            <div style="font-family: var(--sans); font-weight: 600; flex: 1;">Fix authentication flow</div>
+            <span style="font-size: 10px; color: var(--muted);">#a1b2c3</span>
+          </div>
+          <div class="card-body">
+            <div style="font-family: var(--mono); font-size: 11px; color: var(--muted); margin-bottom: 4px;">1. Research auth patterns <span class="chip chip-ok" style="margin-left: 8px;">research → haiku</span></div>
+            <div style="font-family: var(--mono); font-size: 11px; color: var(--text); margin-bottom: 4px;">2. Implement JWT middleware <span class="chip chip-accent" style="margin-left: 8px;">builder → sonnet</span></div>
+            <div style="font-family: var(--mono); font-size: 11px; color: var(--muted); margin-bottom: 4px;">3. Write tests <span class="chip chip-ok" style="margin-left: 8px;">research → haiku</span></div>
+            <div style="font-family: var(--mono); font-size: 11px; color: var(--muted);">4. Update documentation <span class="chip chip-ok" style="margin-left: 8px;">editor → haiku</span></div>
+          </div>
+          <div class="card-footer">
+            <div style="font-size: 11px; color: var(--muted);">Est: <strong style="color: var(--accent);">$1.20 – $3.40</strong></div>
+            <div style="margin-left: auto; display: flex; gap: 8px;">
+              <button class="btn btn-sm btn-ghost">Redraft</button>
+              <button class="btn btn-sm btn-primary">Approve & Run</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Work Card -->
+        <div class="work-card open">
+          <div class="work-head">
+            <div class="chat-avatar" style="width: 24px; height: 24px; font-size: 12px; background: rgba(255,170,0,0.15); border-color: var(--busy);">🔨</div>
+            <div class="work-title">Builder — Implement JWT middleware</div>
+            <span class="chip chip-busy">Working</span>
+          </div>
+          <div class="work-detail">
+            <div class="tool-line">
+              <span class="tool-icon" style="color: var(--ok);">✓</span>
+              <span class="tool-name">workspace.read</span>
+              <span class="tool-target">src/middleware/auth.ts</span>
+            </div>
+            <div class="tool-line">
+              <span class="tool-icon" style="color: var(--ok);">✓</span>
+              <span class="tool-name">workspace.write</span>
+              <span class="tool-target">src/middleware/auth.ts</span>
+              <div class="tool-stats"><span class="add">+42</span><span class="del">-12</span></div>
+            </div>
+            <div class="tool-line">
+              <span class="tool-icon" style="color: var(--busy);">●</span>
+              <span class="tool-name">shell.exec</span>
+              <span class="tool-target">npm test</span>
+              <span style="color: var(--busy); font-size: 10px;">running…</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Streaming -->
+        <div class="chat-msg">
+          <div class="chat-avatar head">🧑</div>
+          <div class="chat-content">
+            <div class="chat-name">Head AI</div>
+            <div class="chat-text">The middleware is being implemented. Tests are running<span style="animation: pulse 1s infinite;">▊</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-narrow">
+    <!-- Review Card -->
+    <div class="corner-card" style="border-color: var(--ok);">
+      <div class="card-header" style="background: rgba(0,204,136,0.05);">
+        <span class="chip chip-ok">✓ Verified</span>
+        <div style="font-family: var(--sans); font-weight: 600; flex: 1;">Review Complete</div>
+      </div>
+      <div class="card-body">
+        <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 8px;">Claims</div>
+        <div style="font-size: 11px; margin-bottom: 12px;">
+          <div style="margin-bottom: 6px;"><span class="chip chip-ok">PASS</span> JWT refresh works correctly</div>
+          <div style="margin-bottom: 6px;"><span class="chip chip-ok">PASS</span> All tests pass (42/42)</div>
+          <div><span class="chip chip-ok">PASS</span> No token leakage in logs</div>
+        </div>
+        <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 8px;">Evidence</div>
+        <div style="font-size: 11px; color: var(--muted);">
+          <div style="margin-bottom: 4px;">📄 src/middleware/auth.ts · 142 lines</div>
+          <div style="margin-bottom: 4px;">🧪 npm test · exit 0 · 2.3s</div>
+          <div>📊 3 claims · 3 evidence · 3 verdicts</div>
+        </div>
+      </div>
+      <div class="card-footer">
+        <button class="btn btn-sm btn-ghost">View Report</button>
+        <button class="btn btn-sm btn-primary">Proceed</button>
+      </div>
+    </div>
+
+    <!-- Empty State -->
+    <div class="corner-card" style="margin-top: 24px;">
+      <div class="empty-state">
+        <div class="empty-icon">◈</div>
+        <div class="empty-text">No runs yet</div>
+        <div class="empty-sub">Create a project to get started</div>
+        <button class="btn btn-primary" style="margin-top: 16px;">Start First Project</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- DIFF VIEW -->
+<h2>Diff View</h2>
+<div class="row">
+  <div class="col">
+    <div class="corner-card">
+      <div class="card-header">
+        <span style="font-family: var(--mono); font-size: 11px; color: var(--muted);">src/middleware/auth.ts</span>
+        <div style="margin-left: auto; display: flex; gap: 8px;">
+          <span class="file-add" style="color: var(--ok); font-size: 11px;">+42</span>
+          <span class="file-del" style="color: var(--bad); font-size: 11px;">-12</span>
+        </div>
+      </div>
+      <div class="card-body" style="padding: 0; background: var(--bg);">
+        <div class="diff-line meta" style="padding: 8px 12px;">@@ -1,5 +1,8 @@</div>
+        <div class="diff-line ctx">  import jwt from 'jsonwebtoken'</div>
+        <div class="diff-line add">+ import { SECRET } from '../config'</div>
+        <div class="diff-line add">+</div>
+        <div class="diff-line add">+ const TOKEN_EXPIRY = '24h'</div>
+        <div class="diff-line ctx">  </div>
+        <div class="diff-line ctx">  export function authMiddleware(req, res, next) {</div>
+        <div class="diff-line del">-   const token = req.headers.auth</div>
+        <div class="diff-line add">+   const token = req.headers.authorization?.replace('Bearer ', '')</div>
+        <div class="diff-line ctx">    if (!token) {</div>
+        <div class="diff-line del">-     return next()</div>
+        <div class="diff-line add">+     return res.status(401).json({ error: 'No token' })</div>
+        <div class="diff-line ctx">    }</div>
+        <div class="diff-line meta">  }</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- FEED ITEMS -->
+<h2>Activity Feed</h2>
+<div class="row">
+  <div class="col">
+    <div class="corner-card">
+      <div class="card-body" style="padding: 8px 0;">
+        <div style="display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line);">
+          <span style="color: var(--ok);">✓</span>
+          <span style="flex: 1; font-size: 12px;">tool.completed</span>
+          <span style="font-family: var(--mono); font-size: 11px; color: var(--muted);">workspace.write</span>
+          <span style="font-family: var(--mono); font-size: 10px; color: var(--muted);">#127</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line); background: rgba(255,170,0,0.03);">
+          <span style="color: var(--busy);">●</span>
+          <span style="flex: 1; font-size: 12px;">tool.started</span>
+          <span style="font-family: var(--mono); font-size: 11px; color: var(--muted);">shell.exec</span>
+          <span style="font-family: var(--mono); font-size: 10px; color: var(--muted);">#128</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line);">
+          <span style="color: var(--plan);">◆</span>
+          <span style="flex: 1; font-size: 12px;">approval.requested</span>
+          <span style="font-family: var(--mono); font-size: 11px; color: var(--muted);">shell.exec</span>
+          <span style="font-family: var(--mono); font-size: 10px; color: var(--muted);">#129</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px; padding: 8px 16px;">
+          <span style="color: var(--muted);">○</span>
+          <span style="flex: 1; font-size: 12px;">task.started</span>
+          <span style="font-family: var(--mono); font-size: 11px; color: var(--muted);">builder</span>
+          <span style="font-family: var(--mono); font-size: 10px; color: var(--muted);">#126</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- CRT TERMINAL -->
+<h2>Terminal Output</h2>
+<div class="row">
+  <div class="col">
+    <div class="corner-card" style="background: var(--bg);">
+      <div class="card-body">
+        <div class="crt-line"><span class="prompt">$</span> <span class="cmd">npm test</span></div>
+        <div class="crt-line" style="margin-top: 4px;"><span class="out">✓</span> 42 tests passed</div>
+        <div class="crt-line"><span class="out">✓</span> 0 tests failed</div>
+        <div class="crt-line"><span class="out">✓</span> 0.8s</div>
+        <div class="crt-line" style="margin-top: 8px;"><span class="prompt">$</span> <span class="cmd">npm run lint</span></div>
+        <div class="crt-line" style="margin-top: 4px;"><span class="out">✓</span> 0 warnings, 0 errors</div>
+        <div class="crt-line"><span class="prompt">$</span> <span style="animation: pulse 1s infinite; color: var(--accent);">▊</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }</style>
+</body>
+</html>

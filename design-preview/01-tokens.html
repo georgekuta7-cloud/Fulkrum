@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fulkrum — Design Tokens</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0e14;
+    --surface: #0f1419;
+    --surface-2: #151c24;
+    --line: #1e2a36;
+    --grid: #0d1520;
+    --text: #c8d6e0;
+    --muted: #5a7080;
+    --accent: #00d4ff;
+    --accent-dim: #003344;
+    --ok: #00cc88;
+    --busy: #ffaa00;
+    --warn: #ff6644;
+    --bad: #ff3355;
+    --plan: #4488ff;
+    --mono: 'JetBrains Mono', monospace;
+    --sans: 'Instrument Sans', sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 40px;
+  }
+  h1 { font-family: var(--sans); font-size: 28px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 8px; }
+  h2 { font-family: var(--sans); font-size: 16px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; color: var(--muted); margin: 40px 0 16px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+  .subtitle { color: var(--muted); margin-bottom: 40px; font-size: 14px; }
+  .grid { display: grid; gap: 24px; margin-bottom: 32px; }
+  .grid-2 { grid-template-columns: 1fr 1fr; }
+  .grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+  .grid-5 { grid-template-columns: repeat(5, 1fr); }
+  .grid-14 { grid-template-columns: repeat(7, 1fr); }
+
+  .swatch {
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .swatch-color { height: 80px; position: relative; }
+  .swatch-color::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, transparent 40%, rgba(255,255,255,0.03) 100%);
+  }
+  .swatch-info { padding: 12px; background: var(--surface); }
+  .swatch-name { font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+  .swatch-value { color: var(--muted); font-size: 11px; margin-top: 4px; }
+
+  .type-sample { margin-bottom: 24px; padding: 24px; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; }
+  .type-label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 8px; }
+  .type-display { font-family: var(--sans); font-size: 48px; font-weight: 700; letter-spacing: -1.5px; line-height: 1.1; }
+  .type-heading { font-family: var(--sans); font-size: 24px; font-weight: 600; letter-spacing: -0.3px; }
+  .type-subheading { font-family: var(--sans); font-size: 18px; font-weight: 500; }
+  .type-body { font-family: var(--mono); font-size: 13px; }
+  .type-small { font-family: var(--mono); font-size: 11px; }
+  .type-micro { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+
+  .corner-card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 24px;
+    position: relative;
+  }
+  .corner-card::before, .corner-card::after {
+    content: '';
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    border-color: var(--accent);
+    border-style: solid;
+  }
+  .corner-card::before {
+    top: -1px; left: -1px;
+    border-width: 2px 0 0 2px;
+  }
+  .corner-card::after {
+    bottom: -1px; right: -1px;
+    border-width: 0 2px 2px 0;
+  }
+
+  .grid-bg {
+    background: var(--bg);
+    background-image:
+      linear-gradient(var(--grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 20px 20px;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .chip-ok { background: rgba(0,204,136,0.15); color: var(--ok); }
+  .chip-busy { background: rgba(255,170,0,0.15); color: var(--busy); }
+  .chip-warn { background: rgba(255,102,68,0.15); color: var(--warn); }
+  .chip-bad { background: rgba(255,51,85,0.15); color: var(--bad); }
+  .chip-plan { background: rgba(68,136,255,0.15); color: var(--plan); }
+  .chip-accent { background: rgba(0,212,255,0.15); color: var(--accent); }
+
+  .btn {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 8px 16px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn-primary {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .btn-primary:hover { background: var(--accent); color: var(--bg); box-shadow: 0 0 20px rgba(0,212,255,0.3); }
+  .btn-ghost {
+    background: transparent;
+    color: var(--muted);
+  }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-danger {
+    background: rgba(255,51,85,0.1);
+    border-color: var(--bad);
+    color: var(--bad);
+  }
+
+  .input {
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 8px 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    color: var(--text);
+    width: 100%;
+  }
+  .input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(0,212,255,0.1); }
+
+  .progress {
+    height: 4px;
+    background: var(--surface-2);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    box-shadow: 0 0 8px rgba(0,212,255,0.5);
+  }
+
+  .glow { box-shadow: 0 0 20px rgba(0,212,255,0.15); }
+
+  .measure {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--muted);
+    font-size: 9px;
+  }
+  .measure-line { flex: 1; height: 1px; background: var(--line); position: relative; }
+  .measure-line::before, .measure-line::after {
+    content: '';
+    position: absolute;
+    width: 1px;
+    height: 4px;
+    background: var(--line);
+    top: -2px;
+  }
+  .measure-line::before { left: 0; }
+  .measure-line::after { right: 0; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    text-align: left;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    font-size: 12px;
+  }
+  .code {
+    background: var(--surface-2);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Fulkrum Design System</h1>
+<p class="subtitle">Blueprint aesthetic — precision instrument for provable work</p>
+
+<h2>Color Palette</h2>
+<div class="grid grid-5">
+  <div class="swatch">
+    <div class="swatch-color" style="background: var(--bg)"></div>
+    <div class="swatch-info">
+      <div class="swatch-name">Background</div>
+      <div class="swatch-value">#0a0e14</div>
+    </div>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background: var(--surface)"></div>
+    <div class="swatch-info">
+      <div class="swatch-name">Surface</div>
+      <div class="swatch-value">#0f1419</div>
+    </div>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background: var(--surface-2)"></div>
+    <div class="swatch-info">
+      <div class="swatch-name">Surface-2</div>
+      <div class="swatch-value">#151c24</div>
+    </div>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background: var(--line)"></div>
+    <div class="swatch-info">
+      <div class="swatch-name">Line</div>
+      <div class="swatch-value">#1e2a36</div>
+    </div>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background: var(--text)"></div>
+    <div class="swatch-info">
+      <div class="swatch-name">Text</div>
+      <div class="swatch-value">#c8d6e0</div>
+    </div>
+  </div>
+</div>
+
+<div class="grid grid-5">
+  <div class="swatch">
+    <div class="swatch-color" style="background: var(--accent)"></div>
+    <div class="swatch-info">
+      <div class="swatch-name">Accent</div>
+      <div class="swatch-value">#00d4ff — Cyan Phosphor</div>
+    </div>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background: var(--ok)"></div>
+    <div class="swatch-info">
+      <div class="swatch-name">OK</div>
+      <div class="swatch-value">#00cc88</div>
+    </div>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background: var(--busy)"></div>
+    <div class="swatch-info">
+      <div class="swatch-name">Busy</div>
+      <div class="swatch-value">#ffaa00</div>
+    </div>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background: var(--warn)"></div>
+    <div class="swatch-info">
+      <div class="swatch-name">Warn</div>
+      <div class="swatch-value">#ff6644</div>
+    </div>
+  </div>
+  <div class="swatch">
+    <div class="swatch-color" style="background: var(--bad)"></div>
+    <div class="swatch-info">
+      <div class="swatch-name">Bad</div>
+      <div class="swatch-value">#ff3355</div>
+    </div>
+  </div>
+</div>
+
+<h2>Typography</h2>
+<div class="type-sample">
+  <div class="type-label">Display — Instrument Sans 700</div>
+  <div class="type-display">Provable Work</div>
+</div>
+<div class="type-sample">
+  <div class="type-label">Heading — Instrument Sans 600</div>
+  <div class="type-heading">Authentication Flow Repair</div>
+</div>
+<div class="type-sample">
+  <div class="type-label">Subheading — Instrument Sans 500</div>
+  <div class="type-subheading">Task 2 of 4 — Implement JWT middleware</div>
+</div>
+<div class="type-sample">
+  <div class="type-label">Body — JetBrains Mono 400</div>
+  <div class="type-body">The worker has completed the research phase and identified three authentication patterns. The recommended approach uses short-lived JWTs with refresh token rotation.</div>
+</div>
+<div class="type-sample">
+  <div class="type-label">Small — JetBrains Mono 400</div>
+  <div class="type-small">src/middleware/auth.ts · 142 lines · sha256:a1b2c3d4</div>
+</div>
+<div class="type-sample">
+  <div class="type-label">Micro Label — JetBrains Mono 600 uppercase</div>
+  <div class="type-micro">Evidence · Claim · Verdict</div>
+</div>
+
+<h2>Status Chips</h2>
+<div style="display: flex; gap: 12px; margin-bottom: 32px;">
+  <span class="chip chip-ok">● Completed</span>
+  <span class="chip chip-busy">● Working</span>
+  <span class="chip chip-warn">● Needs Review</span>
+  <span class="chip chip-bad">● Failed</span>
+  <span class="chip chip-plan">● Planning</span>
+  <span class="chip chip-accent">● Active</span>
+</div>
+
+<h2>Buttons</h2>
+<div style="display: flex; gap: 12px; margin-bottom: 32px;">
+  <button class="btn btn-primary">Approve & Run</button>
+  <button class="btn btn-ghost">Cancel</button>
+  <button class="btn btn-danger">Deny</button>
+</div>
+
+<h2>Corner Brackets</h2>
+<div class="grid grid-3">
+  <div class="corner-card">
+    <div class="type-micro" style="color: var(--accent); margin-bottom: 8px;">Status</div>
+    <div class="type-body">Cyan corner brackets mark active or focused elements — like engineering drawing annotations.</div>
+  </div>
+  <div class="corner-card" style="border-color: var(--ok);">
+    <div class="type-micro" style="color: var(--ok); margin-bottom: 8px;">Verified</div>
+    <div class="type-body">Corner color matches the semantic tone of the content within the card.</div>
+  </div>
+  <div class="corner-card" style="border-color: var(--busy);">
+    <div class="type-micro" style="color: var(--busy); margin-bottom: 8px;">Working</div>
+    <div class="type-body">Subtle glow on hover. The grid pattern shows through in the background.</div>
+  </div>
+</div>
+
+<h2>Blueprint Grid</h2>
+<div class="grid-bg" style="height: 120px; border: 1px solid var(--line); border-radius: 4px; margin-bottom: 32px; display: flex; align-items: center; justify-content: center;">
+  <div class="type-micro" style="color: var(--muted);">Subtle 20px grid — engineering blueprint texture</div>
+</div>
+
+<h2>Measurement Marks</h2>
+<div style="margin-bottom: 32px;">
+  <div class="measure">
+    <span>0px</span>
+    <div class="measure-line"></div>
+    <span>320px</span>
+    <div class="measure-line"></div>
+    <span>640px</span>
+    <div class="measure-line"></div>
+    <span>960px</span>
+    <div class="measure-line"></div>
+    <span>1280px</span>
+  </div>
+</div>
+
+<h2>Inputs</h2>
+<div class="grid grid-2" style="margin-bottom: 32px;">
+  <input class="input" placeholder="Search workspace…" />
+  <input class="input" value="src/middleware/auth.ts" style="border-color: var(--accent); box-shadow: 0 0 0 2px rgba(0,212,255,0.1);" />
+</div>
+
+<h2>Progress</h2>
+<div style="margin-bottom: 32px;">
+  <div class="type-small" style="margin-bottom: 8px; display: flex; justify-content: space-between;">
+    <span>Budget</span>
+    <span style="color: var(--accent);">$2.34 / $10.00</span>
+  </div>
+  <div class="progress">
+    <div class="progress-fill" style="width: 23.4%"></div>
+  </div>
+</div>
+
+<h2>Glow Effect</h2>
+<div class="grid grid-2">
+  <div class="corner-card glow">
+    <div class="type-micro" style="color: var(--accent); margin-bottom: 8px;">Phosphor Glow</div>
+    <div class="type-body">Active elements emit a subtle cyan glow — like a CRT phosphor display.</div>
+  </div>
+  <div class="corner-card">
+    <div class="type-micro" style="color: var(--muted); margin-bottom: 8px;">Resting State</div>
+    <div class="type-body">No glow at rest. Glow appears on hover, focus, or active state.</div>
+  </div>
+</div>
+
+<h2>Component Table</h2>
+<table style="margin-top: 16px;">
+  <thead>
+    <tr>
+      <th>Component</th>
+      <th>Font</th>
+      <th>Size</th>
+      <th>Treatment</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Panel Header</td>
+      <td>Instrument Sans</td>
+      <td>10px</td>
+      <td class="code">uppercase · letter-spacing: 1.5px · color: muted</td>
+    </tr>
+    <tr>
+      <td>Card Title</td>
+      <td>Instrument Sans</td>
+      <td>14px</td>
+      <td class="code">weight: 600 · letter-spacing: -0.2px</td>
+    </tr>
+    <tr>
+      <td>Body Text</td>
+      <td>JetBrains Mono</td>
+      <td>13px</td>
+      <td class="code">weight: 400 · line-height: 1.5</td>
+    </tr>
+    <tr>
+      <td>Code / Path</td>
+      <td>JetBrains Mono</td>
+      <td>11px</td>
+      <td class="code">background: surface-2 · border-radius: 3px</td>
+    </tr>
+    <tr>
+      <td>Status Chip</td>
+      <td>JetBrains Mono</td>
+      <td>10px</td>
+      <td class="code">weight: 600 · uppercase · letter-spacing: 0.5px</td>
+    </tr>
+    <tr>
+      <td>Button</td>
+      <td>JetBrains Mono</td>
+      <td>12px</td>
+      <td class="code">weight: 500 · border-radius: 3px</td>
+    </tr>
+    <tr>
+      <td>Metric</td>
+      <td>JetBrains Mono</td>
+      <td>13px</td>
+      <td class="code">weight: 500 · tabular-nums</td>
+    </tr>
+  </tbody>
+</table>
+
+</body>
+</html>
