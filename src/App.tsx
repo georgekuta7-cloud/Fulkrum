@@ -5,6 +5,7 @@ import { Sidebar, type NavView } from './components/SideNav'
 import { ChatView } from './components/ChatView'
 import { EcosystemView } from './components/EcosystemView'
 import { AutomationsPanel } from './components/AutomationsPanel'
+import { SettingsView } from './components/SettingsView'
 import { SettingsPanel } from './components/SettingsPanel'
 import { ErrorBoundary } from './ErrorBoundary'
 
@@ -39,7 +40,7 @@ export default function App() {
     return () => clearTimeout(t)
   }, [bridge.notice, bridge])
 
-  const handleSettings = useCallback(() => setSettingsOpen(true), [])
+  const handleSettings = useCallback(() => setView('settings'), [])
 
   return (
     <ErrorBoundary>
@@ -55,6 +56,10 @@ export default function App() {
                 <p className="text-body-md text-on-surface-variant">Loading…</p>
               </div>
             </div>
+          ) : view === 'settings' ? (
+            // Settings belongs to the workspace, not to a run: keys, casting,
+            // and budgets must be reachable before any run exists.
+            <SettingsView bridge={bridge} onOpenDrawer={() => setSettingsOpen(true)} />
           ) : bridge.projects.length === 0 ? (
             <div className="flex items-center justify-center h-full">
               <div className="text-center space-y-6 max-w-md">
