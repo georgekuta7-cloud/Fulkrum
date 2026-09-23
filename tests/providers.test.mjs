@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import test from 'node:test'
-import { providerAuthHeaders } from '../server/modelCall.mjs'
+import { bodySendsTemperature, bodyWithoutTemperature, buildRequest, parseResponse, providerAuthHeaders, resolveToolNames, wireToolName, wireToolDefinitions } from '../server/modelCall.mjs'
 import { createProviderRegistry } from '../server/providerRegistry.mjs'
 import { isPrivateAddress } from '../server/networkPolicy.mjs'
+import { agentRoles } from '../server/roles.mjs'
 import { withServer, withStore } from './helpers.mjs'
 
 /**
@@ -325,4 +326,108 @@ test('the provider probe reports what it found, and why it could not', async () 
       assert.match(String(unconfigured.payload.result.error), /No key yet/)
     }, { realModelCall: true })
   })
+})
+
+/**
+ * The wire-name contract, reproducing a live failure: a strict gateway
+ * rejected `tools[0].name` because our dotted names (`workspace.read`,
+ * `plugin.my-skill`) violate the documented `^[a-zA-Z0-9_-]+$` pattern, and
+ * the whole run died at its first tool call. Names cross the boundary in
+ * wire form and come back real — reversibly, or the suite fails.
+ */
+const WIRE_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/
+
+function liveToolInventory() {
+  const names = new Set()
+  for (const role of Object.values(agentRoles)) {
+    for (const tool of role.tools ?? []) names.add(tool)
+  }
+  // Plugin tools carry registry ids, which allow dots and hyphens.
+  for (const id of ['my-skill', 'a.b', 'ocr.space']) names.add(`plugin.${id}`)
+  return [...names]
+}
+
+test('every live tool name crosses the wire strictly valid, in all three protocols', () => {
+  const tools = liveToolInventory().map((name) => ({ name, description: 'd', parameters: { type: 'object', properties: {} } }))
+  // The reversibility invariant: no real name contains an underscore, so every
+  // underscore on the wire came from a dot, and the mapping is exact.
+  for (const name of liveToolInventory()) {
+    assert.doesNotMatch(name, /_/, `${name} must not contain an underscore or the wire mapping stops being exact`)
+  }
+  for (const protocol of ['anthropic', 'google', 'openai-compatible']) {
+    const { body } = buildRequest(protocol, { baseUrl: 'https://example.com/v1', model: 'm', messages: [], tools })
+    const wireNames = protocol === 'anthropic'
+      ? body.tools.map((tool) => tool.name)
+      : protocol === 'google'
+        ? body.tools[0].functionDeclarations.map((declaration) => declaration.name)
+        : body.tools.map((tool) => tool.function.name)
+    assert.ok(wireNames.length > 0, `${protocol} must carry the tools`)
+    for (const wire of wireNames) {
+      assert.match(wire, WIRE_PATTERN, `${protocol} sends ${wire}, which a strict gateway refuses`)
+    }
+    assert.ok(wireNames.includes('workspace_read'), `${protocol} must carry the sanitized read tool`)
+    assert.ok(wireNames.includes('plugin_a_b'), `${protocol} must carry the sanitized dotted plugin id`)
+    assert.ok(!wireNames.some((wire) => wire.includes('.')), `${protocol} must send no dotted names`)
+  }
+})
+
+test('wire names parse back verbatim; only the declared map resolves them', () => {
+  const openai = parseResponse('openai-compatible', {
+    choices: [{ message: { content: '', tool_calls: [{ id: 'c1', function: { name: 'workspace_read', arguments: '{"path":"x"}' } }, { id: 'c2', function: { name: 'plugin_a_b', arguments: '{}' } }] } }],
+  })
+  // The parser does not interpret: what crossed the wire is what comes back.
+  assert.deepEqual(openai.toolCalls.map((call) => call.name), ['workspace_read', 'plugin_a_b'])
+
+  const anthropic = parseResponse('anthropic', {
+    content: [{ type: 'tool_use', id: 'c1', name: 'shell_exec', input: {} }],
+  })
+  assert.deepEqual(anthropic.toolCalls.map((call) => call.name), ['shell_exec'])
+
+  const google = parseResponse('google', {
+    candidates: [{ content: { parts: [{ functionCall: { name: 'run_ask', args: {} } }] } }],
+  })
+  assert.deepEqual(google.toolCalls.map((call) => call.name), ['run_ask'])
+})
+
+test('strict resolution admits declared tools and leaves everything else untouched', () => {
+  const tools = [{ name: 'workspace.read' }, { name: 'plugin.a.b' }]
+  const resolved = resolveToolNames(
+    [{ id: 'c1', name: 'workspace_read' }, { id: 'c2', name: 'workspace.read' }, { id: 'c3', name: 'workspace_write' }, { id: 'c4', name: 'unknown' }],
+    tools,
+  )
+  assert.deepEqual(resolved.map((call) => call.name), [
+    'workspace.read', // declared wire name resolves to the real tool
+    'workspace.read', // a dotted echo from a lenient gateway already names it
+    'workspace_write', // undeclared: stays wire, so the broker rejects it as unknown
+    'unknown', // unknown stays unknown
+  ])
+  assert.deepEqual(resolveToolNames([{ id: 'c1', name: 'workspace_read' }], []), [{ id: 'c1', name: 'workspace_read' }], 'with nothing declared, nothing resolves')
+})
+
+test('wire and real names round-trip exactly', () => {
+  for (const name of liveToolInventory()) {
+    assert.equal(resolveToolNames([{ id: 'c1', name: wireToolName(name) }], [{ name }])[0].name, name, `${name} must survive the crossing unchanged`)
+  }
+})
+
+test('unsendable names fail fast as final provider errors', async () => {
+  const { ProviderError } = await import('../server/modelCall.mjs')
+  for (const bad of ['a'.repeat(65), 'has space', 'has:colon', '']) {
+    assert.throws(() => wireToolName(bad), (error) => error instanceof ProviderError && error.status === 400 && error.retryable === false, `${JSON.stringify(bad)} must fail without a retry loop`)
+  }
+})
+
+test('temperature is detected and dropped wherever the protocol nests it', () => {
+  assert.equal(bodySendsTemperature({ temperature: 0.2 }), true)
+  assert.equal(bodySendsTemperature({ generationConfig: { temperature: 0.2 } }), true, 'Google nests it — the old check missed this and retried forever')
+  assert.equal(bodySendsTemperature({}), false)
+  assert.deepEqual(bodyWithoutTemperature({ temperature: 0.2, model: 'm' }), { model: 'm' })
+  assert.deepEqual(bodyWithoutTemperature({ generationConfig: { temperature: 0.2, topK: 40 } }), { generationConfig: { topK: 40 } })
+})
+
+test('declarations for one protocol cannot miss the mapping', () => {
+  const tools = liveToolInventory().map((name) => ({ name, description: 'd', parameters: { type: 'object', properties: {} } }))
+  const defs = wireToolDefinitions('openai-compatible', tools)
+  assert.equal(defs.length, tools.length)
+  for (const def of defs) assert.match(def.function.name, /^[a-zA-Z0-9_-]{1,64}$/)
 })

@@ -33,6 +33,55 @@ function toolResultText(result) {
   return typeof result.content === 'string' ? result.content : JSON.stringify(result.content ?? null)
 }
 
+/**
+ * Tool names cross the provider boundary in wire form.
+ *
+ * Our names (`workspace.read`, `plugin.my-skill`) contain dots, and every
+ * protocol documents `^[a-zA-Z0-9_-]+$` for function names — a strict gateway
+ * refuses the call and the run dies at its first tool use, which is exactly
+ * what happened live. Internal records, approvals, receipts, and the broker
+ * keep the real names; only the wire functions translate.
+ *
+ * Resolution is a strict map from what was actually declared, never a string
+ * reversal: a hallucinated wire name must stay unknown so the broker rejects
+ * it, not silently become a real tool. Dotted echoes from lenient gateways
+ * pass through untouched because they already name real tools.
+ */
+export function wireToolName(name) {
+  const wire = String(name ?? '').replace(/\./g, '_')
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(wire)) {
+    // Deterministic, so retrying on another provider is pure waste: fail in a
+    // way the fallback loop recognizes as final.
+    throw new ProviderError(`Tool name ${JSON.stringify(String(name))} cannot cross the provider boundary.`, { status: 400, retryable: false })
+  }
+  return wire
+}
+
+/** The single choke point for declarations: every protocol's envelope is built here, so none can miss the mapping. */
+export function wireToolDefinitions(protocol, tools) {
+  const wired = (tools ?? []).map((tool) => ({ ...tool, name: wireToolName(tool.name) }))
+  if (protocol === 'anthropic') {
+    return wired.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.parameters }))
+  }
+  if (protocol === 'google') {
+    return [{ functionDeclarations: wired.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters })) }]
+  }
+  return wired.map((tool) => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } }))
+}
+
+/**
+ * Strict parse-back: names the model returned resolve against what was
+ * declared this turn. Declared wire names become real tools; everything else
+ * — dotted echoes, hallucinations, mangled truncations — passes through
+ * verbatim, and the broker rejects what it does not know. With no declared
+ * tools there is nothing to resolve against, so everything passes through.
+ */
+export function resolveToolNames(toolCalls, tools = []) {
+  if (!tools.length) return toolCalls
+  const known = new Map(tools.map((tool) => [wireToolName(tool.name), tool.name]))
+  return (toolCalls ?? []).map((call) => (known.has(call.name) ? { ...call, name: known.get(call.name) } : call))
+}
+
 export function toOpenAiMessages(messages, instructions) {
   const output = [{ role: 'system', content: instructions }]
   for (const message of messages) {
@@ -46,7 +95,7 @@ export function toOpenAiMessages(messages, instructions) {
       output.push({
         role: 'assistant',
         content: message.content || null,
-        tool_calls: message.toolCalls.map((call) => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments ?? {}) } })),
+        tool_calls: message.toolCalls.map((call) => ({ id: call.id, type: 'function', function: { name: wireToolName(call.name), arguments: JSON.stringify(call.arguments ?? {}) } })),
       })
       continue
     }
@@ -69,7 +118,7 @@ export function toAnthropicMessages(messages) {
     if (message.role === 'assistant' && message.toolCalls?.length) {
       const blocks = []
       if (message.content) blocks.push({ type: 'text', text: message.content })
-      for (const call of message.toolCalls) blocks.push({ type: 'tool_use', id: call.id, name: call.name, input: call.arguments ?? {} })
+      for (const call of message.toolCalls) blocks.push({ type: 'tool_use', id: call.id, name: wireToolName(call.name), input: call.arguments ?? {} })
       output.push({ role: 'assistant', content: blocks })
       continue
     }
@@ -84,14 +133,14 @@ export function toGoogleContents(messages) {
     if (message.role === 'tool') {
       output.push({
         role: 'user',
-        parts: message.results.map((result) => ({ functionResponse: { name: result.name, response: { result: toolResultText(result) } } })),
+        parts: message.results.map((result) => ({ functionResponse: { name: wireToolName(result.name), response: { result: toolResultText(result) } } })),
       })
       continue
     }
     if (message.role === 'assistant' && message.toolCalls?.length) {
       const parts = []
       if (message.content) parts.push({ text: message.content })
-      for (const call of message.toolCalls) parts.push({ functionCall: { name: call.name, args: call.arguments ?? {} } })
+      for (const call of message.toolCalls) parts.push({ functionCall: { name: wireToolName(call.name), args: call.arguments ?? {} } })
       output.push({ role: 'model', parts })
       continue
     }
@@ -131,7 +180,7 @@ export function buildRequest(protocol, { baseUrl, model, messages, tools = [], i
         ...(temperature === undefined ? {} : { temperature }),
         ...effort,
         ...(stream ? { stream: true } : {}),
-        ...(tools.length ? { tools: tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.parameters })) } : {}),
+        ...(tools.length ? { tools: wireToolDefinitions('anthropic', tools) } : {}),
       },
     }
   }
@@ -143,7 +192,7 @@ export function buildRequest(protocol, { baseUrl, model, messages, tools = [], i
       body: {
         systemInstruction: { parts: [{ text: instructions }] },
         contents: toGoogleContents(messages),
-        ...(tools.length ? { tools: [{ functionDeclarations: tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters })) }] } : {}),
+        ...(tools.length ? { tools: wireToolDefinitions('google', tools) } : {}),
         ...(temperature === undefined && !effort.thinkingConfig ? {} : { generationConfig: { ...(temperature === undefined ? {} : { temperature }), ...effort } }),
       },
     }
@@ -158,20 +207,35 @@ export function buildRequest(protocol, { baseUrl, model, messages, tools = [], i
       messages: toOpenAiMessages(messages, instructions),
       // Token counts arrive in the final chunk only when the provider is asked for
       // them; a provider that ignores the option simply reports no usage.
-      ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
-      ...(tools.length ? { tools: tools.map((tool) => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } })), tool_choice: 'auto' } : {}),
+        ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
+        ...(tools.length ? { tools: wireToolDefinitions('openai-compatible', tools), tool_choice: 'auto' } : {}),
     },
   }
+}
+
+/**
+ * Temperature lives top-level for OpenAI/Anthropic but nested under
+ * generationConfig for Google — the retry that drops it on a 400 must look
+ * in both places, or Gemini models that fix their own sampling retry forever.
+ */
+export function bodySendsTemperature(body) {
+  return body?.temperature !== undefined || body?.generationConfig?.temperature !== undefined
+}
+
+export function bodyWithoutTemperature(body) {
+  const retryBody = { ...(body ?? {}) }
+  delete retryBody.temperature
+  if (retryBody.generationConfig) {
+    const { temperature: _dropped, ...rest } = retryBody.generationConfig
+    retryBody.generationConfig = rest
+  }
+  return retryBody
 }
 
 /**
  * Headers that carry credentials.
  *
  * `auto` follows the protocol's own convention. Any other style is the caller's,
- * because gateways genuinely disagree: Azure wants `api-key`, some proxies want a
- * header of their own, and a server on your own machine often wants nothing.
- * Configured extra headers are applied first so they cannot displace the credential.
- *
  * @param {string} protocol
  * @param {{ key?: string | null, style?: string, headerName?: string | null, headers?: Record<string, string> }} credentials
  */
@@ -286,7 +350,7 @@ export function createProviderStream(protocol) {
       const toolCalls = toolBlocks.filter(Boolean).map((block, index) => {
         if (protocol === 'google') {
           const parsed = safeParseJson(block.json)
-          return { id: block.id ?? `google-call-${index}`, name: block.name, arguments: parsed.value, invalidJson: parsed.invalid }
+          return { id: block.id ?? `google-call-${index}`, name: block.name || 'unknown', arguments: parsed.value, invalidJson: parsed.invalid }
         }
         const parsed = safeParseJson(block.json || '{}')
         return { id: block.id ?? `call-${index}`, name: block.name || 'unknown', arguments: parsed.value, invalidJson: parsed.invalid }
@@ -300,7 +364,7 @@ export function parseResponse(protocol, payload) {
   if (protocol === 'anthropic') {
     const blocks = Array.isArray(payload?.content) ? payload.content : []
     const text = blocks.filter((block) => block.type === 'text').map((block) => block.text).join('').trim()
-    const toolCalls = blocks.filter((block) => block.type === 'tool_use').map((block) => ({ id: block.id, name: block.name, arguments: block.input ?? {} }))
+    const toolCalls = blocks.filter((block) => block.type === 'tool_use').map((block) => ({ id: block.id, name: block.name ?? 'unknown', arguments: block.input ?? {} }))
     return { text, toolCalls, usage: normalizeUsage(protocol, payload?.usage) }
   }
 
@@ -309,7 +373,7 @@ export function parseResponse(protocol, payload) {
     const text = parts.filter((part) => typeof part.text === 'string').map((part) => part.text).join('').trim()
     const toolCalls = parts
       .filter((part) => part.functionCall)
-      .map((part, index) => ({ id: `google-call-${index}`, name: part.functionCall.name, arguments: part.functionCall.args ?? {} }))
+      .map((part, index) => ({ id: `google-call-${index}`, name: part.functionCall.name ?? 'unknown', arguments: part.functionCall.args ?? {} }))
     return { text, toolCalls, usage: normalizeUsage(protocol, payload?.usageMetadata) }
   }
 
@@ -630,11 +694,9 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
           // A model that fixes its own sampling settings answers 400 to any
           // temperature we send. Retry once without it and remember the answer, so
           // a model this application has never seen costs at most one rejected call.
-          const rejectedTemperature = body.temperature !== undefined && error instanceof ProviderError && error.status === 400 && /temperature/i.test(error.message)
+          const rejectedTemperature = bodySendsTemperature(body) && error instanceof ProviderError && error.status === 400 && /temperature/i.test(error.message)
           if (!rejectedTemperature) throw error
-          const retryBody = { ...body }
-          delete retryBody.temperature
-          const retried = await send({ ...requestOptions, body: JSON.stringify(retryBody) })
+          const retried = await send({ ...requestOptions, body: JSON.stringify(bodyWithoutTemperature(body)) })
           providerRegistry.rememberTemperature?.(provider, 'omit')
           return retried
         }
@@ -645,7 +707,15 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
       throw error
     }
     breaker.succeeded(provider.id)
-    return streaming ? payload : parseResponse(provider.protocol, payload)
+    // Strict parse-back against what was declared this turn: wire names become
+    // real tools, and anything else stays exactly as the model sent it so the
+    // broker rejects what it does not know. Both the streamed and the buffered
+    // paths land here, so neither can bypass the map.
+    if (streaming) {
+      return { ...payload, toolCalls: resolveToolNames(payload.toolCalls, tools) }
+    }
+    const parsed = parseResponse(provider.protocol, payload)
+    return { ...parsed, toolCalls: resolveToolNames(parsed.toolCalls, tools) }
   }
 
   return { callModel, buildRequest, breaker }

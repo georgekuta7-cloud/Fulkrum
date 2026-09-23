@@ -236,6 +236,13 @@ test('a tool name that arrives twice is one name, not two', () => {
   assert.equal(split.finish().toolCalls[0].name, 'workspace.read')
 })
 
+test('a streamed wire name arrives verbatim; the declared map resolves it, not the parser', () => {
+  const stream = createProviderStream('openai-compatible')
+  stream.push('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"workspace_read","arguments":"{}"}}]}}]}\n\n')
+  // finish() does not interpret: strict resolution happens in callModel.
+  assert.equal(stream.finish().toolCalls[0].name, 'workspace_read')
+})
+
 test('a stream cut off part way is an error, not a short answer', async () => {
   const server = http.createServer((_request, response) => {
     response.writeHead(200, { 'content-type': 'text/event-stream' })

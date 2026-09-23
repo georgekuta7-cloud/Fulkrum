@@ -68,7 +68,7 @@ test('openai-compatible requests carry tools and replay tool results', () => {
   assert.equal(body.tool_choice, 'auto')
 
   const assistant = body.messages.find((message) => message.role === 'assistant')
-  assert.equal(assistant.tool_calls[0].function.name, 'workspace.read')
+  assert.equal(assistant.tool_calls[0].function.name, 'workspace_read', 'replays carry the wire name the provider validated')
   assert.equal(typeof assistant.tool_calls[0].function.arguments, 'string', 'OpenAI expects arguments as a JSON string')
   const toolMessage = body.messages.at(-1)
   assert.equal(toolMessage.role, 'tool')
@@ -92,6 +92,7 @@ test('anthropic requests use content blocks and tool_result turns', () => {
   const assistant = body.messages.find((message) => message.role === 'assistant')
   assert.equal(assistant.content[0].type, 'text')
   assert.equal(assistant.content[1].type, 'tool_use')
+  assert.equal(assistant.content[1].name, 'workspace_read', 'replays carry the wire name the provider validated')
   assert.equal(assistant.content[1].input.path, 'a.txt')
 
   const toolTurn = body.messages.at(-1)
@@ -111,13 +112,13 @@ test('google requests use function declarations and function responses', () => {
 
   assert.match(url, /\/models\/gemini-x:generateContent$/)
   assert.equal(body.systemInstruction.parts[0].text, 'system text')
-  assert.equal(body.tools[0].functionDeclarations[0].name, 'workspace.list')
+  assert.equal(body.tools[0].functionDeclarations[0].name, 'workspace_list', 'declarations carry wire names')
 
   const modelTurn = body.contents.find((entry) => entry.role === 'model')
-  assert.equal(modelTurn.parts.at(-1).functionCall.name, 'workspace.read')
+  assert.equal(modelTurn.parts.at(-1).functionCall.name, 'workspace_read', 'replays carry the wire name the provider validated')
   const toolTurn = body.contents.at(-1)
   assert.equal(toolTurn.role, 'user')
-  assert.equal(toolTurn.parts[0].functionResponse.name, 'workspace.read')
+  assert.equal(toolTurn.parts[0].functionResponse.name, 'workspace_read')
 })
 
 test('responses are normalized into text, tool calls, and usage', () => {
