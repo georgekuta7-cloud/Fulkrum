@@ -1,15 +1,52 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Bridge } from '../hooks/useBridge'
+import { resolveRouteDisplay, roleLabel } from '../lib/runGraph'
 import { Button, Chip } from './primitives'
 
 /**
  * The core surface: the conversation, the plan it produced, the decision it
  * is waiting on, and what it has proven — in that order, in one column.
  * Approvals render inline where the work is described, never in a hidden tab:
- * the question this screen answers first is "what needs me right now".
+ * the question this screen answers first is "what needs me right now". The
+ * worker strip answers the second: "who is doing what, right now".
  */
 
 const time = (value: number) => new Date(value).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+const WORKER_ROLES = ['head', 'research', 'builder', 'architect', 'editor', 'debug'] as const
+
+function WorkerStrip({ bridge }: { bridge: Bridge }) {
+  const routing = (bridge.projectSettings?.routing ?? {}) as Record<string, string>
+  const costByAgent = new Map<string, number>()
+  for (const entry of bridge.byTask ?? []) {
+    const key = entry.agentId ?? 'head'
+    costByAgent.set(key, (costByAgent.get(key) ?? 0) + entry.costUsd)
+  }
+  const waitingAgent = bridge.approval?.toolCall.agentId ?? null
+  const visible = WORKER_ROLES.filter((role) => (routing[role] ?? '').trim() || (bridge.tasks ?? []).some((t: any) => t.agentId === role))
+  if (!visible.length) return null
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-3 gap-2" aria-label="Workers">
+      {visible.map((role) => {
+        const running = (bridge.tasks ?? []).find((t: any) => t.agentId === role && t.status === 'running')
+        const waiting = waitingAgent === role
+        const cost = costByAgent.get(role) ?? 0
+        return (
+          <div key={role} className={`p-2.5 rounded-xl border bg-surface-container flex flex-col gap-1 ${waiting ? 'border-secondary/60' : running ? 'border-primary/40' : 'border-outline-variant/30'}`}>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-label-md font-semibold text-on-surface">{roleLabel(role)}</span>
+              <span className={`flex items-center gap-1 font-mono text-label-sm ${waiting ? 'text-secondary' : running ? 'text-primary' : 'text-outline'}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${waiting || running ? 'bg-current animate-pulse' : 'bg-current'}`} aria-hidden="true" />
+                {waiting ? 'waiting' : running ? 'working' : 'idle'}
+              </span>
+            </div>
+            <p className="text-body-sm text-on-surface-variant truncate">{running?.title ?? (waiting ? 'parked on approval' : 'no active task')}</p>
+            <p className="font-mono text-label-sm text-outline truncate">{resolveRouteDisplay(routing, bridge.providers, role) ?? 'not cast'}{cost > 0 ? ` · $${cost.toFixed(4)}` : ''}</p>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
 
 function PipelineStrip({ bridge }: { bridge: Bridge }) {
   const tasks = bridge.tasks ?? []
@@ -193,6 +230,7 @@ export function ChatView({ bridge }: { bridge: Bridge }) {
         </div>
       ) : null}
 
+      <WorkerStrip bridge={bridge} />
       <PipelineStrip bridge={bridge} />
 
       {messages.length === 0 && !plan ? (

@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react'
 
 /**
- * The only shared pieces. Three components, no variants beyond tone and size:
+ * The only shared pieces. Three components, no variants beyond tone:
  * anything that needs more is a one-off, and one-offs live where they are
  * used instead of growing here.
  */
@@ -33,7 +33,7 @@ export function Chip({ tone = 'idle', children }: { tone?: keyof typeof CHIP_TON
 
 export function Panel({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
-    <section className="bg-surface-container-low rounded-xl p-4 flex flex-col gap-3">
+    <section className="bg-surface-container-low rounded-xl p-4 flex flex-col gap-3" aria-label={title}>
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-label-lg font-semibold text-on-surface">{title}</h2>
         {action}
@@ -53,16 +53,6 @@ export function EmptyState({ icon, title, body, action }: { icon: string; title:
         {action}
       </div>
     </div>
-  )
-}
-
-export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <label className="flex flex-col gap-1.5">
-      <span className="text-label-sm text-outline uppercase tracking-wider">{label}</span>
-      {children}
-      {hint ? <span className="text-label-sm text-outline">{hint}</span> : null}
-    </label>
   )
 }
 

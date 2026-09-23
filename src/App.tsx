@@ -8,7 +8,7 @@ import { FilesView } from './components/FilesView'
 import { StoreView } from './components/StoreView'
 import { AutomationsView } from './components/AutomationsView'
 import { SettingsView } from './components/SettingsView'
-import { EmptyState, Button } from './components/primitives'
+import { Button } from './components/primitives'
 import { ErrorBoundary } from './ErrorBoundary'
 import './index.css'
 
@@ -135,6 +135,3 @@ export default function App() {
     </ErrorBoundary>
   )
 }
-
-// Re-exported for tests that render the empty states without a server.
-export { EmptyState }

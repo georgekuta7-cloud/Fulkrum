@@ -257,11 +257,10 @@ describe('files', () => {
   })
 
   it('scrubs file history through the timeline', async () => {
-    const loadTimeline = vi.fn().mockResolvedValue(null)
     render(<FilesView bridge={makeBridge({
       events: [{ sequence: 1 }, { sequence: 2 }] as any,
       timeline: { seq: 2, files: [{ path: 'notes.txt', content: 'hi', truncated: false, unknown: null }], gaps: [] },
-      loadTimeline, clearTimeline: vi.fn(), restoreTimelineFile: vi.fn(),
+      loadTimeline: vi.fn(), clearTimeline: vi.fn(), restoreTimelineFile: vi.fn(),
     })} />)
     expect(screen.getByText('notes.txt')).toBeInTheDocument()
     expect(screen.getByText('event 2/2')).toBeInTheDocument()
@@ -358,6 +357,8 @@ describe('automations', () => {
     const previewBlueprint = vi.fn().mockResolvedValue({ routing: [], reasoning: [], defaults: [], grants: [] })
     const applyBlueprint = vi.fn().mockResolvedValue(true)
     render(<AutomationsView bridge={autoBridge({ instantiatePlaybook, toggleSchedule, createGoal, previewBlueprint, applyBlueprint })} />)
+    // Playbook card, its schedule card, and the schedule form option.
+    expect(screen.getAllByText('Deploy').length).toBe(3)
     fireEvent.click(screen.getAllByRole('button', { name: 'run' })[0])
     expect(instantiatePlaybook).toHaveBeenCalledWith('pb1')
     fireEvent.click(screen.getByRole('button', { name: 'pause' }))

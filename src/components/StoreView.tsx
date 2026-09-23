@@ -11,13 +11,6 @@ import { Button, Chip, EmptyState, Panel, inputClass } from './primitives'
  * reviewed. Staged bytes never leave the server.
  */
 
-function TrustNote({ entry }: { entry: any }) {
-  if (entry.trust === 'verified') {
-    return <Chip tone="ok">Verified</Chip>
-  }
-  return <Chip tone="busy" >Community</Chip>
-}
-
 export function StoreView({ bridge }: { bridge: Bridge }) {
   const [query, setQuery] = useState('')
   const [trust, setTrust] = useState<'all' | 'verified' | 'community'>('all')
@@ -89,7 +82,7 @@ export function StoreView({ bridge }: { bridge: Bridge }) {
                   <li key={entry.id} className="flex flex-col gap-1.5 p-3 rounded-xl border border-outline-variant/40 bg-surface-container">
                     <div className="flex items-center gap-2 flex-wrap">
                       <strong className="text-body-md text-on-surface">{entry.id}</strong>
-                      <TrustNote entry={entry} />
+                      {entry.trust === 'verified' ? <Chip tone="ok">Verified</Chip> : <Chip tone="busy">Community</Chip>}
                       <span className="font-mono text-label-sm text-outline">v{entry.version}</span>
                       {entry.signals && (entry.signals.downloads > 0 || entry.signals.stars > 0) ? <span className="font-mono text-label-sm text-outline">↓{entry.signals.downloads} ★{entry.signals.stars}</span> : null}
                     </div>

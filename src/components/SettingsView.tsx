@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { Bridge } from '../hooks/useBridge'
 import type { Provider } from '../api/types'
 import { roleLabel } from '../lib/runGraph'
-import { Button, Chip, Field, Panel, inputClass, selectClass } from './primitives'
+import { Button, Chip, Panel, inputClass, selectClass } from './primitives'
 
 /**
  * Settings as a full view, reachable without a run — keys before runs is the
@@ -111,15 +111,23 @@ function ProviderCard({ bridge, provider, probe, onProbed }: { bridge: Bridge; p
             }
           }}
         >
-          <Field label="Label"><input className={inputClass} value={draft.label} onChange={(e) => setDraft((c) => ({ ...c, label: e.target.value }))} /></Field>
-          <Field label="Base URL"><input className={`${inputClass} font-mono`} value={draft.baseUrl} onChange={(e) => setDraft((c) => ({ ...c, baseUrl: e.target.value }))} /></Field>
-          <Field label="Model"><input className={`${inputClass} font-mono`} value={draft.model} onChange={(e) => setDraft((c) => ({ ...c, model: e.target.value }))} /></Field>
-          <Field label="API key" hint="Empty keeps the stored key."><input type="password" autoComplete="off" className={`${inputClass} font-mono`} value={draft.apiKey} onChange={(e) => setDraft((c) => ({ ...c, apiKey: e.target.value }))} /></Field>
-          <Field label="Auth style">
+          <label className="flex flex-col gap-1.5 text-label-sm text-outline uppercase tracking-wider">Label
+            <input className={inputClass} value={draft.label} onChange={(e) => setDraft((c) => ({ ...c, label: e.target.value }))} />
+          </label>
+          <label className="flex flex-col gap-1.5 text-label-sm text-outline uppercase tracking-wider">Base URL
+            <input className={`${inputClass} font-mono`} value={draft.baseUrl} onChange={(e) => setDraft((c) => ({ ...c, baseUrl: e.target.value }))} />
+          </label>
+          <label className="flex flex-col gap-1.5 text-label-sm text-outline uppercase tracking-wider">Model
+            <input className={`${inputClass} font-mono`} value={draft.model} onChange={(e) => setDraft((c) => ({ ...c, model: e.target.value }))} />
+          </label>
+          <label className="flex flex-col gap-1.5 text-label-sm text-outline uppercase tracking-wider">API key
+            <input type="password" autoComplete="off" className={`${inputClass} font-mono`} placeholder="Empty keeps the stored key" value={draft.apiKey} onChange={(e) => setDraft((c) => ({ ...c, apiKey: e.target.value }))} />
+          </label>
+          <label className="flex flex-col gap-1.5 text-label-sm text-outline uppercase tracking-wider">Auth style
             <select className={selectClass} value={draft.authStyle} onChange={(e) => setDraft((c) => ({ ...c, authStyle: e.target.value }))}>
               {AUTH_STYLES.map((style) => <option key={style} value={style}>{style}</option>)}
             </select>
-          </Field>
+          </label>
           <label className="flex items-center gap-2 text-body-sm text-on-surface">
             <input type="checkbox" checked={draft.allowPrivate} onChange={(e) => setDraft((c) => ({ ...c, allowPrivate: e.target.checked }))} />
             Allow private-network URLs for this provider

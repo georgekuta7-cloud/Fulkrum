@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { Bridge } from '../hooks/useBridge'
 import { buildGraph, roleLabel, type GraphNode } from '../lib/runGraph'
-import { Button, Chip, EmptyState, Panel } from './primitives'
+import { Button, EmptyState, Panel } from './primitives'
 
 /**
  * The run as a living map: you, the Head, and one node per plan task in
@@ -22,6 +22,13 @@ const NODE_TONE: Record<string, string> = {
 
 const ICONS: Record<string, string> = { you: 'person', head: 'psychology', research: 'travel_explore', builder: 'construction', architect: 'architecture', editor: 'edit', debug: 'bug_report', reviewer: 'content_paste_search' }
 
+function trimEdge(x1: number, y1: number, x2: number, y2: number, pad: number) {
+  const dx = x2 - x1
+  const dy = y2 - y1
+  const len = Math.hypot(dx, dy) || 1
+  return { x1: x1 + (dx / len) * pad, y1: y1 + (dy / len) * pad, x2: x2 - (dx / len) * pad, y2: y2 - (dy / len) * pad }
+}
+
 function MapCanvas({ bridge }: { bridge: Bridge }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const graph = useMemo(() => buildGraph({
@@ -41,14 +48,6 @@ function MapCanvas({ bridge }: { bridge: Bridge }) {
     return <p className="text-body-md text-on-surface-variant text-center py-10">No plan yet — ask the Head AI for one in the chat.</p>
   }
 
-  const edge = (x1: number, y1: number, x2: number, y2: number) => {
-    const dx = x2 - x1
-    const dy = y2 - y1
-    const len = Math.hypot(dx, dy) || 1
-    const pad = 8
-    return { x1: x1 + (dx / len) * pad, y1: y1 + (dy / len) * pad, x2: x2 - (dx / len) * pad, y2: y2 - (dy / len) * pad }
-  }
-
   return (
     <div className="flex flex-col gap-3">
       <div className="relative w-full min-h-[380px]" role="group" aria-label="Run dispatch map">
@@ -57,21 +56,18 @@ function MapCanvas({ bridge }: { bridge: Bridge }) {
             const from = byId.get(e.from)
             const to = byId.get(e.to)
             if (!from || !to) return null
-            const p = edge(from.x, from.y, to.x, to.y)
+            const p = trimEdge(from.x, from.y, to.x, to.y, 8)
             return <line key={e.id} id={`edge-${e.id}`} x1={p.x1} y1={p.y1} x2={p.x2} y2={p.y2} className={e.tone === 'flow' ? 'stroke-primary/50' : e.tone === 'wait' ? 'stroke-secondary/50' : 'stroke-outline-variant/40'} strokeWidth={0.6} vectorEffect="non-scaling-stroke" />
           })}
-          {graph.edges.map((e) => {
-            const from = byId.get(e.from)
-            const to = byId.get(e.to)
-            if (!from || !to || e.tone === 'plain') return null
-            return (
+          {graph.edges.map((e) => (
+            e.tone === 'plain' ? null : (
               <circle key={`${e.id}-packet`} r="0.9" className={e.tone === 'wait' ? 'fill-secondary' : 'fill-primary'}>
                 <animateMotion dur={e.tone === 'wait' ? '3.2s' : '2.2s'} repeatCount="indefinite">
                   <mpath href={`#edge-${e.id}`} />
                 </animateMotion>
               </circle>
             )
-          })}
+          ))}
         </svg>
         {graph.nodes.map((node) => (
           <button
@@ -96,7 +92,7 @@ function MapCanvas({ bridge }: { bridge: Bridge }) {
         <div className="p-3 rounded-lg bg-surface-container flex flex-col gap-1">
           <div className="flex items-center justify-between gap-2">
             <span className="text-label-lg font-semibold text-on-surface">{selected.title}</span>
-            <Chip tone={selected.state === 'done' ? 'ok' : selected.state === 'working' ? 'busy' : selected.state === 'failed' ? 'bad' : selected.state === 'waiting' ? 'plan' : 'idle'}>{selected.state.replaceAll('_', ' ')}</Chip>
+            <span className="font-mono text-label-sm text-outline">{selected.state.replaceAll('_', ' ')}{selected.costUsd !== null && selected.costUsd > 0 ? ` · $${selected.costUsd.toFixed(2)}` : ''}</span>
           </div>
           <p className="text-body-sm text-on-surface-variant">{selected.subtitle}</p>
           {selected.model ? <p className="font-mono text-label-sm text-primary">cast: {selected.model}</p> : <p className="font-mono text-label-sm text-outline">not cast — planning only</p>}

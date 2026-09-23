@@ -6,6 +6,16 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **The interface, rebuilt from a clean slate.** Three stacked redesigns had
+  left dead components, orphaned features, and a suite certifying code that no
+  longer shipped — so every component was deleted and six views were rebuilt
+  on one style regime: Chat (messages, worker strip, plan, inline approvals,
+  proof), Control Room (dispatch map, live workers, spend, proven fraction),
+  Files (artifacts with diffs and revert, timeline scrubber, workspace tree),
+  Store (marketplace, imports, arsenal), Automations (playbooks, schedules,
+  goals, blueprints), Settings (providers with real probes, casting, sandbox,
+  budgets, learnings, audit rail). Twenty tests cover shipped code only, and a
+  dead-file scan keeps it that way.
 - **The marketplace is a real store.** 📦 Store and 🗡️ Arsenal are top-level
   views, reachable with no run open. The store lists signed index entries next
   to community imports with the trust difference badged, not fine-printed;
