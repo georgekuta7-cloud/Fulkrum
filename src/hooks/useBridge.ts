@@ -437,6 +437,23 @@ export function useBridge() {
       }
     },
     /**
+     * Start a fresh run in the current project and open it. This is the way
+     * out of a terminal run: the server refuses chat into failed, cancelled,
+     * or completed runs, so the interface must offer the alternative it names.
+     */
+    async createRun() {
+      if (!projectId) return null
+      try {
+        const created = await api.post<{ run: Run }>('/api/runs', { projectId })
+        await loadRuns(projectId)
+        await openRun(created.run.id)
+        return created.run.id
+      } catch (caught) {
+        report(caught, 'Could not start a new run.')
+        return null
+      }
+    },
+    /**
      * Set how hard a role thinks, stored on the project beside its routing. A
      * null level hands the decision back to the provider. The projects list is
      * reloaded so the new value is what every panel renders.
