@@ -1,3 +1,236 @@
-/* Minimal reset */
+@import "tailwindcss";
+@import "material-symbols/outlined.css";
+@import "@fontsource/geist/400.css";
+@import "@fontsource/geist/500.css";
+@import "@fontsource/geist/600.css";
+
+/* Class-based dark mode: the toggle puts .dark on <html>. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * The design speaks in Material 3 token names, so the tokens live here.
+ * Light values are the theme defaults; .dark overrides them below. Every
+ * component reads the same names, so a theme switch is one class flip.
+ */
+@theme {
+  /* Type scale — the labels the components call by name. */
+  --text-label-sm: 0.6875rem;
+  --text-label-sm--line-height: 1rem;
+  --text-label-md: 0.75rem;
+  --text-label-md--line-height: 1.125rem;
+  --text-label-lg: 0.875rem;
+  --text-label-lg--line-height: 1.25rem;
+  --text-body-sm: 0.75rem;
+  --text-body-sm--line-height: 1.125rem;
+  --text-body-md: 0.875rem;
+  --text-body-md--line-height: 1.375rem;
+  --text-headline-md: 1.75rem;
+  --text-headline-md--line-height: 2.25rem;
+  --text-headline-lg: 2rem;
+  --text-headline-lg--line-height: 2.5rem;
+
+  /* Color — light (default) */
+  --color-primary: #6750a4;
+  --color-primary-container: #eaddff;
+  --color-on-primary: #ffffff;
+  --color-on-primary-container: #21005d;
+  --color-secondary: #625b71;
+  --color-secondary-container: #e8def8;
+  --color-on-secondary-container: #1d192b;
+  --color-tertiary: #006b54;
+  --color-tertiary-container: #90f5d3;
+  --color-on-tertiary-container: #00201b;
+  --color-error: #b3261e;
+  --color-error-container: #f9dedc;
+  --color-on-error-container: #410e0b;
+  --color-background: #fdf8ff;
+  --color-surface: #fdf8ff;
+  --color-surface-dim: #ded8e1;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-low: #f7f2fa;
+  --color-surface-container: #f1ecf4;
+  --color-surface-container-high: #ece6ee;
+  --color-surface-container-highest: #e6e0e9;
+  --color-on-surface: #1d1b20;
+  --color-on-surface-variant: #49454f;
+  --color-outline: #7a757f;
+  --color-outline-variant: #cac4d0;
+  --font-sans: 'Geist', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', Consolas, monospace;
+}
+
+/* Color — dark: same token names, dark values. Utilities resolve through
+ * the custom properties, so this one block is the entire dark theme. */
+.dark {
+  --color-primary: #d0bcff;
+  --color-primary-container: #a078ff;
+  --color-on-primary: #3c0091;
+  --color-on-primary-container: #340080;
+  --color-secondary: #cebdff;
+  --color-secondary-container: #4f319c;
+  --color-on-secondary-container: #bea8ff;
+  --color-tertiary: #4edea3;
+  --color-tertiary-container: #00a572;
+  --color-on-tertiary-container: #00311f;
+  --color-error: #ffb4ab;
+  --color-error-container: #93000a;
+  --color-on-error-container: #ffdad6;
+  --color-background: #131318;
+  --color-surface: #131318;
+  --color-surface-dim: #131318;
+  --color-surface-container-lowest: #0e0e13;
+  --color-surface-container-low: #1b1b20;
+  --color-surface-container: #1f1f24;
+  --color-surface-container-high: #2a292f;
+  --color-surface-container-highest: #35343a;
+  --color-on-surface: #e4e1e9;
+  --color-on-surface-variant: #cbc3d7;
+  --color-outline: #958ea0;
+  --color-outline-variant: #494454;
+}
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #root { height: 100%; }
+body {
+  font-family: var(--font-sans);
+  background: var(--color-surface);
+  color: var(--color-on-surface);
+  -webkit-font-smoothing: antialiased;
+  min-height: 100dvh;
+}
+::selection { background: var(--color-primary-container); color: var(--color-on-primary-container); }
+
+/* Scrollbars: thin and themed, not invisible — a hidden scrollbar makes a
+ * clipped list look broken instead of scrollable. */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-outline-variant); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-outline); }
+
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+  display: inline-block;
+  vertical-align: middle;
+  line-height: 1;
+}
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.92); }
+}
+.animate-pulse-subtle { animation: pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+.glow-primary { box-shadow: 0 0 16px -4px color-mix(in srgb, var(--color-primary) 40%, transparent); }
+.glow-tertiary { box-shadow: 0 0 14px -3px color-mix(in srgb, var(--color-tertiary) 45%, transparent); }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* Crash panel */
+.crash-panel {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  min-height: 100vh; padding: 2rem; text-align: center;
+  font-family: var(--font-sans); color: var(--color-on-surface); background: var(--color-surface);
+}
+.crash-panel h1 { font-size: 1.25rem; font-weight: 600; margin-bottom: 0.5rem; }
+.crash-panel p { font-size: 0.875rem; color: var(--color-on-surface-variant); max-width: 32rem; margin-bottom: 1rem; }
+.crash-panel pre {
+  background: var(--color-surface-container); padding: 0.75rem 1rem; border-radius: 0.5rem;
+  font-family: var(--font-mono); font-size: 0.75rem; color: var(--color-error); margin-bottom: 1rem;
+  max-width: 40rem; overflow-x: auto; text-align: left;
+}
+.crash-panel button {
+  padding: 0.5rem 1rem; border-radius: 0.25rem; background: var(--color-primary);
+  color: var(--color-on-primary); font-family: var(--font-sans); font-size: 0.875rem; font-weight: 500;
+  border: none; cursor: pointer; margin: 0 0.25rem;
+}
+
+/*
+ * Legacy panel classes — the settings drawer, automations, and the provider
+ * editor still speak the old class names. Rather than churn their markup,
+ * each name is defined once here against the tokens above, so every surface
+ * renders in the same theme. Retire this block by porting the markup; until
+ * then it is the single place these classes exist.
+ */
+input, button, select, textarea { font: inherit; color: inherit; }
+
+.muted { color: var(--color-on-surface-variant); }
+.tiny { font-size: var(--text-label-sm); }
+.warning { color: var(--color-error); font-size: var(--text-body-sm); }
+
+.panel { display: flex; flex-direction: column; gap: 0.75rem; overflow-y: auto; padding: 1rem 1.25rem; }
+.panel.market { align-self: stretch; }
+.panel-empty { text-align: center; padding: 3rem 1rem; display: flex; flex-direction: column; gap: 0.5rem; align-items: center; }
+
+.market-toolbar { display: flex; align-items: center; gap: 0.625rem; flex-wrap: wrap; }
+.market-toolbar h2 { font-size: var(--text-body-md); font-weight: 600; display: flex; align-items: center; gap: 0.375rem; }
+.market-toolbar input { flex: 1 1 11rem; min-width: 8.75rem; }
+.market-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: 0.625rem; list-style: none; }
+.market-card { display: flex; flex-direction: column; gap: 0.375rem; padding: 0.625rem 0.75rem; border: 1px solid var(--color-outline-variant); border-radius: 0.5rem; background: var(--color-surface-container-low); }
+.market-card-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.market-meta { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+
+.auto-group { display: flex; flex-direction: column; gap: 0.5rem; border-top: 1px solid var(--color-surface-container-highest); padding-top: 0.75rem; }
+.auto-group-head { display: flex; align-items: baseline; gap: 0.5rem; }
+.auto-group input, .auto-group select { flex: 1 1 8.5rem; min-width: 7.5rem; }
+
+.deny-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+.deny-row input, .deny-row select { flex: 1 1 12rem; min-width: 8rem; }
+
+.tiny-button { font-size: var(--text-label-sm); padding: 0.1875rem 0.5rem; background: transparent; border: 1px solid var(--color-outline-variant); border-radius: 0.25rem; color: var(--color-on-surface-variant); cursor: pointer; }
+.tiny-button:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.tiny-button.primary { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-on-primary); }
+.tiny-button.primary:hover { background: var(--color-primary-container); color: var(--color-on-primary-container); }
+.danger { color: var(--color-error); border-color: var(--color-error); }
+
+.status-chip { display: inline-flex; align-items: center; gap: 0.25rem; font-size: var(--text-label-sm); padding: 0.0625rem 0.5rem; border-radius: 999px; border: 1px solid var(--color-outline-variant); color: var(--color-on-surface-variant); }
+.status-chip.ok { color: var(--color-tertiary); border-color: var(--color-tertiary); }
+.status-chip.busy { color: var(--color-primary); border-color: var(--color-primary); }
+.status-chip.bad { color: var(--color-error); border-color: var(--color-error); }
+
+.kv { list-style: none; display: flex; flex-direction: column; gap: 0.125rem; }
+.kv li { display: flex; justify-content: space-between; gap: 0.75rem; font-size: var(--text-body-sm); }
+.kv li span { color: var(--color-on-surface-variant); }
+.mini-table { width: 100%; border-collapse: collapse; font-size: var(--text-label-sm); font-family: var(--font-mono); }
+.mini-table th { text-align: left; color: var(--color-on-surface-variant); font-weight: 500; padding: 0.125rem 0.5rem 0.125rem 0; }
+.mini-table td { padding: 0.125rem 0.5rem 0.125rem 0; }
+
+.grant-list { list-style: none; display: flex; flex-direction: column; gap: 0.375rem; }
+.grant-list li { display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0; border-bottom: 1px solid var(--color-surface-container-highest); }
+.grant-name { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.kind-chip { font-size: var(--text-label-sm); padding: 0.0625rem 0.5rem; border-radius: 999px; border: 1px solid var(--color-outline-variant); color: var(--color-on-surface-variant); }
+.dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--color-outline); flex-shrink: 0; }
+.dot.on { background: var(--color-tertiary); }
+
+.setting-row { display: flex; flex-direction: column; gap: 0.25rem; padding: 0.375rem 0; }
+.setting-name { display: flex; align-items: baseline; gap: 0.5rem; }
+
+.inline-form { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.inline-form input, .inline-form select { flex: 1 1 8rem; }
+.inline-form.stacked { flex-direction: column; }
+.inline-form.stacked input, .inline-form.stacked select { flex: none; }
+.settings-provider-form { display: flex; flex-direction: column; gap: 0.5rem; }
+.provider-form-error { color: var(--color-error); font-size: var(--text-body-sm); }
+
+.provider-list { list-style: none; display: flex; flex-direction: column; gap: 0.5rem; }
+.provider-row { display: flex; align-items: center; gap: 0.5rem; }
+.provider-name { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.provider-editor { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.625rem; border: 1px solid var(--color-outline-variant); border-radius: 0.5rem; margin-top: 0.375rem; }
+.provider-editor-actions { display: flex; gap: 0.5rem; }
+.provider-editor-check { display: inline-flex; align-items: center; gap: 0.375rem; font-size: var(--text-body-sm); }
+.provider-editor-wide { width: 100%; }
+
+.drawer-layer { position: fixed; inset: 0; z-index: 60; display: flex; justify-content: flex-end; }
+.drawer-backdrop { position: absolute; inset: 0; background: rgb(0 0 0 / 0.5); border: none; cursor: default; }
+.drawer { position: relative; width: min(34rem, 100vw); height: 100%; overflow-y: auto; background: var(--color-surface); border-left: 1px solid var(--color-outline-variant); padding: 1rem 1.25rem 2rem; display: flex; flex-direction: column; gap: 1rem; }
+.drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; }
+.eyebrow { font-size: var(--text-label-sm); text-transform: uppercase; letter-spacing: 0.1em; color: var(--color-on-surface-variant); }
+.drawer-section { border-top: 1px solid var(--color-surface-container-highest); padding-top: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.drawer-section-head { display: flex; align-items: center; gap: 0.375rem; }
+.drawer-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+
+.icon-button, .primary-button, .secondary-button { font-size: var(--text-label-md); padding: 0.25rem 0.625rem; border-radius: 0.25rem; border: 1px solid var(--color-outline-variant); background: transparent; color: var(--color-on-surface-variant); cursor: pointer; }
+.primary-button { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-on-primary); }
+.secondary-button { background: transparent; }
+.icon { padding: 0.25rem; border: none; background: transparent; color: var(--color-on-surface-variant); cursor: pointer; border-radius: 0.25rem; }
+.icon:hover { background: var(--color-surface-container-high); color: var(--color-on-surface); }
+.icon.danger { color: var(--color-error); }
+
+button:disabled { opacity: 0.5; cursor: not-allowed; }
