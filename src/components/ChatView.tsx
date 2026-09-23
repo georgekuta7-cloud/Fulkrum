@@ -3,7 +3,7 @@ import type { Bridge } from '../hooks/useBridge'
 
 export function ChatView({ bridge }: { bridge: Bridge }) {
   const [dagOpen, setDagOpen] = useState(false)
-  const [drawerTab, setDrawerTab] = useState<'diffs' | 'logs' | 'spend'>('diffs')
+  const [drawerTab, setDrawerTab] = useState<'diffs' | 'logs' | 'proof' | 'spend'>('diffs')
   const [prompt, setPrompt] = useState('')
   const [sending, setSending] = useState(false)
   const [showDeny, setShowDeny] = useState(false)
@@ -303,10 +303,11 @@ export function ChatView({ bridge }: { bridge: Bridge }) {
               </div>
             </div>
             <div className="flex items-center p-0.5 rounded-lg bg-surface-container-low text-label-lg">
-              {(['diffs', 'logs', 'spend'] as const).map((tab) => (
+              {(['diffs', 'logs', 'proof', 'spend'] as const).map((tab) => (
                 <button key={tab} className={`flex-1 py-1 text-center font-medium rounded-md transition-all flex items-center justify-center gap-1 ${drawerTab === tab ? 'bg-surface-container-highest text-on-surface shadow-sm' : 'text-secondary hover:text-on-surface'}`} onClick={() => setDrawerTab(tab)}>
-                  <span>{tab === 'spend' ? 'Spend' : tab === 'logs' ? 'Logs' : 'Diffs'}</span>
+                  <span>{tab === 'spend' ? 'Spend' : tab === 'logs' ? 'Logs' : tab === 'proof' ? 'Proof' : 'Diffs'}</span>
                   {tab === 'diffs' && artifacts?.length ? <span className="text-[10px] font-mono text-tertiary">{artifacts.length}</span> : null}
+                  {tab === 'proof' && bridge.claims.length ? <span className="text-[10px] font-mono text-tertiary">{bridge.claims.filter((c: any) => c.verdict === 'PASS').length}/{bridge.claims.length}</span> : null}
                 </button>
               ))}
             </div>
@@ -349,6 +350,32 @@ export function ChatView({ bridge }: { bridge: Bridge }) {
                   </div>
                 ))}
                 {(!toolCalls || toolCalls.length === 0) && <div className="text-on-surface-variant">No tool calls yet.</div>}
+              </div>
+            )}
+
+            {drawerTab === 'proof' && (
+              <div className="space-y-2 min-h-[120px]">
+                {bridge.claims.length === 0 ? (
+                  <p className="text-label-lg text-on-surface-variant p-2">No claims yet. Workers record what they assert; verification decides it.</p>
+                ) : (
+                  <>
+                    <p className="font-mono text-label-sm text-outline">
+                      {bridge.claims.filter((c: any) => c.verdict === 'PASS').length}/{bridge.claims.length} proven — the fraction of claims proven is the value of the run.
+                    </p>
+                    {bridge.claims.map((claim: any) => (
+                      <div key={claim.id} className="p-2 rounded-lg bg-surface-container-lowest flex flex-col gap-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-mono text-label-sm ${claim.verdict === 'PASS' ? 'text-secondary bg-secondary/10' : claim.verdict === 'FAIL' ? 'text-error bg-error/10' : 'text-outline bg-surface-container'}`}>
+                            {claim.verdict === 'PASS' ? '✓ proven' : claim.verdict === 'FAIL' ? '✕ refuted' : '? unproven'}
+                          </span>
+                          <span className="font-mono text-label-sm text-outline">{claim.kind}</span>
+                        </div>
+                        <p className="text-body-sm text-on-surface">{claim.summary}</p>
+                        {claim.path ? <p className="font-mono text-label-sm text-primary truncate">{claim.path}{claim.startLine ? `:${claim.startLine}` : ''}</p> : null}
+                      </div>
+                    ))}
+                  </>
+                )}
               </div>
             )}
 

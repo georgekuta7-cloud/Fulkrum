@@ -8,6 +8,7 @@ import { ChatFeed } from './ChatFeed'
 import { CastingLine } from './CastingLine'
 import { TimelinePanel } from './TimelinePanel'
 import { ActivityPanel } from './ActivityPanel'
+import { ControlRoomView } from './ControlRoomView'
 import { MarketplacePanel } from './MarketplacePanel'
 import { ArsenalPanel } from './ArsenalPanel'
 import { AutomationsPanel } from './AutomationsPanel'
@@ -298,6 +299,60 @@ describe('the activity panel', () => {
     expect(screen.getByText('350 event(s)')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /Show 50 earlier/ }))
     expect(screen.queryByRole('button', { name: /Show .* earlier/ })).not.toBeInTheDocument()
+  })
+})
+
+describe('the control room', () => {
+  const runBridge = (overrides: Partial<Bridge> = {}) => makeBridge({
+    run: { id: 'run-1', status: 'executing', budgetUsd: 10 } as any,
+    runId: 'run-1',
+    plan: {
+      plan: { id: 'plan-1', version: 1, objective: 'Ship it.', contentHash: 'hash123', status: 'approved', source: 'model' },
+      tasks: [
+        { id: 'pt1', orderIndex: 0, role: 'research', title: 'Look', instructions: 'Look around.', dependsOn: [] },
+        { id: 'pt2', orderIndex: 1, role: 'builder', title: 'Write', instructions: 'Write it.', dependsOn: [0] },
+      ],
+    } as any,
+    tasks: [
+      { id: 't1', agentId: 'research', title: 'Look', status: 'completed', planTaskId: 'pt1', result: 'Found it.' } as any,
+      { id: 't2', agentId: 'builder', title: 'Write', status: 'running', planTaskId: 'pt2', stepCount: 3 } as any,
+    ],
+    toolCalls: [] as any,
+    byTask: [{ taskId: 't1', title: 'Look', agentId: 'research', costUsd: 0.04, calls: 2, unpricedCalls: 0 }],
+    claims: [
+      { id: 'c1', runId: 'run-1', taskId: 't1', kind: 'finding', summary: 'The flow completes.', path: 'README.md', startLine: 1, endLine: null, sha256: null, evidenceId: 'ev-1', verdict: 'PASS', createdAt: 1 },
+      { id: 'c2', runId: 'run-1', taskId: 't1', kind: 'test', summary: 'npm test', path: null, startLine: null, endLine: null, sha256: null, evidenceId: null, verdict: null, createdAt: 2 },
+    ] as any,
+    projectSettings: { routing: { research: 'Grok' } },
+    providers: [{ id: 'grok', label: 'Grok', model: 'grok-4' }] as any,
+    approval: null,
+    spend: { costUsd: 0.04, calls: 2, unpricedCalls: 0 },
+    ...overrides,
+  })
+
+  it('shows the dispatch, the live worker, and the proven fraction', () => {
+    render(<ControlRoomView bridge={runBridge()} onOpenChat={vi.fn()} />)
+    expect(screen.getByText('You')).toBeInTheDocument()
+    expect(screen.getByText('Head AI')).toBeInTheDocument()
+    // The DAG node and the live-worker card both say Forge; both must exist.
+    expect(screen.getAllByText('Forge').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByText(/1 of 2 claims proven — the fraction of claims proven is the value of the run/)).toBeInTheDocument()
+    // The Scout node's cast line resolves the route through the provider list.
+    expect(screen.getByText('Grok · grok-4')).toBeInTheDocument()
+  })
+
+  it('surfaces a waiting decision as a banner that leads to the chat', () => {
+    const onOpenChat = vi.fn()
+    render(<ControlRoomView bridge={runBridge({
+      approval: { toolCall: { id: 'c1', runId: 'run-1', agentId: 'builder', name: 'shell.exec', kind: 'exec', status: 'approval_required', input: {}, resolved: null, fingerprint: null, ruleId: null, warnings: [], approvalScope: null, error: null, createdAt: 1 } as any, rule: null, warnings: [], preview: null },
+    })} onOpenChat={onOpenChat} />)
+    fireEvent.click(screen.getByRole('button', { name: /open chat/ }))
+    expect(onOpenChat).toHaveBeenCalled()
+  })
+
+  it('says plainly when no run is open', () => {
+    render(<ControlRoomView bridge={runBridge({ run: null, runId: null })} onOpenChat={vi.fn()} />)
+    expect(screen.getByText('No run open')).toBeInTheDocument()
   })
 })
 

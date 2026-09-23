@@ -5,6 +5,7 @@ import { Sidebar, type NavView } from './components/SideNav'
 import { ChatView } from './components/ChatView'
 import { EcosystemView } from './components/EcosystemView'
 import { AutomationsPanel } from './components/AutomationsPanel'
+import { ControlRoomView } from './components/ControlRoomView'
 import { SettingsView } from './components/SettingsView'
 import { SettingsPanel } from './components/SettingsPanel'
 import { ErrorBoundary } from './ErrorBoundary'
@@ -97,6 +98,8 @@ export default function App() {
                 </div>
               </div>
             </div>
+          ) : view === 'control' ? (
+            <ControlRoomView bridge={bridge} onOpenChat={() => setView('chat')} />
           ) : view === 'artifacts' ? (
             <EcosystemView bridge={bridge} />
           ) : view === 'automations' ? (

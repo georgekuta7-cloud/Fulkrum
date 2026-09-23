@@ -1,10 +1,11 @@
-export type NavView = 'chat' | 'artifacts' | 'automations' | 'settings'
+export type NavView = 'chat' | 'control' | 'artifacts' | 'automations' | 'settings'
 
 export function Sidebar({ view, onViewChange }: { view: NavView; onViewChange: (v: NavView) => void }) {
   // Only destinations that render something. Approvals live inside the chat
   // (and ring the tab title) — a nav item that shows the chat view is a lie.
   const links: Array<{ path: NavView; icon: string; title: string }> = [
     { path: 'chat', icon: 'chat_bubble', title: 'Chat' },
+    { path: 'control', icon: 'account_tree', title: 'Control Room' },
     { path: 'artifacts', icon: 'deployed_code', title: 'Artifacts' },
     { path: 'automations', icon: 'history', title: 'Automations' },
     { path: 'settings', icon: 'tune', title: 'Settings' },
