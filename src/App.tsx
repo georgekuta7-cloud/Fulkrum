@@ -1,170 +1,112 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { TriangleAlert, X } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
 import { useBridge } from './hooks/useBridge'
-import { CockpitBar } from './components/CockpitBar'
-import type { CenterView, InspectorTab } from './lib/constants'
-import { NavRail, Sidebar } from './components/NavRail'
-import { MissionPanel } from './components/MissionPanel'
-import { WorkSurface } from './components/WorkSurface'
-import { EvidencePanel } from './components/EvidencePanel'
-import { CommandBar } from './components/CommandBar'
-import { MarketplacePanel } from './components/MarketplacePanel'
-import { ArsenalPanel } from './components/ArsenalPanel'
-import { AutomationsPanel } from './components/AutomationsPanel'
+import { Header } from './components/Header'
+import { Sidebar, type NavView } from './components/SideNav'
+import { ChatView } from './components/ChatView'
+import { EcosystemView } from './components/EcosystemView'
 import { SettingsPanel } from './components/SettingsPanel'
 import { ErrorBoundary } from './ErrorBoundary'
-import { buildGraph } from './lib/runGraph'
 import './app.css'
 
 export default function App() {
   const bridge = useBridge()
-  const [view, setView] = useState<CenterView>('graph')
-  const [inspector, setInspector] = useState<InspectorTab | null>(null)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [view, setView] = useState<NavView>('chat')
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [projectName, setProjectName] = useState('')
   const [theme, setTheme] = useState<'dark' | 'light'>(() => (localStorage.getItem('fulkrum.theme') === 'light' ? 'light' : 'dark'))
-  const [dismissedCallId, setDismissedCallId] = useState<string | null>(null)
+  const [projectName, setProjectName] = useState('')
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme
+    document.documentElement.className = theme
     localStorage.setItem('fulkrum.theme', theme)
   }, [theme])
 
-  const graph = useMemo(() => buildGraph({
-    run: bridge.run,
-    plan: bridge.plan,
-    tasks: bridge.tasks,
-    toolCalls: bridge.toolCalls,
-    byTask: bridge.byTask,
-    routing: ((bridge.projectSettings ?? {}) as any).routing ?? {},
-    providers: bridge.providers,
-  }), [bridge.run, bridge.plan, bridge.tasks, bridge.toolCalls, bridge.byTask, bridge.projectSettings, bridge.providers])
-
-  const approvalNode = bridge.approval
-    ? graph.nodes.find((node) => node.agentId === bridge.approval?.toolCall.agentId) ?? null
-    : null
-  const explicit = graph.nodes.find((node) => node.id === selectedId) ?? null
-  const selected = explicit ?? (approvalNode && bridge.approval?.toolCall.id !== dismissedCallId ? approvalNode : null)
-
-  const closeSheet = useCallback(() => {
-    if (selected && approvalNode && selected.id === approvalNode.id && bridge.approval) setDismissedCallId(bridge.approval.toolCall.id)
-    setSelectedId(null)
-  }, [selected, approvalNode, bridge.approval])
-
-  // Keyboard: Esc unwinds, Ctrl+1-4 opens inspector
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
-      const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(target?.tagName ?? '')
       if (event.key === 'Escape') {
         if (settingsOpen) setSettingsOpen(false)
-        else if (inspector) setInspector(null)
-        else closeSheet()
-        return
       }
-      if (typing || !(event.ctrlKey || event.metaKey)) return
-      const tabs: InspectorTab[] = ['plan', 'activity', 'artifacts', 'files']
-      const tab = tabs[Number(event.key) - 1]
-      if (tab) { event.preventDefault(); setInspector(tab) }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [settingsOpen, inspector, closeSheet])
+  }, [settingsOpen])
 
-  // Notification on approval
   useEffect(() => {
-    if (!bridge.approval) { document.title = 'fulkrum'; return }
-    document.title = '● approval needed — fulkrum'
-    if (document.hidden && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-      new Notification('Fulkrum needs a decision', { body: `${bridge.approval.toolCall.name} is waiting for approval.` })
-    }
+    if (!bridge.approval) { document.title = 'Fulkrum'; return }
+    document.title = '● approval needed — Fulkrum'
   }, [bridge.approval])
 
-  // Auto-dismiss notices
   useEffect(() => {
     if (!bridge.notice) return
     const timer = setTimeout(() => bridge.setNotice(null), 6000)
     return () => clearTimeout(timer)
   }, [bridge.notice, bridge])
 
-  const noProvider = bridge.providers.length > 0 && !bridge.providers.some((p: any) => p.configured)
-  const setupNeeded = noProvider || bridge.status?.execution.available === false
+  const handleSettings = useCallback(() => setSettingsOpen(true), [])
 
   return (
     <ErrorBoundary>
-      <div className="app">
-        <CockpitBar bridge={bridge} theme={theme} onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onOpenSettings={() => setSettingsOpen(true)} />
+      <Header bridge={bridge} onOpenSettings={handleSettings} />
+      <Sidebar view={view} onViewChange={setView} />
 
-        {setupNeeded && (
-          <div className="setup-card">
-            <TriangleAlert size={15} style={{ color: 'var(--warn)' }} />
-            <div style={{ flex: 1 }}>
-              <strong style={{ fontFamily: 'var(--font-sans)' }}>Two steps before this can do anything</strong>
-              <ul style={{ marginLeft: 'var(--sp-4)', fontSize: 'var(--text-sm)', color: 'var(--muted)' }}>
-                {noProvider && <li>No provider has a key yet: add one in Workspace settings.</li>}
-                {bridge.status?.execution.available === false && <li>No container engine is reachable. Start Docker Desktop or Podman.</li>}
-              </ul>
-            </div>
-            <button className="btn btn-primary" onClick={() => setSettingsOpen(true)}>Open settings</button>
+      <main className="m3-main">
+        {!bridge.booted ? (
+          <div className="m3-empty">
+            <div className="m3-empty-icon">◈</div>
+            <div className="m3-empty-title">Loading…</div>
           </div>
-        )}
-
-        {bridge.booted && bridge.projects.length === 0 ? (
-          <div className="app-body no-rail">
-            <div />
-            <main className="work-surface" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              {view === 'marketplace' ? <MarketplacePanel bridge={bridge} /> : view === 'arsenal' ? <ArsenalPanel bridge={bridge} /> : view === 'automations' ? <AutomationsPanel bridge={bridge} /> : (
-                <div className="empty-state">
-                  <div className="empty-icon">◈</div>
-                  <div className="empty-text">Start your first project</div>
-                  <div className="empty-sub" style={{ marginBottom: 'var(--sp-4)' }}>Runs, plans, and approvals live inside a project.</div>
-                  <input className="input" autoFocus value={projectName} placeholder="Project name (at least 2 characters)" onChange={(e) => setProjectName(e.target.value)} style={{ marginBottom: 'var(--sp-3)', maxWidth: 300 }} />
-                  <button className="btn btn-primary" disabled={projectName.trim().length < 2} onClick={() => { void bridge.createProject(projectName.trim()); setProjectName('') }}>Create project</button>
-                </div>
-              )}
-            </main>
+        ) : bridge.projects.length === 0 ? (
+          <div className="m3-empty">
+            <div className="m3-empty-icon">◈</div>
+            <div className="m3-empty-title">Start your first project</div>
+            <div className="m3-empty-sub">Runs, plans, and approvals live inside a project.</div>
+            <input className="m3-input" autoFocus value={projectName} placeholder="Project name" onChange={(e) => setProjectName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && projectName.trim().length >= 2) { void bridge.createProject(projectName.trim()); setProjectName('') } }} />
+            <button className="m3-btn-primary" disabled={projectName.trim().length < 2} onClick={() => { void bridge.createProject(projectName.trim()); setProjectName('') }}>Create project</button>
           </div>
-        ) : (
-          <div className={`app-body ${sidebarOpen ? 'has-sidebar' : 'no-sidebar'}`}>
-            <NavRail view={view} onViewChange={setView} onOpenSettings={() => setSettingsOpen(true)} sidebarOpen={sidebarOpen} onToggleSidebar={() => setSidebarOpen(!sidebarOpen)} />
-            {sidebarOpen && <Sidebar bridge={bridge} />}
-
-            {/* Workbench layout for run views */}
-            {view === 'graph' || view === 'chat' ? (
-              <>
-                <MissionPanel bridge={bridge} />
-                <WorkSurface bridge={bridge} />
-                <EvidencePanel bridge={bridge} />
-              </>
-            ) : (
-              <main style={{ overflow: 'auto' }}>
-                {view === 'marketplace' ? <MarketplacePanel bridge={bridge} /> : view === 'arsenal' ? <ArsenalPanel bridge={bridge} /> : <AutomationsPanel bridge={bridge} />}
-              </main>
+        ) : !bridge.runId ? (
+          <div className="m3-empty">
+            <div className="m3-empty-icon">◈</div>
+            <div className="m3-empty-title">{bridge.projects.find((p: any) => p.id === bridge.projectId)?.name ?? 'Project'}</div>
+            <div className="m3-empty-sub">{bridge.runs.length} run(s) in this project.</div>
+            {bridge.runs.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16, width: '100%', maxWidth: 400 }}>
+                {bridge.runs.map((r: any) => (
+                  <button key={r.id} className="m3-btn-card" style={{ justifyContent: 'space-between', width: '100%' }} onClick={() => void bridge.openRun(r.id)} type="button">
+                    <span>{r.id.slice(0, 12)}</span>
+                    <span style={{ color: r.status === 'completed' ? 'var(--tertiary)' : r.status === 'failed' ? 'var(--error)' : 'var(--on-surface-variant)' }}>{r.status}</span>
+                  </button>
+                ))}
+              </div>
             )}
           </div>
+        ) : view === 'artifacts' ? (
+          <EcosystemView bridge={bridge} />
+        ) : (
+          <ChatView bridge={bridge} />
         )}
+      </main>
 
-        <CommandBar bridge={bridge} />
+      {settingsOpen && (
+        <SettingsPanel bridge={bridge} theme={theme} setTheme={setTheme} onClose={() => setSettingsOpen(false)} />
+      )}
 
-        {settingsOpen && <SettingsPanel bridge={bridge} theme={theme} setTheme={setTheme} onClose={() => setSettingsOpen(false)} />}
-
-        <div className="toasts">
-          {bridge.error && (
-            <div className="toast bad" role="alert">
-              <TriangleAlert size={14} />
-              <span>{bridge.error}</span>
-              <button onClick={() => bridge.setError(null)} aria-label="Dismiss error"><X size={12} /></button>
-            </div>
-          )}
-          {bridge.notice && (
-            <div className="toast">
-              <span>{bridge.notice}</span>
-              <button onClick={() => bridge.setNotice(null)} aria-label="Dismiss notice"><X size={12} /></button>
-            </div>
-          )}
-        </div>
+      <div className="m3-toasts">
+        {bridge.error && (
+          <div className="m3-toast error" role="alert">
+            <span className="material-symbols-outlined" style={{ fontSize: 18, color: 'var(--error)' }}>error</span>
+            <span>{bridge.error}</span>
+            <button onClick={() => bridge.setError(null)} aria-label="Dismiss error" type="button">
+              <span className="material-symbols-outlined" style={{ fontSize: 16 }}>close</span>
+            </button>
+          </div>
+        )}
+        {bridge.notice && (
+          <div className="m3-toast">
+            <span>{bridge.notice}</span>
+            <button onClick={() => bridge.setNotice(null)} aria-label="Dismiss notice" type="button">
+              <span className="material-symbols-outlined" style={{ fontSize: 16 }}>close</span>
+            </button>
+          </div>
+        )}
       </div>
     </ErrorBoundary>
   )
