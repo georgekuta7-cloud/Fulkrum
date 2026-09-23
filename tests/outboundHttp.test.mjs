@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import test from 'node:test'
-import { pinnedLookup, pinnedRequest } from '../server/outboundHttp.mjs'
+import { pinnedLookup, pinnedRequest, pinnedStream } from '../server/outboundHttp.mjs'
 
 /** A real server on loopback, so the transport under test is the real one. */
 async function withServer(handler, callback) {
@@ -79,8 +79,7 @@ test('the socket can only go to an address that was validated', async () => {
   await assert.rejects(() => lookupOnce(pinnedLookup([]), 'rebind.example', { all: false }), /No validated address/)
 })
 
-test('the pinned address is the one actually connected to', async () => {
-  // A name that resolves to nothing usable must still connect, because the only
+test('the pinned address is the one actually connected to', async () => {  // A name that resolves to nothing usable must still connect, because the only
   // answer the resolver is allowed to give is the validated address.
   await withServer((request, response) => {
     response.writeHead(200)
@@ -93,5 +92,30 @@ test('the pinned address is the one actually connected to', async () => {
     // The name cannot be resolved at all, so validation refuses it first — which
     // is the correct order: nothing is dialed for a name that fails the check.
     assert.match(String(result.error), /resolve|getaddrinfo|ENOTFOUND|EAI_AGAIN/i)
+  })
+})
+
+test('request bodies declare their length instead of chunking', async () => {
+  // Strict front doors reject Transfer-Encoding: chunked on POSTs. A body
+  // whose length is known must say so; both the buffered and the streaming
+  // paths send bodies, so both are pinned here.
+  const seen = []
+  await withServer((request, response) => {
+    let body = ''
+    request.on('data', (chunk) => { body += chunk })
+    request.on('end', () => {
+      seen.push({ contentLength: request.headers['content-length'], transferEncoding: request.headers['transfer-encoding'], body })
+      response.writeHead(200, { 'content-type': 'text/event-stream' })
+      response.end('data: {}\n\n')
+    })
+  }, async ({ baseUrl }) => {
+    await pinnedRequest(`${baseUrl}/rpc`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"a":1}', allowPrivate: true })
+    const stream = await pinnedStream(`${baseUrl}/stream`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"b":2}', allowPrivate: true })
+    for await (const _chunk of stream) { /* drain */ }
+    assert.equal(seen.length, 2)
+    for (const record of seen) {
+      assert.equal(record.contentLength, String(Buffer.byteLength(record.body)), 'the declared length must be exact')
+      assert.equal(record.transferEncoding, undefined, 'no chunked encoding when the length is known')
+    }
   })
 })

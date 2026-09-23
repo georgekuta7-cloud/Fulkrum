@@ -282,6 +282,13 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       sendJson(response, 404, { error: 'Run not found.' })
       return
     }
+    // A run in a terminal state will never proceed: recording a message into
+    // it and failing downstream is chatting into a corpse. Refuse before
+    // anything is written, and say what to do instead.
+    if (['failed', 'cancelled', 'completed'].includes(run.status)) {
+      sendJson(response, 409, { error: `This run is ${run.status} and cannot continue. Start a new run to keep working.` })
+      return
+    }
 
     let provider
     let model

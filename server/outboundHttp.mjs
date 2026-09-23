@@ -42,7 +42,7 @@ export async function pinnedStream(rawUrl, options = {}) {
       url,
       {
         method,
-        headers,
+        headers: withBodyLength(headers, body),
         lookup: pinnedLookup(addresses),
         ...(net.isIP(url.hostname) ? {} : { servername: url.hostname }),
         signal: abort,
@@ -131,6 +131,18 @@ export async function pinnedStream(rawUrl, options = {}) {
 const defaultMaxBytes = () => Math.min(Math.max(Number(process.env.FULKRUM_MAX_HTTP_BODY_BYTES ?? 1_000_000), 1_024), 50_000_000)
 const defaultTimeoutMs = () => Math.min(Math.max(Number(process.env.FULKRUM_HTTP_TIMEOUT_MS ?? 30_000), 1_000), 120_000)
 
+/**
+ * A body whose length is known must say so: strict front doors reject
+ * Transfer-Encoding: chunked on POSTs, and Node chunks whenever no length is
+ * set. A caller-declared length always wins.
+ */
+function withBodyLength(headers, body) {
+  if (typeof body !== 'string' || !body.length) return headers
+  const names = Object.keys(headers ?? {})
+  if (names.some((name) => name.toLowerCase() === 'content-length')) return headers
+  return { ...(headers ?? {}), 'Content-Length': Buffer.byteLength(body) }
+}
+
 /** A `net` lookup that can only return addresses this process already validated. */
 export function pinnedLookup(addresses) {
   const list = addresses.map((address) => ({ address, family: net.isIPv6(address) ? 6 : 4 }))
@@ -184,7 +196,7 @@ export async function pinnedRequest(rawUrl, options = {}) {
       url,
       {
         method,
-        headers,
+        headers: withBodyLength(headers, body),
         lookup: pinnedLookup(addresses),
         // SNI keeps the name the user asked for, so the certificate is still
         // checked against it even though the socket goes to a pinned address.

@@ -65,8 +65,25 @@ test('the body cap counts bytes, not characters', async () => {
   })
 })
 
-test('a live chat reply reaches the client, and is priced', async () => {
-  const previousKey = process.env.XAI_API_KEY
+test('chat into a terminal run is refused before anything is recorded', async () => {
+  // Proved live: a message sent to a failed run was recorded as message.user
+  // and then failed downstream, so the user "chatted" into a corpse. A run in
+  // a terminal state will never proceed, so the request must die here with
+  // directions, not half-execute.
+  await withServer(async ({ request, store }) => {
+    const { projectId, runId } = await makeRun(request)
+    for (const status of ['failed', 'cancelled', 'completed']) {
+      store.updateRun(runId, { status })
+      const eventsBefore = store.listEvents(runId).length
+      const response = await request('POST', '/api/chat', { projectId, runId, message: 'hello?', history: [] })
+      assert.equal(response.status, 409, `chat into a ${status} run must refuse, got ${response.status}`)
+      assert.match(String(response.payload.error), /new run/i, 'the refusal must say what to do instead')
+      assert.equal(store.listEvents(runId).length, eventsBefore, `nothing may be recorded into a ${status} run`)
+    }
+  })
+})
+
+test('a live chat reply reaches the client, and is priced', async () => {  const previousKey = process.env.XAI_API_KEY
   process.env.XAI_API_KEY = 'sk-test-key-for-chat-reply'
   try {
     await withServer(async ({ request, store }) => {
