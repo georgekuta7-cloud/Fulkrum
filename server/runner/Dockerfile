@@ -8,7 +8,7 @@
 # The base is pinned by manifest digest, not by tag: a tag can be moved, and this
 # image is part of the boundary. To update it deliberately, read the current digest
 # with `docker buildx imagetools inspect node:24-bookworm-slim` and replace it here.
-FROM node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
+FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370
 
 # git and a shell are the only real tools: enough to inspect and build a
 # repository offline. Network clients are deliberately absent, so an enabled
