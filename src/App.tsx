@@ -51,11 +51,12 @@ export default function App() {
         <Nav view={view} onViewChange={setView} approvalWaiting={bridge.approval !== null} />
 
         <main id="main" tabIndex={-1} className="pl-16 pt-14 flex-1 focus:outline-none">
+          <div key={view} className="view-enter">
           {!bridge.booted ? (
             <div className="flex items-center justify-center h-full" role="status">
               <div className="text-center space-y-4">
                 <span className="material-symbols-outlined text-6xl text-primary" aria-hidden="true">hub</span>
-                <p className="text-body-md text-on-surface-variant">Loading&</p>
+                <p className="text-body-md text-on-surface-variant">Loading…</p>
               </div>
             </div>
           ) : view === 'settings' ? (
@@ -114,18 +115,19 @@ export default function App() {
           ) : (
             <ChatView bridge={bridge} />
           )}
+          </div>
         </main>
 
         <div className="fixed bottom-4 right-4 z-50 space-y-2" aria-live="polite">
           {bridge.error ? (
-            <div className="flex items-center gap-3 px-4 py-3 bg-surface-container-high border border-error/30 rounded-xl shadow-2xl max-w-sm" role="alert">
+            <div className="flex items-center gap-3 px-4 py-3 bg-surface-container-high border border-error/30 rounded-xl shadow-float max-w-sm" role="alert">
               <span className="material-symbols-outlined text-error" aria-hidden="true">error</span>
               <span className="text-body-sm flex-1">{bridge.error}</span>
               <button type="button" onClick={() => bridge.setError(null)} aria-label="Dismiss error" className="text-on-surface-variant hover:text-on-surface"><span className="material-symbols-outlined text-base" aria-hidden="true">close</span></button>
             </div>
           ) : null}
           {bridge.notice ? (
-            <div className="flex items-center gap-3 px-4 py-3 bg-surface-container-high border border-outline-variant/30 rounded-xl shadow-2xl max-w-sm">
+            <div className="flex items-center gap-3 px-4 py-3 bg-surface-container-high border border-outline-variant/30 rounded-xl shadow-float max-w-sm">
               <span className="text-body-sm flex-1">{bridge.notice}</span>
               <button type="button" onClick={() => bridge.setNotice(null)} aria-label="Dismiss notice" className="text-on-surface-variant hover:text-on-surface"><span className="material-symbols-outlined text-base" aria-hidden="true">close</span></button>
             </div>

@@ -16,7 +16,7 @@
  * the mockups carry) are the defaults; .dark overrides them below.
  */
 @theme {
-  /* Type scale â€” sizes, line-heights, tracking, and weights per the mockups. */
+  /* Type scale — sizes, line-heights, tracking, and weights per the mockups. */
   --text-label-sm: 0.6875rem;
   --text-label-sm--line-height: 0.875rem;
   --text-label-sm--letter-spacing: 0.04em;
@@ -43,7 +43,7 @@
   --text-headline-lg--letter-spacing: -0.02em;
   --text-headline-lg--font-weight: 600;
 
-  /* Color â€” light (default), built from the mockups' fixed palette. */
+  /* Color — light (default), built from the mockups' fixed palette. */
   --color-primary: #005ac2;
   --color-on-primary: #ffffff;
   --color-primary-container: #d8e2ff;
@@ -80,7 +80,7 @@
   --font-mono: 'JetBrains Mono', Consolas, monospace;
 }
 
-/* Color â€” dark: the mockups' own values, one block. */
+/* Color — dark: the mockups' own values, one block. */
 .dark {
   --color-primary: #adc6ff;
   --color-on-primary: #002e6a;
@@ -88,11 +88,11 @@
   --color-on-primary-container: #00285d;
   --color-secondary: #4edea3;
   --color-on-secondary: #003824;
-  --color-secondary-container: #00a572;
+  --color-secondary-container: #0ab581;
   --color-on-secondary-container: #00311f;
   --color-tertiary: #c0c1ff;
   --color-on-tertiary: #1000a9;
-  --color-tertiary-container: #8083ff;
+  --color-tertiary-container: #8d90ff;
   --color-on-tertiary-container: #0d0096;
   --color-error: #ffb4ab;
   --color-on-error: #690005;
@@ -128,7 +128,7 @@ body {
 }
 ::selection { background: var(--color-primary-container); color: var(--color-on-primary-container); }
 
-/* Scrollbars: thin and themed, not invisible â€” a hidden scrollbar makes a
+/* Scrollbars: thin and themed, not invisible — a hidden scrollbar makes a
  * clipped list look broken instead of scrollable. */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -184,46 +184,27 @@ body {
   }
 }
 
-/* Rebuild foundations: keyboard users, screen readers, and reduced motion
- * are load-bearing from the first screen, not a polish pass later. */
-:focus-visible {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 2px;
+/* One shared elevation for floating overlays (toasts, menus, prompt bar):
+ * a single layered neutral shadow, not the blunt default scale. Cards keep
+ * shadow-sm; overlays share this and nothing else. */
+@theme inline {
+  --shadow-float: 0px 0px 0px 1px rgba(0, 0, 0, 0.06), 0px 1px 1px -0.5px rgba(0, 0, 0, 0.06), 0px 3px 3px -1.5px rgba(0, 0, 0, 0.06), 0px 6px 6px -3px rgba(0, 0, 0, 0.06), 0px 12px 12px -6px rgba(0, 0, 0, 0.06), 0px 24px 24px -12px rgba(0, 0, 0, 0.06);
 }
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-.skip-link {
-  position: fixed;
-  top: -100px;
-  left: 12px;
-  z-index: 100;
-  padding: 8px 14px;
-  border-radius: 8px;
-  background: var(--color-primary);
-  color: var(--color-on-primary);
-  font-size: var(--text-label-md);
-  transition: top 0.15s ease;
-}
-.skip-link:focus {
-  top: 12px;
-}
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+/* View changes fade in once, 200ms, ease-out. Orientation, not decoration:
+ * it tells the eye something replaced something. The global reduced-motion
+ * rule above stills it for those who ask. */
+@keyframes view-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
   }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.view-enter {
+  animation: view-enter 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* Crash panel */

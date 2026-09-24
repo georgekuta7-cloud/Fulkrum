@@ -65,7 +65,7 @@ export function Header({ bridge, theme, onToggleTheme, onOpenSettings }: {
               <span className="material-symbols-outlined text-sm text-outline" aria-hidden="true">expand_more</span>
             </button>
             {menuOpen ? (
-              <div role="menu" className="absolute left-0 top-full mt-1.5 w-64 bg-surface-container-high rounded-lg p-1.5 shadow-2xl z-50">
+              <div role="menu" className="absolute left-0 top-full mt-1.5 w-64 bg-surface-container-high rounded-lg p-1.5 shadow-float z-50">
                 {bridge.projects.map((p: any) => (
                   <button
                     key={p.id}

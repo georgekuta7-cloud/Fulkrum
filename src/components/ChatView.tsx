@@ -314,7 +314,7 @@ export function ChatView({ bridge }: { bridge: Bridge }) {
 
       <div className="fixed bottom-4 left-16 right-0 z-30 pointer-events-none">
         <div className="max-w-4xl mx-auto px-4 pointer-events-auto">
-          <div className="bg-surface-container/95 backdrop-blur-xl rounded-2xl shadow-2xl p-2.5">
+          <div className="bg-surface-container/95 backdrop-blur-xl rounded-2xl shadow-float p-2.5">
             <label className="visually-hidden" htmlFor="chat-prompt">Direct the Head AI</label>
             <div className="flex items-end gap-2 px-2 pb-1">
               <textarea
