@@ -39,7 +39,7 @@ function WorkerStrip({ bridge }: { bridge: Bridge }) {
                 {waiting ? 'waiting' : running ? 'working' : 'idle'}
               </span>
             </div>
-            <p className="text-body-sm text-on-surface-variant truncate">{running?.title ?? (waiting ? 'parked on approval' : 'no active task')}</p>
+            <p className="text-body-sm text-on-surface-variant truncate" title={running?.title ?? undefined}>{running?.title ?? (waiting ? 'parked on approval' : 'no active task')}</p>
             <p className="font-mono text-label-sm text-outline truncate">{resolveRouteDisplay(routing, bridge.providers, role) ?? 'not cast'}{cost > 0 ? ` · $${cost.toFixed(4)}` : ''}</p>
           </div>
         )
@@ -95,7 +95,7 @@ function ApprovalCard({ bridge }: { bridge: Bridge }) {
             <input
               id="approval-answer"
               className="flex-1 px-3 py-1.5 bg-surface-container rounded-lg text-body-md text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary"
-              placeholder="Answer…"
+              placeholder="Answer&"
               value={answer}
               onChange={(e) => setAnswer(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && answer.trim()) { void bridge.answerCall(answer.trim()); setAnswer('') } }}
@@ -120,7 +120,10 @@ function ApprovalCard({ bridge }: { bridge: Bridge }) {
                 placeholder="Why not? The worker reads this."
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') { void bridge.denyCall(reason || 'Denied.'); setReason(''); setShowDeny(false) } }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { void bridge.denyCall(reason || 'Denied.'); setReason(''); setShowDeny(false) }
+                  else if (e.key === 'Escape') { setReason(''); setShowDeny(false) }
+                }}
               />
               <Button variant="danger" onClick={() => { void bridge.denyCall(reason || 'Denied.'); setReason(''); setShowDeny(false) }}>Send</Button>
               <Button onClick={() => setShowDeny(false)}>Cancel</Button>
@@ -287,8 +290,8 @@ export function ChatView({ bridge }: { bridge: Bridge }) {
                 const state = live?.status ?? 'queued'
                 return (
                   <li key={task.id ?? i} className={`flex items-center gap-2.5 text-label-md ${state === 'completed' ? 'text-on-surface-variant' : 'text-on-surface'}`}>
-                    <span className={`w-3.5 h-3.5 rounded-full flex items-center justify-center flex-shrink-0 ${state === 'completed' ? 'bg-tertiary' : state === 'running' ? 'bg-primary/20' : 'bg-surface-container-highest'}`} aria-hidden="true">
-                      {state === 'completed' ? <span className="material-symbols-outlined text-[10px] text-on-primary">check</span> : state === 'running' ? <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" /> : <span className="font-mono text-[9px] text-on-surface-variant">{i + 1}</span>}
+                    <span className={`w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 ${state === 'completed' ? 'bg-tertiary' : state === 'running' ? 'bg-primary/20' : 'bg-surface-container-highest'}`} aria-hidden="true">
+                      {state === 'completed' ? <span className="material-symbols-outlined text-[10px] text-on-primary">check</span> : state === 'running' ? <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" /> : <span className="font-mono text-label-sm text-on-surface-variant">{i + 1}</span>}
                     </span>
                     <span className={state === 'completed' ? 'line-through' : undefined}>{task.title}</span>
                   </li>
@@ -318,7 +321,7 @@ export function ChatView({ bridge }: { bridge: Bridge }) {
                 id="chat-prompt"
                 className="w-full bg-transparent text-body-md text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none resize-none max-h-32 py-1 leading-relaxed"
                 rows={1}
-                placeholder={runFailed ? 'Start a new run above to continue…' : 'Direct the Head AI, or describe what to build…'}
+                placeholder={runFailed ? 'Start a new run above to continue&' : 'Direct the Head AI, or describe what to build&'}
                 value={prompt}
                 disabled={!!runFailed}
                 onChange={(e) => setPrompt(e.target.value)}

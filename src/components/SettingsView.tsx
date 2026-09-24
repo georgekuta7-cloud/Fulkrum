@@ -168,13 +168,12 @@ export function SettingsView({ bridge }: { bridge: Bridge }) {
 
   return (
     <div className="w-full max-w-7xl mx-auto px-4 py-4 flex flex-col gap-4">
-      <div className="w-full bg-surface-container-low p-1.5 rounded-xl flex items-center gap-1 overflow-x-auto" role="tablist" aria-label="Settings sections">
+      <div className="w-full bg-surface-container-low p-1.5 rounded-xl flex items-center gap-1 overflow-x-auto" role="group" aria-label="Settings sections">
         {TABS.map((entry) => (
           <button
             key={entry.id}
             type="button"
-            role="tab"
-            aria-selected={tab === entry.id}
+            aria-pressed={tab === entry.id}
             className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-body-md whitespace-nowrap transition-all ${tab === entry.id ? 'bg-surface-container-high text-primary shadow-sm' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container'}`}
             onClick={() => setTab(entry.id)}
           >
@@ -209,7 +208,7 @@ export function SettingsView({ bridge }: { bridge: Bridge }) {
                 <ProviderCard key={provider.id} bridge={bridge} provider={provider} probe={probes[provider.id] ?? null} onProbed={(line) => setProbes((c) => ({ ...c, [provider.id]: line }))} />
               ))}
               <Panel title="Register custom provider">
-                <p className="text-body-sm text-on-surface-variant">Any OpenAI-compatible endpoint: vLLM, Ollama, OpenRouter, LM Studio…</p>
+                <p className="text-body-sm text-on-surface-variant">Any OpenAI-compatible endpoint: vLLM, Ollama, OpenRouter, LM Studio&</p>
                 <form
                   className="grid grid-cols-1 md:grid-cols-2 gap-2"
                   onSubmit={async (e) => {
@@ -405,7 +404,7 @@ export function SettingsView({ bridge }: { bridge: Bridge }) {
                 {bridge.status?.lastVerify ? <p className="text-label-sm text-outline">{bridge.status.lastVerify.summary}</p> : null}
               </Panel>
               <Panel title="All tunables" action={<span className="text-label-md text-outline">everything else, no terminal needed</span>}>
-                {bridge.appSettings.length === 0 ? <p className="text-body-sm text-outline">Loading settings…</p> : (
+                {bridge.appSettings.length === 0 ? <p className="text-body-sm text-outline">Loading settings&</p> : (
                   <div className="flex flex-col gap-1 font-mono text-body-sm">
                     {bridge.appSettings.map((setting: any) => (
                       <div key={setting.name} className="flex items-center justify-between gap-2 py-1 border-b border-surface-container-highest">

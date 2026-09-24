@@ -11,9 +11,9 @@ import { Button, Chip, EmptyState, Panel, inputClass, selectClass } from './prim
 
 function BlueprintDiff({ diff }: { diff: any }) {
   const sections: Array<{ title: string; rows: string[] }> = [
-    { title: 'Routing', rows: (diff?.routing ?? []).map((e: any) => `${e.role}: ${e.from ?? 'default'} → ${e.to}`) },
-    { title: 'Reasoning', rows: (diff?.reasoning ?? []).map((e: any) => `${e.role}: ${e.from ?? 'default'} → ${e.to}`) },
-    { title: 'Defaults', rows: (diff?.defaults ?? []).map((e: any) => `${e.key}: ${JSON.stringify(e.from)} → ${JSON.stringify(e.to)}`) },
+    { title: 'Routing', rows: (diff?.routing ?? []).map((e: any) => `${e.role}: ${e.from ?? 'default'} · ${e.to}`) },
+    { title: 'Reasoning', rows: (diff?.reasoning ?? []).map((e: any) => `${e.role}: ${e.from ?? 'default'} · ${e.to}`) },
+    { title: 'Defaults', rows: (diff?.defaults ?? []).map((e: any) => `${e.key}: ${JSON.stringify(e.from)} · ${JSON.stringify(e.to)}`) },
     { title: 'Grants', rows: (diff?.grants ?? []).map((e: any) => `${e.tool} ${e.scopeKind} ${e.scopeValue}`) },
   ]
   if (sections.every((s) => !s.rows.length)) return <p className="text-body-sm text-outline">Nothing would change — the project already matches.</p>
@@ -62,7 +62,7 @@ export function AutomationsView({ bridge }: { bridge: Bridge }) {
         {playbooks.length ? playbooks.map((pb: any) => (
           <div key={pb.id} className="flex items-center justify-between gap-2 p-2.5 rounded-lg bg-surface-container">
             <div className="min-w-0">
-              <strong className="text-body-md text-on-surface">{pb.name}</strong>
+              <strong className="text-body-md text-on-surface" title={pb.name}>{pb.name}</strong>
               <p className="font-mono text-label-sm text-outline">hash {pb.contentHash.slice(0, 12)}…{pb.budgetUsd !== null ? ` · $${pb.budgetUsd} cap` : ''}</p>
             </div>
             <div className="flex gap-1.5 flex-shrink-0">
@@ -116,7 +116,7 @@ export function AutomationsView({ bridge }: { bridge: Bridge }) {
           >
             <label className="visually-hidden" htmlFor="sched-playbook">Playbook</label>
             <select id="sched-playbook" className={selectClass} value={scheduleDraft.playbookId} onChange={(e) => setScheduleDraft((c) => ({ ...c, playbookId: e.target.value }))}>
-              <option value="">pick a playbook…</option>
+              <option value="">pick a playbook&</option>
               {playbooks.map((pb: any) => <option key={pb.id} value={pb.id}>{pb.name}</option>)}
             </select>
             <label className="visually-hidden" htmlFor="sched-every">Interval</label>
@@ -132,9 +132,9 @@ export function AutomationsView({ bridge }: { bridge: Bridge }) {
         {goals.length ? goals.map((goal: any) => (
           <div key={goal.id} className="flex items-center justify-between gap-2 p-2.5 rounded-lg bg-surface-container">
             <div className="min-w-0">
-              <strong className="text-body-md text-on-surface">{goal.name}</strong>
+              <strong className="text-body-md text-on-surface" title={goal.name}>{goal.name}</strong>
               <p className="font-mono text-label-sm text-outline">{goal.runCount ?? 0} run(s){typeof goal.spendUsd === 'number' ? ` · $${goal.spendUsd.toFixed(4)} spent` : ''}{goal.budgetUsd !== null ? ` of $${goal.budgetUsd}` : ''}</p>
-              {goal.objective ? <p className="text-body-sm text-on-surface-variant truncate">{goal.objective}</p> : null}
+                {goal.objective ? <p className="text-body-sm text-on-surface-variant truncate" title={goal.objective}>{goal.objective}</p> : null}
             </div>
             <Button className="!px-2.5 !py-1 text-label-sm flex-shrink-0" onClick={() => void bridge.deleteGoal(goal.id)}>delete</Button>
           </div>

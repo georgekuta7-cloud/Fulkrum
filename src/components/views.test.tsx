@@ -121,9 +121,13 @@ describe('header', () => {
     expect(onToggleTheme).toHaveBeenCalled()
   })
 
-  it('switches projects from the menu', () => {
+  it('switches projects from the menu, and Escape closes it', () => {
     const openProject = vi.fn()
     render(<Header bridge={makeBridge({ projects: [{ id: 'p1', name: 'One' }, { id: 'p2', name: 'Two' }], openProject } as any)} theme="dark" onToggleTheme={vi.fn()} onOpenSettings={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /one/i }))
+    expect(screen.getByRole('menuitem', { name: 'Two' })).toBeInTheDocument()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByRole('menuitem', { name: 'Two' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /one/i }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Two' }))
     expect(openProject).toHaveBeenCalledWith('p2')
@@ -166,6 +170,10 @@ describe('chat', () => {
     expect(approveCall).toHaveBeenCalledWith('once')
     fireEvent.keyDown(window, { key: 'r' })
     expect(approveCall).toHaveBeenCalledWith('run')
+    fireEvent.keyDown(window, { key: 'd' })
+    expect(await screen.findByLabelText('Why not')).toBeInTheDocument()
+    fireEvent.keyDown(screen.getByLabelText('Why not'), { key: 'Escape' })
+    expect(screen.queryByLabelText('Why not')).not.toBeInTheDocument()
 
     rerender(<ChatView bridge={chatBridge({
       approval: { toolCall: { ...call, kind: 'ask', name: 'run.ask', resolved: { question: 'JWT or sessions?' } }, rule: null, warnings: [], preview: null } as any,
@@ -315,7 +323,7 @@ describe('store', () => {
         plugins: [{ kind: 'plugin', id: 'ocr', tool: 'plugin.ocr', version: '1.0.0', description: 'Reads images.', updateAvailable: true }],
       } as any,
     })} />)
-    fireEvent.click(screen.getByRole('tab', { name: 'verified' }))
+    fireEvent.click(screen.getByRole('button', { name: 'verified' }))
     // The marketplace card filters out; the arsenal row stays — same id, two homes.
     expect(screen.getAllByText('pdf-processing').length).toBe(1)
     expect(screen.queryByText('Reads PDFs.')).not.toBeInTheDocument()
@@ -420,18 +428,19 @@ describe('settings', () => {
     const deleteLearning = vi.fn()
     const verifyAudit = vi.fn()
     render(<SettingsView bridge={settingsBridge({ saveRouting, saveSetting, deleteLearning, verifyAudit })} />)
-    fireEvent.click(screen.getByRole('tab', { name: 'Casting' }))
+    fireEvent.click(screen.getByRole('button', { name: /Casting/ }))
     fireEvent.change(screen.getByLabelText('Casting for Scout'), { target: { value: 'Grok' } })
     expect(saveRouting).toHaveBeenCalledWith('research', 'Grok')
-    fireEvent.click(screen.getByRole('tab', { name: 'Budgets' }))
+    fireEvent.click(screen.getByRole('button', { name: /Budgets/ }))
     const [runBudget] = screen.getAllByLabelText('Per-run ceiling')
     fireEvent.change(runBudget, { target: { value: '7' } })
     fireEvent.blur(runBudget)
     expect(saveSetting).toHaveBeenCalledWith('FULKRUM_RUN_BUDGET_USD', 7)
-    fireEvent.click(screen.getByRole('tab', { name: 'Learnings' }))
+    fireEvent.click(screen.getByRole('button', { name: /Learnings/ }))
     fireEvent.click(screen.getByRole('button', { name: 'forget' }))
     expect(deleteLearning).toHaveBeenCalledWith('l1')
     fireEvent.click(screen.getByRole('button', { name: 'Verify chain' }))
     expect(verifyAudit).toHaveBeenCalled()
   })
 })
+

@@ -14,7 +14,7 @@ function ArtifactCard({ bridge, artifact }: { bridge: Bridge; artifact: any }) {
   const hunks = artifact.diff?.hunks ?? []
   return (
     <div className="p-3 rounded-lg bg-surface-container flex flex-col gap-2">
-      <button type="button" className="flex items-center justify-between gap-2 text-left" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+      <button type="button" className="flex items-center justify-between gap-2 text-left" onClick={() => setOpen((o) => !o)} aria-expanded={open} title={artifact.path}>
         <span className="font-mono text-body-sm text-on-surface truncate">{artifact.path}</span>
         <span className="flex items-center gap-2 flex-shrink-0">
           {artifact.diff ? (
@@ -88,7 +88,7 @@ function TimeTravel({ bridge }: { bridge: Bridge }) {
       </div>
       {timeline.gaps?.length ? <p className="text-label-sm text-error">Gaps the records cannot prove: {timeline.gaps.join('; ')}</p> : null}
       {timeline.files.length ? timeline.files.map((file: any) => (
-        <div key={file.path} className="flex items-center justify-between gap-2 p-2 rounded-lg bg-surface-container">
+          <div key={file.path} className="flex items-center justify-between gap-2 p-2 rounded-lg bg-surface-container" title={file.path}>
           <span className="font-mono text-body-sm text-on-surface truncate">{file.path}</span>
           <Button className="!px-2.5 !py-1 text-label-sm" onClick={() => void bridge.restoreTimelineFile(file.path)}>Restore this version</Button>
         </div>

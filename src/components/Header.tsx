@@ -29,8 +29,15 @@ export function Header({ bridge, theme, onToggleTheme, onOpenSettings }: {
     const close = (event: MouseEvent) => {
       if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) setMenuOpen(false)
     }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenuOpen(false)
+    }
     window.addEventListener('mousedown', close)
-    return () => window.removeEventListener('mousedown', close)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', close)
+      window.removeEventListener('keydown', onKey)
+    }
   }, [menuOpen])
 
   const routing = (bridge.projectSettings?.routing ?? {}) as Record<string, string>

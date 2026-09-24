@@ -55,7 +55,7 @@ export default function App() {
             <div className="flex items-center justify-center h-full" role="status">
               <div className="text-center space-y-4">
                 <span className="material-symbols-outlined text-6xl text-primary" aria-hidden="true">hub</span>
-                <p className="text-body-md text-on-surface-variant">Loading…</p>
+                <p className="text-body-md text-on-surface-variant">Loading&</p>
               </div>
             </div>
           ) : view === 'settings' ? (
