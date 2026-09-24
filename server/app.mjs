@@ -34,7 +34,7 @@ export const MAX_TOOL_BODY_BYTES = 600_000
 /** decodeURIComponent that returns the raw input on a malformed escape. */
 function safeDecode(value) {
   try {
-    return safeDecode(value)
+    return decodeURIComponent(value)
   } catch {
     return value
   }
@@ -1544,6 +1544,10 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         }
 
         if (request.method === 'POST') {
+          if (!['planning', 'review', 'interrupted'].includes(run.status)) {
+            sendJson(response, 409, { error: `A plan cannot be drafted while the run is ${run.status}. Resume planning or start a new run.` })
+            return
+          }
           const body = await readJson(request)
           const routing = body.routing ?? store.getProject(run.projectId)?.project?.settings?.routing ?? {}
           try {
@@ -1614,12 +1618,16 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           sendJson(response, 409, { error: `A run in ${run.status} state cannot be ${body.action === 'approve-plan' ? 'approved' : body.action + 'd'}.` })
           return
         }
+        // Resuming a paused draft returns to planning. It must neither start
+        // unapproved work nor strand the user in a state they can only cancel.
+        const resumePlan = body.action === 'resume' ? (run.planId ? store.getPlan(run.planId) : store.getLatestPlanForRun(runId)) : null
+        const resumePlanning = body.action === 'resume' && run.status === 'paused' && resumePlan?.plan.status !== 'approved'
         // Entering executing — by approval or by resume — requires an approved plan.
         // This is the guard that closes the bypass where pause in planning, followed
         // by resume, produced an executing run nobody had approved, from which
         // further pause → resume cycles kept it alive. A paused run from planning is
         // legitimate to *pause*, but resuming it into executing needs the plan.
-        if (body.action === 'resume' || (body.action === 'approve-plan' && run.status !== 'planning')) {
+        if (body.action === 'resume' && !resumePlanning) {
           const plan = run.planId ? store.getPlan(run.planId) : store.getLatestPlanForRun(runId)
           if (!plan || plan.plan.status !== 'approved') {
             sendJson(response, 409, { error: 'That run has no approved plan to resume. Approve a plan first.' })
@@ -1679,27 +1687,14 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           approvalPayload = { planId: plan.plan.id, planVersion: plan.plan.version, planHash: plan.plan.contentHash, taskCount: plan.tasks.length }
         }
 
-        const patch = { status: transition[0] }
+        const patch = { status: resumePlanning ? 'planning' : transition[0] }
         if (body.action === 'resume' && run.status === 'interrupted') {
           patch.interruptedAt = null
           patch.interruptionReason = null
         }
         const nextRun = store.updateRun(runId, patch)
         const event = store.appendEvent({ runId, type: transition[1], payload: { source: 'user', previousStatus: run.status, ...(approvalPayload ?? {}) } })
-        if (body.action === 'resume') {
-          // Resuming is only legitimate for a run whose plan somebody approved.
-          // Guarding the transition alone was not enough: planning → pause → resume
-          // produced an *executing* run with no approved plan, from which pause →
-          // resume worked forever after. An interrupted run that never got as far as
-          // approving a plan (planning → interrupted, no plan id) is in the same
-          // boat: `ensurePlan` would quietly start it with no approved plan.
-          const plan = run.planId ? store.getPlan(run.planId) : store.getLatestPlanForRun(runId)
-          if (!plan || plan.plan.status !== 'approved') {
-            sendJson(response, 409, { error: 'That run has no approved plan to resume. Approve a plan first.' })
-            return
-          }
-        }
-        if (body.action === 'approve-plan' || body.action === 'resume') {
+        if (body.action === 'approve-plan' || (body.action === 'resume' && !resumePlanning)) {
           orchestrator.start(runId, { routing })
         }
         if (body.action === 'cancel' && execution) {
@@ -1714,7 +1709,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           // A worker parked on an approval holds a promise only an approve or a deny
           // resolves; cancelling the run has to end the call as well, or the worker
           // waits forever on a run that no longer exists.
-          const abandoned = orchestrator.abandonWaiters('The run was cancelled while this call awaited approval.')
+          const abandoned = orchestrator.abandonWaiters('The run was cancelled while this call awaited approval.', runId)
           if (abandoned.length) {
             store.appendEvent({ runId, type: 'run.cancelled', agentId: 'head', payload: { ...({ source: 'user', previousStatus: run.status }), abandonedCalls: abandoned.length } })
           }

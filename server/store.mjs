@@ -1738,15 +1738,16 @@ export class FulkrumStore {
       baseUrl: row.base_url,
       defaultModel: row.model,
       envKey: row.env_key ?? '',
+      aliases: parseJson(row.aliases_json, []),
       custom: true,
     }))
   }
 
   saveCustomProvider(provider) {
     const now = Date.now()
-    this.database.prepare(`INSERT INTO provider_configs(id, label, protocol, base_url, model, env_key, created_at, updated_at)
-      VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET label = excluded.label, protocol = excluded.protocol, base_url = excluded.base_url, model = excluded.model, env_key = excluded.env_key, updated_at = excluded.updated_at`).run(provider.id, provider.label, provider.protocol, provider.baseUrl, provider.defaultModel, provider.envKey ?? '', now, now)
+    this.database.prepare(`INSERT INTO provider_configs(id, label, protocol, base_url, model, env_key, aliases_json, created_at, updated_at)
+      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET label = excluded.label, protocol = excluded.protocol, base_url = excluded.base_url, model = excluded.model, env_key = excluded.env_key, aliases_json = excluded.aliases_json, updated_at = excluded.updated_at`).run(provider.id, provider.label, provider.protocol, provider.baseUrl, provider.defaultModel, provider.envKey ?? '', JSON.stringify(provider.aliases ?? []), now, now)
     return this.listCustomProviders().find((item) => item.id === provider.id)
   }
 

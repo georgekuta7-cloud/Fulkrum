@@ -56,9 +56,9 @@ export async function withStore(callback) {
  */
 /**
  * @param {(context: any) => Promise<any>} callback
- * @param {{ workspaceRoot?: string, callProvider?: any, model?: any, pricing?: any, realModelCall?: boolean, serveUi?: boolean, distDir?: string, execution?: any, httpRequest?: any }} [options]
+ * @param {{ workspaceRoot?: string, callProvider?: any, model?: any, pricing?: any, realModelCall?: boolean, serveUi?: boolean, distDir?: string, execution?: any, httpRequest?: any, listenPort?: number, version?: string }} [options]
  */
-export async function withServer(callback, { workspaceRoot, callProvider, model, pricing, realModelCall = false, serveUi = false, distDir = 'dist', execution = null, httpRequest = null } = {}) {
+export async function withServer(callback, { workspaceRoot, callProvider, model, pricing, realModelCall = false, serveUi = false, distDir = 'dist', execution = null, httpRequest = null, listenPort = 0, version = '0.0.0' } = {}) {
   const directory = workspaceRoot ?? (await mkdtemp(path.join(tmpdir(), 'fulkrum-api-')))
   const store = new FulkrumStore(path.join(directory, 'fulkrum.sqlite'))
   const toolBroker = new FulkrumToolBroker({ workspaceRoot: directory, httpAllowlist: [], execution, httpRequest })
@@ -94,13 +94,14 @@ export async function withServer(callback, { workspaceRoot, callProvider, model,
     allowedOrigins: new Set(['http://127.0.0.1:5173']),
     serveUi,
     distDir,
+    version,
     callProvider: callProvider ?? (realCaller
       ? (provider, modelName, messages, instructions) => realCaller.callModel(provider, modelName, messages, { tools: [], instructions: instructions ?? 'test instructions' })
       : async () => ({ text: 'stub reply', usage: null })),
   })
 
   await new Promise((resolve) => {
-    app.server.listen(0, '127.0.0.1', () => resolve(undefined))
+    app.server.listen(listenPort, '127.0.0.1', () => resolve(undefined))
   })
   const address = app.server.address()
   const port = address && typeof address === 'object' ? address.port : 0
@@ -123,7 +124,7 @@ export async function withServer(callback, { workspaceRoot, callProvider, model,
   }
 
   try {
-    return await callback({ baseUrl, request, store, toolBroker, providerRegistry, orchestrator, directory })
+    return await callback({ baseUrl, request, store, toolBroker, providerRegistry, orchestrator, directory, app })
   } finally {
     await new Promise((resolve) => app.server.close(resolve))
     store.close()

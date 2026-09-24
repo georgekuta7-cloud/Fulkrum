@@ -33,7 +33,7 @@ test('custom provider definitions are validated', async () => {
     const registry = createProviderRegistry(store)
     assert.throws(() => registry.addCustom({ label: '', baseUrl: 'https://x.test/v1', model: 'm', envKey: 'A_KEY' }), /label/)
     assert.throws(() => registry.addCustom({ label: 'X', baseUrl: 'ftp://x.test', model: 'm', envKey: 'A_KEY' }), /http or https/)
-    assert.throws(() => registry.addCustom({ label: 'X', baseUrl: 'https://x.test/v1', model: '', envKey: 'A_KEY' }), /model is required/)
+    assert.throws(() => registry.addCustom({ label: 'X', baseUrl: 'https://x.test/v1', model: '', envKey: 'A_KEY' }), /model must be between/)
     assert.throws(() => registry.addCustom({ label: 'X', baseUrl: 'https://x.test/v1', model: 'm', envKey: '1BAD' }), /environment variable/)
 
     const provider = registry.addCustom({ label: 'Local Gateway', baseUrl: 'https://x.test/v1', model: 'm', envKey: 'CUSTOM_KEY' })

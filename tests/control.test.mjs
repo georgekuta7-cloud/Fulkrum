@@ -79,21 +79,44 @@ test('an approved plan reaches the worker as title, instructions, and acceptance
   }
 })
 
-test('planning → pause → resume cannot start a run nobody approved', async () => {
-  await withServer(async ({ request, store }) => {
+test('planning → pause → resume returns to planning without starting unapproved work', async () => {
+  await withServer(async ({ request, store, orchestrator }) => {
     const runId = await makeRun(request)
     await request('POST', '/api/chat', { runId, message: 'Do the thing.', history: [] })
 
     const paused = await request('POST', `/api/runs/${runId}/control`, { action: 'pause' })
     assert.equal(paused.status, 200, JSON.stringify(paused.payload))
     const resumed = await request('POST', `/api/runs/${runId}/control`, { action: 'resume' })
-    // This used to be 200 and would start the run with a plan nobody approved.
-    assert.equal(resumed.status, 409, JSON.stringify(resumed.payload))
-    assert.match(String(resumed.payload.error), /no approved plan/)
-    // Give any wrongly-started run time to have written something; then check it did not.
-    await new Promise((resolve) => setTimeout(resolve, 300))
-    assert.notEqual(store.getRun(runId).status, 'executing', 'the run must not be executing')
+    assert.equal(resumed.status, 200, JSON.stringify(resumed.payload))
+    assert.equal(store.getRun(runId).status, 'planning', 'resume must not execute a plan nobody approved')
+    assert.equal(orchestrator.activeRuns.size, 0)
     assert.equal(store.listEvents(runId).some((event) => event.type === 'run.plan.attached'), false, 'no plan was attached behind the user’s back')
+  })
+})
+
+test('a fresh draft made during review can be approved on its displayed hash', async () => {
+  await withServer(async ({ request, store, providerRegistry, orchestrator }) => {
+    providerRegistry.addCustom({ label: 'Review fixture', baseUrl: 'https://example.invalid', model: 'fixture', authStyle: 'none' })
+    const project = store.createProject({ name: 'Replan during review', settings: { routing: { head: 'Review fixture', research: 'Review fixture' } } })
+    const run = store.createRun({ projectId: project.id })
+    store.appendMessage({ projectId: project.id, runId: run.id, role: 'user', content: 'Inspect again.' })
+    store.updateRun(run.id, { status: 'review' })
+    const drafted = await request('POST', `/api/runs/${run.id}/plan`, { regenerate: true })
+    const approved = await request('POST', `/api/runs/${run.id}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash })
+    assert.equal(approved.status, 200, JSON.stringify(approved.payload))
+    await Promise.allSettled([...orchestrator.activeRuns.values()])
+  }, { model: async ({ options }) => ({ text: String(options?.instructions ?? '').includes('You plan work') ? JSON.stringify({ objective: 'Inspect again.', tasks: [{ role: 'research', title: 'Inspect', instructions: 'Report findings.', dependsOn: [] }] }) : 'Finished.', toolCalls: [], usage: null }) })
+})
+
+test('redrafting cannot replace a plan while a run is executing or ended', async () => {
+  await withServer(async ({ request, store }) => {
+    const runId = await makeRun(request)
+    for (const status of ['executing', 'paused', 'cancelled', 'completed', 'failed']) {
+      store.updateRun(runId, { status })
+      const result = await request('POST', `/api/runs/${runId}/plan`, { regenerate: true })
+      assert.equal(result.status, 409, status)
+      assert.match(result.payload.detail, /cannot be drafted/)
+    }
   })
 })
 
@@ -157,6 +180,42 @@ test('interrupted and budget-stopped runs still resume — that is what resume i
   } finally {
     delete process.env.XAI_API_KEY
   }
+})
+
+test('cancelling one run leaves a second real worker parked on its own approval', async () => {
+  const definition = { objective: 'Ask before continuing.', tasks: [{ role: 'builder', title: 'Ask a question', instructions: 'Ask the user before continuing.', dependsOn: [] }] }
+  const model = async ({ messages, options }) => {
+    if (String(options?.instructions ?? '').includes('You plan work')) return { text: JSON.stringify(definition), toolCalls: [], usage: null }
+    if (messages.some((m) => m.role === 'tool')) return { text: 'Finished.', toolCalls: [], usage: null }
+    return { text: 'Waiting.', toolCalls: [{ id: 'question', name: 'run.ask', arguments: { question: 'Continue?' } }], usage: null }
+  }
+  await withServer(async ({ request, store, providerRegistry, orchestrator }) => {
+    providerRegistry.addCustom({ label: 'Scope fixture', baseUrl: 'https://example.invalid', model: 'fixture', authStyle: 'none' })
+    const project = store.createProject({ name: 'Two workers', settings: { routing: { head: 'Scope fixture', builder: 'Scope fixture' } } })
+    const ids = []
+    try {
+      for (let index = 0; index < 2; index += 1) {
+        const run = store.createRun({ projectId: project.id })
+        ids.push(run.id)
+        store.appendMessage({ projectId: project.id, runId: run.id, role: 'user', content: 'Ask for a decision.' })
+        const drafted = await request('POST', `/api/runs/${run.id}/plan`, {})
+        const approved = await request('POST', `/api/runs/${run.id}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash })
+        assert.equal(approved.status, 200)
+      }
+      const deadline = Date.now() + 5000
+      while (orchestrator.approvalWaiters.size < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20))
+      assert.equal(orchestrator.approvalWaiters.size, 2)
+      const otherCall = store.listToolCalls(ids[1]).find((call) => call.status === 'approval_required')
+      await request('POST', `/api/runs/${ids[0]}/control`, { action: 'cancel' })
+      assert.equal(store.getToolCall(otherCall.id).status, 'approval_required')
+      assert.equal(orchestrator.approvalWaiters.has(otherCall.id), true)
+      assert.equal(store.getRun(ids[1]).status, 'executing')
+    } finally {
+      for (const id of ids) await request('POST', `/api/runs/${id}/control`, { action: 'cancel' })
+      orchestrator.abandonWaiters('test cleanup')
+      await Promise.allSettled([...orchestrator.activeRuns.values()])
+    }
+  }, { model })
 })
 
 test('a cancelled run ends its parked approval instead of leaving it forever', async () => {

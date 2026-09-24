@@ -6,6 +6,7 @@ import path from 'node:path'
 import { resolveWorkspacePath } from '../server/permissions.mjs'
 import { redirectHop } from '../server/toolBroker.mjs'
 import { createPricing } from '../server/pricing.mjs'
+import { withServer } from './helpers.mjs'
 
 test('E1: a dangling symlink is refused, not followed', async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), 'fulkrum-edge-'))
@@ -81,15 +82,14 @@ test('S16: clipped() truncates by bytes, not UTF-16 code units', () => {
   assert.equal(text.length, 100, 'but only 100 UTF-16 code units')
 })
 
-test('H6: safeDecode handles malformed percent-encoding', async () => {
-  // Test that decodeURIComponent does not throw on %
-  const malformed = '%E0%A4%A'
-  assert.doesNotThrow(() => {
-    try {
-      decodeURIComponent(malformed)
-    } catch {
-      // Expected: the raw value should be returned by safeDecode
-    }
+test('encoded API identifiers resolve, and malformed percent-encoding does not crash the bridge', async () => {
+  await withServer(async ({ request, store }) => {
+    const project = store.createProject({ id: 'project-encoded', name: 'Encoded route' })
+    const decoded = await request('GET', '/api/projects/%70roject-encoded')
+    assert.equal(decoded.status, 200)
+    assert.equal(decoded.payload.project.id, project.id)
+    assert.equal((await request('GET', '/api/projects/%E0%A4%A')).status, 404)
+    assert.equal((await request('GET', '/api/health')).status, 200)
   })
 })
 

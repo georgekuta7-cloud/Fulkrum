@@ -67,6 +67,7 @@ function publicProvider(provider, settings) {
   return {
     id: provider.id,
     label: provider.label,
+    aliases: provider.aliases ?? [],
     protocol: provider.protocol,
     baseUrl: provider.baseUrl,
     model: provider.defaultModel,
@@ -94,14 +95,17 @@ function routeParts(route) {
     return { providerId: route.providerId, model: route.model }
   }
   const value = String(route ?? '')
-  const [label, model] = value.split(' · ')
+  const [label, model] = value.split('·').map((part) => part.trim())
   return { providerId: label, model }
 }
 
 /** Settings an API request may change, validated field by field. */
 export function parseProviderSettings(input = {}) {
   const patch = {}
-  if (input.apiKey !== undefined) patch.apiKey = input.apiKey === null || input.apiKey === '' ? null : String(input.apiKey).slice(0, 500)
+  // An untouched password field is empty. Clearing a credential is deliberately
+  // different: the client must send null, never an ambiguous empty string.
+  if (input.apiKey === null) patch.apiKey = null
+  else if (input.apiKey !== undefined && String(input.apiKey).trim()) patch.apiKey = String(input.apiKey).trim().slice(0, 500)
   if (input.authStyle !== undefined) {
     const style = String(input.authStyle).toLowerCase()
     if (!AUTH_STYLES.includes(style)) throw new Error(`Auth style must be one of: ${AUTH_STYLES.join(', ')}.`)
@@ -131,17 +135,42 @@ export function parseProviderSettings(input = {}) {
   return patch
 }
 
+function definitionText(value, label, maximum) {
+  if (typeof value !== 'string' || !value.trim() || value.trim().length > maximum) {
+    throw new Error(`${label} must be between 1 and ${maximum} characters.`)
+  }
+  return value.trim()
+}
+
+function endpointUrl(value) {
+  let url
+  try {
+    url = new URL(definitionText(value, 'Provider base URL', 2000))
+  } catch {
+    throw new Error('Provider base URL must be a valid http or https URL.')
+  }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error('Provider base URL must use http or https, without credentials, a query, or a fragment.')
+  }
+  return url.toString().replace(/\/$/, '')
+}
+
+function validateAuthSettings(patch, current = {}) {
+  const style = patch.authStyle ?? current.authStyle ?? 'auto'
+  const header = patch.authHeader === undefined ? current.authHeader : patch.authHeader
+  if (style === 'header' && (!header || !/^[A-Za-z0-9_-]{1,64}$/.test(header))) {
+    throw new Error('A custom auth header needs a valid header name.')
+  }
+}
+
 function validateCustomProvider(input) {
   const slug = String(input.id ?? input.label ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')
   const id = slug.startsWith('custom-') ? slug : `custom-${slug}`
-  const label = String(input.label ?? '').trim()
-  const baseUrl = String(input.baseUrl ?? '').trim().replace(/\/$/, '')
-  const model = String(input.model ?? '').trim()
+  const label = definitionText(input.label, 'Custom provider label', 60)
+  const baseUrl = endpointUrl(input.baseUrl)
+  const model = definitionText(input.model, 'Custom provider model', 200)
   const envKey = String(input.envKey ?? '').trim().toUpperCase()
 
-  if (!label || label.length > 60) throw new Error('Custom provider label must be between 1 and 60 characters.')
-  if (!/^https?:\/\//i.test(baseUrl)) throw new Error('Custom provider base URL must use http or https.')
-  if (!model) throw new Error('Custom provider model is required.')
   // A key can be entered in the UI instead, so the environment variable is optional.
   if (envKey && !/^[A-Z][A-Z0-9_]{2,63}$/.test(envKey)) throw new Error('Environment key must be an uppercase environment variable name.')
 
@@ -164,7 +193,28 @@ function extractModelIds(text) {
 
 export function createProviderRegistry(store) {
   const settingsFor = (providerId) => store.getProviderSettings(providerId)
-  const all = () => [...builtInProviders(), ...store.listCustomProviders().map((provider) => ({ ...provider, envKeys: provider.envKey ? [provider.envKey] : [] }))]
+  const all = () => {
+    const providers = new Map(builtInProviders().map((provider) => [provider.id, { ...provider, aliases: [], custom: false }]))
+    for (const saved of store.listCustomProviders()) {
+      const builtin = providers.get(saved.id)
+      providers.set(saved.id, {
+        ...saved,
+        // An override changes the endpoint, model, and label, not the protocol
+        // or the built-in environment-key fallback.
+        protocol: builtin?.protocol ?? saved.protocol,
+        envKeys: builtin?.envKeys ?? (saved.envKey ? [saved.envKey] : []),
+        custom: !builtin,
+      })
+    }
+    return [...providers.values()]
+  }
+  const assertUniqueLabel = (label, providerId) => {
+    const normalized = label.toLowerCase()
+    if (label.includes('·')) throw new Error('Provider labels cannot contain the route separator “·”.')
+    if (all().some((provider) => provider.id !== providerId && [provider.id, provider.label, ...provider.aliases].some((name) => name.toLowerCase() === normalized))) {
+      throw new Error('That provider name is already used. Choose a different label.')
+    }
+  }
 
   return {
     list() {
@@ -180,7 +230,7 @@ export function createProviderRegistry(store) {
         const configured = all().filter((item) => isConfiguredProvider(item, settingsFor(item.id)))
         return configured[0] ?? all()[0]
       }
-      const provider = all().find((item) => item.id === requested || item.label.toLowerCase() === requested)
+      const provider = all().find((item) => item.id === requested || item.label.toLowerCase() === requested || item.aliases.some((alias) => alias.toLowerCase() === requested))
       if (!provider) throw new Error(`Unknown provider route: ${parts.providerId}`)
       return provider
     },
@@ -298,12 +348,17 @@ export function createProviderRegistry(store) {
 
     addCustom(input) {
       const provider = validateCustomProvider(input)
-      store.saveCustomProvider(provider)
       const patch = parseProviderSettings(input)
+      validateAuthSettings(patch)
+      if (all().some((item) => item.id === provider.id)) throw new Error('That provider already exists. Edit it instead of registering it again.')
+      assertUniqueLabel(provider.label, provider.id)
       if (Object.values(patch.headers ?? {}).includes(MASKED_HEADER_VALUE)) {
         throw new Error('A masked header value needs a stored value to keep: retype the header.')
       }
-      if (Object.keys(patch).length) store.saveProviderSettings(provider.id, patch)
+      store.transaction(() => {
+        store.saveCustomProvider(provider)
+        if (Object.keys(patch).length) store.saveProviderSettings(provider.id, patch)
+      })
       return provider
     },
 
@@ -311,9 +366,15 @@ export function createProviderRegistry(store) {
     updateSettings(providerId, input) {
       const provider = this.resolve({ providerId })
       const patch = parseProviderSettings(input)
-      const mergedStyle = patch.authStyle ?? settingsFor(provider.id)?.authStyle ?? 'auto'
-      const mergedHeader = patch.authHeader ?? settingsFor(provider.id)?.authHeader ?? null
-      if (mergedStyle === 'header' && !mergedHeader) throw new Error('A custom auth header needs a header name.')
+      validateAuthSettings(patch, settingsFor(provider.id) ?? {})
+      const definition = {
+        ...provider,
+        label: input.label === undefined ? provider.label : definitionText(input.label, 'Provider label', 60),
+        baseUrl: input.baseUrl === undefined ? provider.baseUrl : endpointUrl(input.baseUrl),
+        defaultModel: input.model === undefined ? provider.defaultModel : definitionText(input.model, 'Provider model', 200),
+      }
+      assertUniqueLabel(definition.label, provider.id)
+      if (definition.label !== provider.label) definition.aliases = [...new Set([...provider.aliases, provider.label])]
       if (patch.headers) {
         // The editor sends masked values back for headers it never saw. Resolve
         // each against what is stored: replace semantics are preserved (an
@@ -331,7 +392,10 @@ export function createProviderRegistry(store) {
         }
         patch.headers = resolved
       }
-      store.saveProviderSettings(provider.id, patch)
+      store.transaction(() => {
+        if (input.label !== undefined || input.baseUrl !== undefined || input.model !== undefined) store.saveCustomProvider(definition)
+        store.saveProviderSettings(provider.id, patch)
+      })
       return this.list().find((item) => item.id === provider.id)
     },
 

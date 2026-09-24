@@ -118,6 +118,79 @@ test('sampling parameters follow the model, not one hardcoded default', async ()
   })
 })
 
+test('an unchanged empty key field preserves credentials; null explicitly removes the stored key', async () => {
+  await withServer(async ({ request }) => {
+    const created = await request('POST', '/api/providers', { label: 'Keep my key', baseUrl: 'https://example.invalid/v1', model: 'model-one', apiKey: 'fixture-credential' })
+    const id = created.payload.provider.id
+    const saved = await request('PATCH', `/api/providers/${id}`, { apiKey: '', allowPrivate: true })
+    assert.equal(saved.status, 200)
+    assert.equal(saved.payload.provider.hasKey, true, 'an untouched password field must not delete the stored credential')
+    assert.equal(saved.payload.provider.keySource, 'stored')
+    assert.equal(saved.payload.provider.allowPrivate, true)
+    const removed = await request('PATCH', `/api/providers/${id}`, { apiKey: null })
+    assert.equal(removed.payload.provider.hasKey, false, 'removal is an explicit operation')
+  })
+})
+
+test('provider definition edits persist for custom and built-in providers and reach route resolution', async () => {
+  await withServer(async ({ request, providerRegistry }) => {
+    const created = await request('POST', '/api/providers', { label: 'Editable gateway', baseUrl: 'https://example.invalid/v1', model: 'model-one', authStyle: 'none' })
+    for (const id of ['openai', created.payload.provider.id]) {
+      const label = `Edited ${id}`
+      const saved = await request('PATCH', `/api/providers/${id}`, { label, baseUrl: 'https://gateway.invalid/v2/', model: 'model-two' })
+      assert.equal(saved.status, 200, JSON.stringify(saved.payload))
+      assert.equal(saved.payload.provider.label, label)
+      assert.equal(saved.payload.provider.baseUrl, 'https://gateway.invalid/v2')
+      assert.equal(saved.payload.provider.model, 'model-two')
+      const resolved = providerRegistry.resolve({ providerId: id })
+      assert.equal(resolved.baseUrl, 'https://gateway.invalid/v2', 'the model caller sees the saved endpoint')
+      assert.equal(providerRegistry.model(resolved), 'model-two')
+    }
+    const listed = (await request('GET', '/api/providers')).payload.providers
+    assert.equal(listed.filter((p) => p.id === 'openai').length, 1, 'a built-in override is not a second provider')
+    assert.equal(listed.find((p) => p.id === 'openai').custom, false)
+  })
+})
+
+test('renaming a provider preserves previously saved routes across subsequent edits', async () => {
+  await withStore(async (store) => {
+    const registry = createProviderRegistry(store)
+    const provider = registry.addCustom({ label: 'Original gateway', baseUrl: 'https://example.invalid', model: 'model-one', authStyle: 'none' })
+    registry.updateSettings(provider.id, { label: 'Second name' })
+    registry.updateSettings(provider.id, { label: 'Third name' })
+    const reloaded = createProviderRegistry(store)
+    for (const route of [provider.id, 'Original gateway', 'Second name', 'Third name']) {
+      const resolved = reloaded.resolve(`${route} · specific-model`)
+      assert.equal(resolved.id, provider.id)
+      assert.equal(resolved.label, 'Third name')
+      assert.equal(reloaded.model(resolved, `${route} · specific-model`), 'specific-model')
+    }
+  })
+})
+
+test('invalid provider edits are refused atomically instead of silently saving credentials', async () => {
+  await withServer(async ({ request }) => {
+    const created = await request('POST', '/api/providers', { label: 'Validated gateway', baseUrl: 'https://example.invalid', model: 'model-one', apiKey: 'fixture-credential' })
+    const id = created.payload.provider.id
+    for (const patch of [{ baseUrl: 'file:///local' }, { baseUrl: 'https://' }, { model: ' ' }, { label: ' ' }]) {
+      const rejected = await request('PATCH', `/api/providers/${id}`, { ...patch, apiKey: null })
+      assert.equal(rejected.status, 400, JSON.stringify(patch))
+      const current = (await request('GET', '/api/providers')).payload.providers.find((p) => p.id === id)
+      assert.equal(current.hasKey, true, 'a rejected edit must not partially clear the key')
+      assert.equal(current.model, 'model-one')
+    }
+  })
+})
+
+test('an invalid custom-provider registration leaves no partial provider behind', async () => {
+  await withServer(async ({ request }) => {
+    const rejected = await request('POST', '/api/providers', { label: 'Invalid registration', baseUrl: 'https://example.invalid', model: 'model-one', authStyle: 'header' })
+    assert.equal(rejected.status, 400)
+    const listed = (await request('GET', '/api/providers')).payload.providers
+    assert.equal(listed.some((p) => p.label === 'Invalid registration'), false)
+  })
+})
+
 test('a key entered in the UI is stored, used, and never handed back', async () => {
   await withServer(async ({ request }) => {
     const created = await request('POST', '/api/providers', { label: 'My gateway', baseUrl: 'https://93.184.216.34/v1', model: 'mystery-1', apiKey: 'sk-my-secret-value' })
