@@ -116,7 +116,7 @@ export function AutomationsView({ bridge }: { bridge: Bridge }) {
           >
             <label className="visually-hidden" htmlFor="sched-playbook">Playbook</label>
             <select id="sched-playbook" className={selectClass} value={scheduleDraft.playbookId} onChange={(e) => setScheduleDraft((c) => ({ ...c, playbookId: e.target.value }))}>
-              <option value="">pick a playbook&</option>
+              <option value="">pick a playbook…</option>
               {playbooks.map((pb: any) => <option key={pb.id} value={pb.id}>{pb.name}</option>)}
             </select>
             <label className="visually-hidden" htmlFor="sched-every">Interval</label>

@@ -5,6 +5,51 @@ All notable changes to Fulkrum are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+- **The shell renders at its intended spacing again.** An unlayered universal
+  `margin: 0; padding: 0` rule was overriding every Tailwind 4 spacing utility,
+  so the fixed header and navigation overlapped the content and cards collapsed.
+  The reset now comes from Tailwind's base layer, and browser tests assert the
+  measured layout at desktop, tablet, and mobile widths in both themes.
+- **A first plan is reachable, and plans are inspectable.** Chat previously
+  offered no way to draft, edit, or redraft a plan, and editing was impossible
+  on any screen. Draft/Edit/Approve/Redraft are back on the Chat plan card, with
+  task roles, instructions, acceptance checks, and dependencies; tool-call
+  approvals now show the full proposed file, diff, resolved arguments, rule,
+  and fingerprint before a decision.
+- **Provider edits persist, and a blank key field keeps the stored key.** Label,
+  endpoint, and model edits to built-in and custom providers were silently
+  ignored; an untouched password field erased a stored credential. Definitions
+  now save atomically with validation, old labels stay resolvable as aliases,
+  and removing a key is an explicit “Remove stored key on save”.
+- **Cancelling one run no longer interrupts other runs.** The cancel path
+  abandoned every parked approval in the process instead of the run's own;
+  it is now scoped to the run being cancelled.
+- **Project and run selections cannot mix.** Late responses from a previous
+  project or run are cancelled by a request scope, and an empty project is no
+  longer auto-created a run when opened — so the header, conversation, and
+  actions always belong to the same project.
+- **Run recovery is reachable.** Interrupted, budget-stopped, paused, and failed
+  runs offer Resume (or a budget correction) with honest copy, and Resume on a
+  draft without an approved plan returns to planning instead of refusing.
+- **A failed chat keeps the draft.** Unsent text stays in the prompt for retry,
+  and assistant replies render as Markdown (headings, lists, code) instead of
+  one paragraph.
+- **Encoded API identifiers resolve.** `safeDecode` called itself recursively
+  and returned the raw value; it now decodes, and a malformed escape no longer
+  reaches the recursion limit.
+
+### Changed
+- **The 4 MB icon font is gone.** Material Symbols was replaced with the exact
+  set of SVG glyphs the interface uses, cutting the built font payload and the
+  client bundle warning. Markdown rendering is code-split, workspace settings
+  and store actions moved into their own hook, and the client now typechecks
+  under `strict`.
+- **Browser workflow tests.** `npm run test:browser` builds the UI, starts the
+  real API bridge against a temporary store and workspace with only model calls
+  stubbed, and drives layout, planning, run history, project switching,
+  approvals, provider forms, and failure recovery through Chromium.
+
 ### Added
 - **The interface, rebuilt from a clean slate.** Three stacked redesigns had
   left dead components, orphaned features, and a suite certifying code that no

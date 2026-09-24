@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import type { Bridge } from '../hooks/useBridge'
-import type { Provider } from '../api/types'
 import { roleLabel } from '../lib/runGraph'
 import { Button, Chip, Panel, inputClass, selectClass } from './primitives'
+import { ProviderCard } from './ProviderCard'
+import { Icon, type IconName } from './Icon'
 
 /**
  * Settings as a full view, reachable without a run — keys before runs is the
@@ -14,7 +15,7 @@ import { Button, Chip, Panel, inputClass, selectClass } from './primitives'
 
 type Tab = 'providers' | 'casting' | 'sandbox' | 'budgets' | 'learnings' | 'more'
 
-const TABS: Array<{ id: Tab; icon: string; label: string }> = [
+const TABS: Array<{ id: Tab; icon: IconName; label: string }> = [
   { id: 'providers', icon: 'hub', label: 'Providers' },
   { id: 'casting', icon: 'badge', label: 'Casting' },
   { id: 'sandbox', icon: 'security', label: 'Sandbox' },
@@ -24,141 +25,27 @@ const TABS: Array<{ id: Tab; icon: string; label: string }> = [
 ]
 
 const ROLES = ['head', 'research', 'builder', 'architect', 'editor', 'debug', 'reviewer']
-const AUTH_STYLES = ['auto', 'bearer', 'x-api-key', 'api-key', 'header', 'none']
-
-const keyWords = (provider: Provider): string => {
-  if (provider.keySource === 'stored') return 'stored locally, never displayed'
-  if (provider.keySource === 'env') return `from ${provider.envKey ?? 'environment'}`
-  if (provider.authStyle === 'none') return 'no key needed'
-  return provider.envKey ? `add ${provider.envKey}` : 'not configured'
-}
 
 const bytes = (value: number | null | undefined) => (value === null || value === undefined ? '—' : value > 1_000_000 ? `${(value / 1_000_000).toFixed(1)} MB` : value > 1_000 ? `${(value / 1_000).toFixed(1)} kB` : `${value} B`)
 const at = (timestamp: number | null | undefined) => (timestamp ? new Date(timestamp).toLocaleString() : 'never')
 
-function ProviderCard({ bridge, provider, probe, onProbed }: { bridge: Bridge; provider: Provider; probe: string | null; onProbed: (line: string) => void }) {
-  const [editing, setEditing] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [probing, setProbing] = useState(false)
-  const [draft, setDraft] = useState({ label: provider.label, baseUrl: provider.baseUrl, model: provider.model, apiKey: '', authStyle: provider.authStyle, allowPrivate: provider.allowPrivate })
-  const status = bridge.status?.providers.find((entry) => entry.id === provider.id)
-
-  const runProbe = async () => {
-    setProbing(true)
-    try {
-      const result = await bridge.testProvider(provider.id)
-      const value = result.result
-      onProbed(value?.reachable ? `ok · ${value.latencyMs}ms · ${value.models?.length ?? 0} models` : String(value?.error ?? value?.reason ?? 'unreachable'))
-    } catch (caught) {
-      onProbed(caught instanceof Error ? caught.message : 'probe failed')
-    } finally {
-      setProbing(false)
-    }
-  }
-
-  return (
-    <div className="bg-surface-container-low p-4 rounded-xl flex flex-col gap-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${provider.configured ? 'bg-surface-container-high text-primary' : 'bg-surface-container text-outline'}`} aria-hidden="true">
-            <span className="material-symbols-outlined text-[20px]">terminal</span>
-          </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h3 className="text-headline-md text-on-surface truncate">{provider.label}</h3>
-              {provider.configured ? <Chip tone="ok">configured</Chip> : <Chip tone="idle">needs a key</Chip>}
-              {provider.allowPrivate ? <Chip tone="busy">local network</Chip> : null}
-              {status?.breaker?.open ? <Chip tone="bad">skipped after failures</Chip> : null}
-            </div>
-            <p className="text-body-sm text-on-surface-variant truncate">model <code className="font-mono text-on-surface">{provider.model}</code> · key: {keyWords(provider)}</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-1.5 flex-shrink-0">
-          <Button onClick={() => void runProbe()} disabled={probing}>{probing ? 'Probing…' : 'Test Endpoint'}</Button>
-          <Button onClick={() => setEditing((open) => !open)}>{editing ? 'Close' : 'Edit'}</Button>
-          {provider.custom ? (
-            <button type="button" className="w-8 h-8 rounded-lg flex items-center justify-center text-error hover:bg-error-container/30 transition-colors" title={`Remove ${provider.label}`} aria-label={`Remove ${provider.label}`} onClick={() => void bridge.removeProvider(provider.id)}>
-              <span className="material-symbols-outlined text-sm" aria-hidden="true">delete</span>
-            </button>
-          ) : null}
-        </div>
-      </div>
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-        <div className="bg-surface-container p-2.5 rounded-lg">
-          <p className="text-label-sm text-outline uppercase">Auth</p>
-          <code className="font-mono text-body-sm text-secondary">{provider.authStyle === 'none' ? 'none' : provider.authHeader ?? provider.authStyle}</code>
-        </div>
-        <div className="bg-surface-container p-2.5 rounded-lg">
-          <p className="text-label-sm text-outline uppercase">Sampling</p>
-          <span className="font-mono text-body-sm text-primary">{provider.temperature === 'omit' ? 'provider default' : `temp ${provider.temperature}`}</span>
-        </div>
-        <div className="bg-surface-container p-2.5 rounded-lg">
-          <p className="text-label-sm text-outline uppercase">Latency</p>
-          <span className={`font-mono text-body-sm ${probe?.startsWith('ok') ? 'text-secondary' : probe ? 'text-error' : 'text-outline'}`}>{probe ?? 'not probed yet'}</span>
-        </div>
-      </div>
-      {editing ? (
-        <form
-          className="grid grid-cols-1 md:grid-cols-2 gap-2 p-3 rounded-lg border border-outline-variant/40"
-          onSubmit={async (e) => {
-            e.preventDefault()
-            setBusy(true)
-            try {
-              await bridge.saveProvider(provider, draft)
-              setEditing(false)
-            } finally {
-              setBusy(false)
-            }
-          }}
-        >
-          <label className="flex flex-col gap-1.5 text-label-sm text-outline uppercase tracking-wider">Label
-            <input className={inputClass} value={draft.label} onChange={(e) => setDraft((c) => ({ ...c, label: e.target.value }))} />
-          </label>
-          <label className="flex flex-col gap-1.5 text-label-sm text-outline uppercase tracking-wider">Base URL
-            <input className={`${inputClass} font-mono`} value={draft.baseUrl} onChange={(e) => setDraft((c) => ({ ...c, baseUrl: e.target.value }))} />
-          </label>
-          <label className="flex flex-col gap-1.5 text-label-sm text-outline uppercase tracking-wider">Model
-            <input className={`${inputClass} font-mono`} value={draft.model} onChange={(e) => setDraft((c) => ({ ...c, model: e.target.value }))} />
-          </label>
-          <label className="flex flex-col gap-1.5 text-label-sm text-outline uppercase tracking-wider">API key
-            <input type="password" autoComplete="off" className={`${inputClass} font-mono`} placeholder="Empty keeps the stored key" value={draft.apiKey} onChange={(e) => setDraft((c) => ({ ...c, apiKey: e.target.value }))} />
-          </label>
-          <label className="flex flex-col gap-1.5 text-label-sm text-outline uppercase tracking-wider">Auth style
-            <select className={selectClass} value={draft.authStyle} onChange={(e) => setDraft((c) => ({ ...c, authStyle: e.target.value }))}>
-              {AUTH_STYLES.map((style) => <option key={style} value={style}>{style}</option>)}
-            </select>
-          </label>
-          <label className="flex items-center gap-2 text-body-sm text-on-surface">
-            <input type="checkbox" checked={draft.allowPrivate} onChange={(e) => setDraft((c) => ({ ...c, allowPrivate: e.target.checked }))} />
-            Allow private-network URLs for this provider
-          </label>
-          <div className="md:col-span-2 flex gap-2">
-            <Button variant="primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save'}</Button>
-            <Button type="button" onClick={() => setEditing(false)}>Cancel</Button>
-          </div>
-        </form>
-      ) : null}
-    </div>
-  )
-}
-
 export function SettingsView({ bridge }: { bridge: Bridge }) {
   const [tab, setTab] = useState<Tab>('providers')
   const [probes, setProbes] = useState<Record<string, string>>({})
-  const [newProvider, setNewProvider] = useState({ label: '', baseUrl: '', model: '', apiKey: '' })
+  const [newProvider, setNewProvider] = useState({ label: '', baseUrl: '', model: '', apiKey: '', authStyle: 'auto', allowPrivate: false })
   const [addError, setAddError] = useState('')
   const [busy, setBusy] = useState('')
   const [grantDraft, setGrantDraft] = useState({ toolName: 'workspace.write', scopeKind: 'path' as 'path' | 'host', scopeValue: '' })
 
-  const { loadProviders, loadStatus, loadSettings, loadUsage, loadLearnings, loadGrants, verifyAudit, backupNow } = bridge
+  const { loadProviders, loadStatus, loadSettings, loadUsage, loadLearnings, loadGrants, verifyAudit, backupNow, setError } = bridge
   useEffect(() => {
-    void loadProviders()
+    void loadProviders().catch((caught) => setError(caught instanceof Error ? caught.message : 'Could not load providers.'))
     void loadStatus()
     void loadSettings()
     void loadUsage(30)
     void loadGrants()
     if (bridge.projectId) void loadLearnings(bridge.projectId)
-  }, [loadProviders, loadStatus, loadSettings, loadUsage, loadLearnings, loadGrants, bridge.projectId])
+  }, [loadProviders, loadStatus, loadSettings, loadUsage, loadLearnings, loadGrants, bridge.projectId, setError])
 
   const engine = bridge.status?.execution
   const configuredCount = bridge.providers.filter((p) => p.configured).length
@@ -177,7 +64,7 @@ export function SettingsView({ bridge }: { bridge: Bridge }) {
             className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-body-md whitespace-nowrap transition-all ${tab === entry.id ? 'bg-surface-container-high text-primary shadow-sm' : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container'}`}
             onClick={() => setTab(entry.id)}
           >
-            <span className="material-symbols-outlined text-[16px]" aria-hidden="true">{entry.icon}</span>
+            <Icon name={entry.icon} className="text-base" />
             {entry.label}
           </button>
         ))}
@@ -204,38 +91,44 @@ export function SettingsView({ bridge }: { bridge: Bridge }) {
                   <p className="text-label-sm text-outline mt-1">Providers cool down after repeated failures.</p>
                 </div>
               </div>
-              {bridge.providers.map((provider: Provider) => (
+              {bridge.providers.map((provider) => (
                 <ProviderCard key={provider.id} bridge={bridge} provider={provider} probe={probes[provider.id] ?? null} onProbed={(line) => setProbes((c) => ({ ...c, [provider.id]: line }))} />
               ))}
               <Panel title="Register custom provider">
-                <p className="text-body-sm text-on-surface-variant">Any OpenAI-compatible endpoint: vLLM, Ollama, OpenRouter, LM Studio&</p>
+                <p className="text-body-sm text-on-surface-variant">Any OpenAI-compatible endpoint: vLLM, Ollama, OpenRouter, LM Studio…</p>
                 <form
                   className="grid grid-cols-1 md:grid-cols-2 gap-2"
                   onSubmit={async (e) => {
                     e.preventDefault()
+                    if (busy === 'add-provider') return
                     setAddError('')
+                    setBusy('add-provider')
                     try {
                       await bridge.addProvider(newProvider)
-                      setNewProvider({ label: '', baseUrl: '', model: '', apiKey: '' })
+                      setNewProvider({ label: '', baseUrl: '', model: '', apiKey: '', authStyle: 'auto', allowPrivate: false })
                     } catch (caught) {
                       setAddError(caught instanceof Error ? caught.message : 'Could not add the provider.')
+                    } finally {
+                      setBusy('')
                     }
                   }}
                 >
                   <label className="visually-hidden" htmlFor="np-label">Label</label>
                   <input id="np-label" className={inputClass} placeholder="Label (e.g. Local vLLM)" value={newProvider.label} onChange={(e) => setNewProvider((c) => ({ ...c, label: e.target.value }))} />
                   <label className="visually-hidden" htmlFor="np-url">Base URL</label>
-                  <input id="np-url" className={`${inputClass} font-mono`} placeholder="http://127.0.0.1:11434/v1" value={newProvider.baseUrl} onChange={(e) => setNewProvider((c) => ({ ...c, baseUrl: e.target.value }))} />
+                    <input id="np-url" type="url" required className={`${inputClass} font-mono`} placeholder="http://127.0.0.1:11434/v1" value={newProvider.baseUrl} onChange={(e) => setNewProvider((c) => ({ ...c, baseUrl: e.target.value }))} />
                   <label className="visually-hidden" htmlFor="np-model">Model</label>
-                  <input id="np-model" className={`${inputClass} font-mono`} placeholder="Model" value={newProvider.model} onChange={(e) => setNewProvider((c) => ({ ...c, model: e.target.value }))} />
+                    <input id="np-model" required className={`${inputClass} font-mono`} placeholder="Model" value={newProvider.model} onChange={(e) => setNewProvider((c) => ({ ...c, model: e.target.value }))} />
                   <div className="flex gap-2">
                     <label className="visually-hidden" htmlFor="np-key">API key</label>
                     <input id="np-key" type="password" autoComplete="off" className={`${inputClass} font-mono flex-1`} placeholder="API key (empty if none)" value={newProvider.apiKey} onChange={(e) => setNewProvider((c) => ({ ...c, apiKey: e.target.value }))} />
-                    <Button variant="primary" type="submit" disabled={!newProvider.label.trim() || !newProvider.baseUrl.trim()}>Save</Button>
-                  </div>
+                      <Button variant="primary" type="submit" disabled={busy === 'add-provider' || !newProvider.label.trim() || !newProvider.baseUrl.trim() || !newProvider.model.trim()}>Save</Button>
+                    </div>
+                    <label className="flex flex-col gap-1 text-label-md">Authentication<select className={selectClass} value={newProvider.authStyle} onChange={(e) => setNewProvider((c) => ({ ...c, authStyle: e.target.value }))}><option value="auto">Provider default</option><option value="none">No authentication</option><option value="bearer">Bearer token</option><option value="x-api-key">x-api-key</option><option value="api-key">api-key</option></select></label>
+                    <label className="flex items-center gap-2 text-body-sm"><input type="checkbox" checked={newProvider.allowPrivate} onChange={(e) => setNewProvider((c) => ({ ...c, allowPrivate: e.target.checked }))} />Allow private-network URLs</label>
                 </form>
                 {addError ? <p className="text-error text-body-sm" role="alert">{addError}</p> : null}
-                <p className="text-label-sm text-outline">Private endpoints need <code className="font-mono">FULKRUM_ALLOW_PRIVATE_PROVIDER_URLS=1</code> — the boundary is deliberate, not a bug.</p>
+                <p className="text-label-sm text-outline">For local servers, enable private-network access and choose “No authentication” if the endpoint does not require a key.</p>
               </Panel>
             </>
           ) : null}
@@ -267,7 +160,7 @@ export function SettingsView({ bridge }: { bridge: Bridge }) {
           {tab === 'sandbox' ? (
             <Panel title="Execution boundary">
               <div className="flex items-center gap-2.5">
-                <span className={`material-symbols-outlined text-[20px] ${engine?.available ? 'text-secondary' : 'text-error'}`} aria-hidden="true">lock</span>
+                <Icon name="lock" className={`text-xl ${engine?.available ? 'text-secondary' : 'text-error'}`} />
                 <div>
                   <p className="text-body-md text-on-surface font-medium">{engine?.available ? `${engine.label} ${engine.version ?? ''}` : 'No engine reachable'}</p>
                   <p className={`text-label-sm flex items-center gap-1.5 ${engine?.available ? 'text-secondary' : 'text-error'}`}>
@@ -312,6 +205,7 @@ export function SettingsView({ bridge }: { bridge: Bridge }) {
                       inputMode="decimal"
                       className={`${inputClass} font-mono flex-1`}
                       defaultValue={String(setting?.value ?? 0)}
+                      disabled={setting?.source === 'env'}
                       key={`${hint}:${JSON.stringify(setting?.value)}`}
                       onBlur={async (e) => {
                         const next = e.target.value.trim() === '' ? 0 : Number(e.target.value)
@@ -404,7 +298,7 @@ export function SettingsView({ bridge }: { bridge: Bridge }) {
                 {bridge.status?.lastVerify ? <p className="text-label-sm text-outline">{bridge.status.lastVerify.summary}</p> : null}
               </Panel>
               <Panel title="All tunables" action={<span className="text-label-md text-outline">everything else, no terminal needed</span>}>
-                {bridge.appSettings.length === 0 ? <p className="text-body-sm text-outline">Loading settings&</p> : (
+                {bridge.appSettings.length === 0 ? <p className="text-body-sm text-outline">No settings loaded.</p> : (
                   <div className="flex flex-col gap-1 font-mono text-body-sm">
                     {bridge.appSettings.map((setting: any) => (
                       <div key={setting.name} className="flex items-center justify-between gap-2 py-1 border-b border-surface-container-highest">
@@ -435,9 +329,9 @@ export function SettingsView({ bridge }: { bridge: Bridge }) {
             </div>
           </Panel>
           <Panel title="Boundaries">
-            <p className="text-label-md text-outline flex items-center gap-1.5"><span className="material-symbols-outlined text-sm text-secondary" aria-hidden="true">lan</span> Bridge on <code className="font-mono text-on-surface">127.0.0.1</code> — loopback only.</p>
-            <p className="text-label-md text-outline flex items-center gap-1.5"><span className="material-symbols-outlined text-sm text-secondary" aria-hidden="true">key_off</span> Keys never leave this machine; tool output is scanned for credential shapes.</p>
-            <p className="text-label-md text-outline flex items-center gap-1.5"><span className="material-symbols-outlined text-sm text-secondary" aria-hidden="true">block</span> No command runs on the host: container, or not at all.</p>
+            <p className="text-label-md text-outline flex items-start gap-1.5"><Icon name="lan" className="text-sm text-secondary" /><span>Bridge on <code className="font-mono text-on-surface">127.0.0.1</code> — loopback only.</span></p>
+            <p className="text-label-md text-outline flex items-start gap-1.5"><Icon name="key_off" className="text-sm text-secondary" /><span>Keys are stored locally and sent only to their configured provider; tool output is scanned for credential shapes.</span></p>
+            <p className="text-label-md text-outline flex items-start gap-1.5"><Icon name="block" className="text-sm text-secondary" /><span>No command runs on the host: container, or not at all.</span></p>
           </Panel>
         </div>
       </div>

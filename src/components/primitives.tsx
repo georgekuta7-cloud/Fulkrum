@@ -1,4 +1,5 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react'
+import { Icon, type IconName } from './Icon'
 
 /**
  * The only shared pieces. Three components, no variants beyond tone:
@@ -16,7 +17,7 @@ export function Button({ variant = 'ghost', className = '', type = 'button', ...
     danger: 'text-error hover:bg-error-container/30',
     ghost: 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high',
   } as const
-  return <button type={type} className={`px-3.5 py-1.5 rounded-lg text-label-md transition-colors disabled:opacity-40 ${tones[variant]} ${className}`} {...props} />
+  return <button type={type} className={`inline-flex items-center justify-center gap-1.5 min-h-8 px-3.5 py-1.5 rounded-lg text-label-md transition-colors disabled:opacity-40 ${tones[variant]} ${className}`} {...props} />
 }
 
 const CHIP_TONES = {
@@ -33,8 +34,8 @@ export function Chip({ tone = 'idle', children }: { tone?: keyof typeof CHIP_TON
 
 export function Panel({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
-    <section className="bg-surface-container-low rounded-xl p-4 flex flex-col gap-3" aria-label={title}>
-      <div className="flex items-center justify-between gap-2">
+    <section className="bg-surface-container-low rounded-xl p-4 flex flex-col gap-3 min-w-0" aria-label={title}>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <h2 className="text-label-lg font-semibold text-on-surface">{title}</h2>
         {action}
       </div>
@@ -43,11 +44,11 @@ export function Panel({ title, action, children }: { title: string; action?: Rea
   )
 }
 
-export function EmptyState({ icon, title, body, action }: { icon: string; title: string; body: string; action?: ReactNode }) {
+export function EmptyState({ icon, title, body, action }: { icon: IconName; title: string; body: string; action?: ReactNode }) {
   return (
     <div className="flex items-center justify-center h-full">
       <div className="text-center space-y-3 max-w-md px-4">
-        <span className="material-symbols-outlined text-5xl text-primary" aria-hidden="true">{icon}</span>
+        <Icon name={icon} className="text-5xl text-primary" />
         <h2 className="text-headline-md text-on-surface">{title}</h2>
         <p className="text-body-md text-on-surface-variant">{body}</p>
         {action}
@@ -56,5 +57,5 @@ export function EmptyState({ icon, title, body, action }: { icon: string; title:
   )
 }
 
-export const inputClass = 'bg-surface-container-lowest px-3 py-2 rounded-lg text-body-md text-on-surface placeholder:text-outline focus:outline-none focus:ring-1 focus:ring-primary'
-export const selectClass = 'bg-surface-container-lowest px-3 py-1.5 rounded-lg text-body-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-primary min-w-[180px]'
+export const inputClass = 'min-w-0 max-w-full bg-surface-container-lowest px-3 py-2 rounded-lg text-body-md text-on-surface placeholder:text-outline focus:outline-none focus:ring-1 focus:ring-primary'
+export const selectClass = 'max-w-full bg-surface-container-lowest px-3 py-1.5 rounded-lg text-body-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-primary min-w-[180px]'

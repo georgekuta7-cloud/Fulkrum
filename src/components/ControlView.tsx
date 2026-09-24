@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import type { Bridge } from '../hooks/useBridge'
 import { buildGraph, roleLabel, type GraphNode } from '../lib/runGraph'
 import { Button, EmptyState, Panel } from './primitives'
+import { Icon, type IconName } from './Icon'
 
 /**
  * The run as a living map: you, the Head, and one node per plan task in
@@ -20,7 +21,7 @@ const NODE_TONE: Record<string, string> = {
   blocked: 'border-outline-variant text-on-surface-variant opacity-50',
 }
 
-const ICONS: Record<string, string> = { you: 'person', head: 'psychology', research: 'travel_explore', builder: 'construction', architect: 'architecture', editor: 'edit', debug: 'bug_report', reviewer: 'content_paste_search' }
+const ICONS: Record<string, IconName> = { you: 'person', head: 'psychology', research: 'travel_explore', builder: 'construction', architect: 'architecture', editor: 'edit', debug: 'bug_report', reviewer: 'content_paste_search' }
 
 function trimEdge(x1: number, y1: number, x2: number, y2: number, pad: number) {
   const dx = x2 - x1
@@ -80,7 +81,7 @@ function MapCanvas({ bridge }: { bridge: Bridge }) {
             aria-label={`${node.title} — ${node.subtitle}`}
           >
             <span className="flex items-center gap-1.5 self-stretch min-w-0">
-              <span className="material-symbols-outlined text-sm text-primary flex-shrink-0" aria-hidden="true">{ICONS[node.agentId ?? node.kind] ?? 'smart_toy'}</span>
+              <Icon name={ICONS[node.agentId ?? node.kind] ?? 'smart_toy'} className="text-sm text-primary" />
               <span className="text-label-md font-semibold text-on-surface truncate">{node.title}</span>
             </span>
             <span className="text-label-sm text-on-surface-variant line-clamp-1">{node.subtitle}</span>

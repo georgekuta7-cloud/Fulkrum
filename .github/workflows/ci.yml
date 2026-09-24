@@ -28,6 +28,11 @@ jobs:
       - run: npm test
       - run: npm run test:ui
       - run: npm run build
+      # One job drives the built UI through a real browser and API fixture, so
+      # layout and cross-surface workflows are checked, not only components.
+      - name: Browser workflow tests
+        if: matrix.os == 'ubuntu-latest' && matrix.node == '24'
+        run: npx playwright install --with-deps chromium && npm run test:browser
       # One job measures coverage: the thresholds live in the script, so a
       # regression fails here rather than being noticed later.
       - name: Coverage thresholds

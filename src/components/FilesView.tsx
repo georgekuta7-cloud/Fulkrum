@@ -101,15 +101,16 @@ function WorkspaceTree({ bridge }: { bridge: Bridge }) {
   const [path, setPath] = useState('.')
   const [entries, setEntries] = useState<Array<any>>([])
   const [history, setHistory] = useState<Record<string, Array<any>>>({})
+  const { tree } = bridge
   useEffect(() => {
     let live = true
-    void bridge.tree(path, 2).then((payload: any) => {
+    void tree(path, 2).then((payload: any) => {
       if (live) setEntries(payload?.entries ?? [])
     }).catch(() => {
       if (live) setEntries([])
     })
     return () => { live = false }
-  }, [bridge, path])
+  }, [tree, path])
   const up = path === '.' ? null : path.split('/').slice(0, -1).join('/') || '.'
   return (
     <div className="flex flex-col gap-1">

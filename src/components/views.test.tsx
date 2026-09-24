@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { Button, Chip, EmptyState, Panel } from './primitives'
 import { Nav } from './Nav'
 import { Header } from './Header'
@@ -168,8 +168,10 @@ describe('chat', () => {
     const { rerender } = render(<ChatView bridge={chatBridge({ approval: { toolCall: call, rule: 'ask.default', warnings: [], preview: null } as any, approveCall, denyCall })} />)
     fireEvent.click(screen.getByRole('button', { name: /approve/i }))
     expect(approveCall).toHaveBeenCalledWith('once')
+    await waitFor(() => expect(screen.getByRole('button', { name: /approve/i })).toBeEnabled())
     fireEvent.keyDown(window, { key: 'r' })
     expect(approveCall).toHaveBeenCalledWith('run')
+    await waitFor(() => expect(screen.getByRole('button', { name: /approve/i })).toBeEnabled())
     fireEvent.keyDown(window, { key: 'd' })
     expect(await screen.findByLabelText('Why not')).toBeInTheDocument()
     fireEvent.keyDown(screen.getByLabelText('Why not'), { key: 'Escape' })
@@ -403,7 +405,7 @@ describe('settings', () => {
     usage: { since: 0, days: 30, totals: { costUsd: 0.04, calls: 2, unpricedCalls: 0 }, byDay: [], byModel: [], byProvider: [{ key: 'grok', costUsd: 0.04, calls: 2, unpricedCalls: 0 }], byRole: [] } as any,
     learnings: [{ id: 'l1', projectId: 'p1', fact: 'Always pin.', sourceRunId: null, createdAt: 1 }] as any,
     blueprints: [],
-    loadProviders: vi.fn(), loadStatus: vi.fn(), loadSettings: vi.fn(), loadUsage: vi.fn(), loadLearnings: vi.fn(), loadGrants: vi.fn(),
+    loadProviders: vi.fn().mockResolvedValue([]), loadStatus: vi.fn(), loadSettings: vi.fn(), loadUsage: vi.fn(), loadLearnings: vi.fn(), loadGrants: vi.fn(),
     testProvider: vi.fn(), saveProvider: vi.fn(), addProvider: vi.fn(), removeProvider: vi.fn(),
     saveRouting: vi.fn(), saveSetting: vi.fn(), deleteLearning: vi.fn(), verifyAudit: vi.fn(), backupNow: vi.fn(),
     ...overrides,
@@ -418,6 +420,7 @@ describe('settings', () => {
     expect(await screen.findByText(/ok · 42ms/)).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'Local' } })
     fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'http://127.0.0.1:11434/v1' } })
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'local-model' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(addProvider).toHaveBeenCalledWith(expect.objectContaining({ label: 'Local' }))
   })

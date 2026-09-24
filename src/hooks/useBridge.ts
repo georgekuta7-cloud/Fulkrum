@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, api, openRunStream } from '../api/client'
 import { roleLabel } from '../lib/runGraph'
-import type { AgentId, AppSetting, ArsenalItem, Artifact, Claim, ConfigReport, Estimate, FileHistoryEntry, MarketplaceEntry, Plan, Project, Provider, ReasoningLevel, Run, RunEvent, SearchResults, Spend, StandingGrant, Status, Task, ToolCall, TreeNode, Usage } from '../api/types'
+import { createRequestScope } from './requestScope'
+import { useWorkspaceBridge } from './useWorkspaceBridge'
+import type { AgentId, ApprovalDetails, Artifact, Claim, Estimate, FileHistoryEntry, Message, Plan, Project, ReasoningLevel, Run, RunEvent, RunGrant, RunSnapshot, SearchResults, Spend, Task, TaskSpend, ToolCall, TreeNode, WritePreview } from '../api/types'
 
 /**
  * Everything the interface reads, and the actions it takes, in one place.
@@ -14,9 +16,23 @@ import type { AgentId, AppSetting, ArsenalItem, Artifact, Claim, ConfigReport, E
 
 const emptySpend: Spend = { costUsd: 0, calls: 0, unpricedCalls: 0 }
 
-export type Approval = { toolCall: ToolCall; rule: string | null; warnings: Array<{ field: string; kinds: string[] }>; preview: any }
+export type Approval = { toolCall: ToolCall; rule: string | null; warnings: ToolCall['warnings']; preview: WritePreview | null }
+
+function upsertRows<T extends { id: string; status: string }>(current: T[], rows: T[], statuses: Array<{ id: string; status: string }> = []): T[] {
+  const live = new Map(rows.map((row) => [row.id, row]))
+  const states = new Map(statuses.map((row) => [row.id, row.status]))
+  const known = new Set(current.map((row) => row.id))
+  return [
+    ...current.map((row) => live.get(row.id) ?? (states.has(row.id) ? { ...row, status: states.get(row.id)! } : row)),
+    ...rows.filter((row) => !known.has(row.id)),
+  ]
+}
 
 export function useBridge() {
+  const [projectScope] = useState(createRequestScope)
+  const [runScope] = useState(createRequestScope)
+  const [projectLoading, setProjectLoading] = useState(false)
+  const [runLoading, setRunLoading] = useState(false)
   const [projects, setProjects] = useState<Project[]>([])
   const [projectId, setProjectId] = useState<string | null>(null)
   // The open project's settings (routing, reasoning, checks): the casting the
@@ -27,31 +43,23 @@ export function useBridge() {
   const [runId, setRunId] = useState<string | null>(null)
   const [run, setRun] = useState<Run | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
-  const [messages, setMessages] = useState<Array<{ id: number; role: string; agentId: string | null; content: string; createdAt: number; metadata: any }>>([])
+  const [messages, setMessages] = useState<Message[]>([])
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([])
   const [events, setEvents] = useState<RunEvent[]>([])
   const [plan, setPlan] = useState<Plan | null>(null)
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
   const [claims, setClaims] = useState<Claim[]>([])
   const [spend, setSpend] = useState<Spend>(emptySpend)
-  const [byTask, setByTask] = useState<Array<{ taskId: string | null; title: string | null; agentId: string | null; costUsd: number; calls: number; unpricedCalls: number }>>([])
+  const [byTask, setByTask] = useState<TaskSpend[]>([])
+  const [runGrants, setRunGrants] = useState<RunGrant[]>([])
   const [estimate, setEstimate] = useState<Estimate | null>(null)
   const [audit, setAudit] = useState<{ ok: boolean; checked: number; unverified?: number } | null>(null)
-  const [providers, setProviders] = useState<Provider[]>([])
-  const [status, setStatus] = useState<Status | null>(null)
-  const [grants, setGrants] = useState<StandingGrant[]>([])
   const [learnings, setLearnings] = useState<Array<{ id: string; projectId: string; fact: string; sourceRunId: string | null; createdAt: number }>>([])
   const [playbooks, setPlaybooks] = useState<Array<{ id: string; projectId: string; name: string; contentHash: string; budgetUsd: number | null; approvedAt: number | null; createdAt: number }>>([])
   const [schedules, setSchedules] = useState<Array<{ id: string; projectId: string; playbookId: string; everyMinutes: number; budgetUsd: number | null; enabled: boolean; nextFireAt: number; lastRunId: string | null; createdAt: number }>>([])
   const [goals, setGoals] = useState<Array<{ id: string; projectId: string; name: string; objective: string; acceptance: string; budgetUsd: number | null; status: string; createdAt: number; spendUsd?: number; runCount?: number }>>([])
   const [blueprints, setBlueprints] = useState<Array<{ name: string; version: string; description: string; source: string }>>([])
   const [timeline, setTimeline] = useState<{ seq: number; files: Array<{ path: string; content: string | null; truncated: boolean; unknown: string | null }>; gaps: string[] } | null>(null)
-  const [marketplace, setMarketplace] = useState<{ enabled: boolean; signed: boolean; entries: MarketplaceEntry[]; fetchedAt: number | null; stale: boolean }>({ enabled: false, signed: false, entries: [], fetchedAt: null, stale: false })
-  const [arsenal, setArsenal] = useState<{ skills: ArsenalItem[]; plugins: ArsenalItem[] }>({ skills: [], plugins: [] })
-  const [registry, setRegistry] = useState<{ candidates: MarketplaceEntry[]; skipped: string[]; fetchedAt: number } | null>(null)
-  const [configReport, setConfigReport] = useState<ConfigReport | null>(null)
-  const [appSettings, setAppSettings] = useState<AppSetting[]>([])
-  const [usage, setUsage] = useState<Usage | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   // False until the first load finishes, so an empty project list reads as
@@ -62,8 +70,7 @@ export function useBridge() {
   const [approval, setApproval] = useState<Approval | null>(null)
 
   const streamRef = useRef<EventSource | null>(null)
-  const runIdRef = useRef<string | null>(null)
-  runIdRef.current = runId
+  const rowsRef = useRef<{ tasks: Task[]; calls: ToolCall[] }>({ tasks: [], calls: [] })
   // Newest event sequence seen per run (stream resume cursor) and newest
   // sequence covered by a *full* snapshot (light-snapshot delta cursor).
   // Kept separate on purpose: the delta cursor must only advance on full
@@ -77,6 +84,8 @@ export function useBridge() {
     setError(message)
     return message
   }, [])
+  const workspace = useWorkspaceBridge(report, setNotice)
+  const { loadProviders, loadStatus, loadGrants, loadConfig, loadSettings } = workspace
 
   // ---------------------------------------------------------------- reads
 
@@ -87,13 +96,12 @@ export function useBridge() {
   }, [])
 
   const loadRuns = useCallback(async (forProject: string | null) => {
+    const selection = projectScope.capture(forProject)
     const query = forProject ? `?projectId=${encodeURIComponent(forProject)}&limit=50` : '?limit=50'
-    const payload = await api.get<{ runs: Run[] }>(`/api/runs${query}`)
-    setRuns(payload.runs)
+    const payload = await api.get<{ runs: Run[] }>(`/api/runs${query}`, { signal: selection.signal })
+    if (selection.isCurrent()) setRuns(payload.runs)
     return payload.runs
-  }, [])
-
-  type Snapshot = { run: Run; tasks: Task[]; toolCalls: ToolCall[]; events: RunEvent[]; messages: any[]; audit: any; light?: boolean; taskStatuses?: Array<{ id: string; status: string }>; toolCallStatuses?: Array<{ id: string; status: string }>; counts?: { messages: number; tasks: number; toolCalls: number; events: number } }
+  }, [projectScope])
 
   const trackSeq = useCallback((id: string, events: RunEvent[]) => {
     const max = events.reduce((top, event) => Math.max(top, Number(event.sequence ?? 0) || 0), 0)
@@ -101,131 +109,114 @@ export function useBridge() {
   }, [])
 
   const loadRun = useCallback(async (id: string, options: { light?: boolean } = {}) => {
+    const selection = runScope.capture(id)
+    if (!selection.isCurrent()) return null
     const query = options.light ? `?light=1&since=${baseSeqRef.current[id] ?? 0}` : ''
-    const snapshot = await api.get<Snapshot>(`/api/runs/${encodeURIComponent(id)}${query}`).catch(() => null)
-    // A late answer for a run the user has moved away from must not overwrite the
-    // one they are looking at.
-    if (!snapshot || runIdRef.current !== id) return null
-    if (snapshot.light) {
-      // Merge, never replace: full rows upsert by id, status maps flip stale
-      // rows. New rows are covered because the delta cursor only advances on
-      // full loads, so everything created since is in this payload.
-      setRun(snapshot.run)
-      const taskStatus = new Map((snapshot.taskStatuses ?? []).map((entry) => [entry.id, entry.status]))
-      const callStatus = new Map((snapshot.toolCallStatuses ?? []).map((entry) => [entry.id, entry.status]))
-      const liveTasks = new Map((snapshot.tasks ?? []).map((task) => [task.id, task]))
-      const liveCalls = new Map((snapshot.toolCalls ?? []).map((call) => [call.id, call]))
-      const upsert = <T extends { id: string; status: string }>(current: T[], live: Map<string, T>, statuses: Map<string, string>): T[] => {
-        const next = current.map((row) => (live.get(row.id) ?? (statuses.has(row.id) ? { ...row, status: statuses.get(row.id) as T['status'] } : row)))
-        const known = new Set(current.map((row) => row.id))
-        for (const row of live.values()) {
-          if (!known.has(row.id)) next.push(row)
-        }
-        return next
-      }
-      setTasks((current) => upsert(current, liveTasks as Map<string, Task>, taskStatus))
-      setToolCalls((current) => {
-        const next = upsert(current, liveCalls as Map<string, ToolCall>, callStatus)
-        setApproval((approvalCurrent) => {
-          const parked = next.filter((call) => call.status === 'approval_required')
-          if (!parked.length) return approvalCurrent?.toolCall.status === 'approval_required' ? null : approvalCurrent
-          return approvalCurrent && parked.some((call) => call.id === approvalCurrent.toolCall.id) ? approvalCurrent : { toolCall: parked[0], rule: parked[0].ruleId ?? null, warnings: parked[0].warnings ?? [], preview: null }
-        })
-        return next
-      })
-      return snapshot
-    }
+    const snapshot = await api.get<RunSnapshot>(`/api/runs/${encodeURIComponent(id)}${query}`, { signal: selection.signal }).catch(() => null)
+    if (!snapshot || !selection.isCurrent() || snapshot.run.projectId !== projectScope.id) return null
     setRun(snapshot.run)
-    setTasks(snapshot.tasks ?? [])
-    setToolCalls(snapshot.toolCalls ?? [])
+    const nextTasks = snapshot.light ? upsertRows(rowsRef.current.tasks, snapshot.tasks ?? [], snapshot.taskStatuses) : snapshot.tasks ?? []
+    const nextCalls = snapshot.light ? upsertRows(rowsRef.current.calls, snapshot.toolCalls ?? [], snapshot.toolCallStatuses) : snapshot.toolCalls ?? []
+    rowsRef.current = { tasks: nextTasks, calls: nextCalls }
+    setTasks(nextTasks)
+    setToolCalls(nextCalls)
+    setApproval((current) => {
+      const pending = nextCalls.filter((call) => call.status === 'approval_required')
+      const call = pending.find((entry) => entry.id === current?.toolCall.id) ?? pending[0]
+      if (!call) return null
+      const same = current?.toolCall.id === call.id && current.toolCall.fingerprint === call.fingerprint
+      return { toolCall: call, rule: call.ruleId, warnings: call.warnings ?? [], preview: same ? current.preview : null }
+    })
+    if (snapshot.light) return snapshot
     setEvents(snapshot.events ?? [])
     setMessages(snapshot.messages ?? [])
     setAudit(snapshot.audit ?? null)
     trackSeq(id, snapshot.events ?? [])
     baseSeqRef.current[id] = seqRef.current[id] ?? 0
     return snapshot
-  }, [trackSeq])
+  }, [projectScope, runScope, trackSeq])
 
   const loadPlan = useCallback(async (id: string) => {
-    const payload = await api.get<Plan>(`/api/runs/${encodeURIComponent(id)}/plan`).catch(() => null)
-    if (runIdRef.current === id) setPlan(payload)
+    const selection = runScope.capture(id)
+    if (!selection.isCurrent()) return null
+    const payload = await api.get<Plan>(`/api/runs/${encodeURIComponent(id)}/plan`, { signal: selection.signal }).catch(() => null)
+    if (selection.isCurrent()) setPlan(payload)
     return payload
-  }, [])
+  }, [runScope])
 
   const loadTrace = useCallback(async (id: string) => {
-    const payload = await api.get<{ spend: Spend; byTask: any[] }>(`/api/runs/${encodeURIComponent(id)}/trace`).catch(() => null)
-    if (payload && runIdRef.current === id) {
+    const selection = runScope.capture(id)
+    if (!selection.isCurrent()) return null
+    const payload = await api.get<{ spend: Spend; byTask: TaskSpend[] }>(`/api/runs/${encodeURIComponent(id)}/trace`, { signal: selection.signal }).catch(() => null)
+    if (payload && selection.isCurrent()) {
       setSpend(payload.spend ?? emptySpend)
       setByTask(payload.byTask ?? [])
     }
     return payload
-  }, [])
+  }, [runScope])
 
   const loadArtifacts = useCallback(async (id: string) => {
-    const payload = await api.get<{ artifacts: Artifact[] }>(`/api/runs/${encodeURIComponent(id)}/artifacts`).catch(() => null)
-    if (payload && runIdRef.current === id) setArtifacts(payload.artifacts ?? [])
+    const selection = runScope.capture(id)
+    if (!selection.isCurrent()) return null
+    const payload = await api.get<{ artifacts: Artifact[]; grants: RunGrant[] }>(`/api/runs/${encodeURIComponent(id)}/artifacts`, { signal: selection.signal }).catch(() => null)
+    if (payload && selection.isCurrent()) {
+      setArtifacts(payload.artifacts ?? [])
+      setRunGrants(payload.grants ?? [])
+    }
     return payload
-  }, [])
+  }, [runScope])
 
   const loadClaims = useCallback(async (id: string) => {
-    const payload = await api.get<{ claims: Claim[] }>(`/api/runs/${encodeURIComponent(id)}/claims`).catch(() => null)
-    if (payload && runIdRef.current === id) setClaims(payload.claims ?? [])
+    const selection = runScope.capture(id)
+    if (!selection.isCurrent()) return null
+    const payload = await api.get<{ claims: Claim[] }>(`/api/runs/${encodeURIComponent(id)}/claims`, { signal: selection.signal }).catch(() => null)
+    if (payload && selection.isCurrent()) setClaims(payload.claims ?? [])
     return payload
-  }, [])
+  }, [runScope])
 
   const loadEstimate = useCallback(async (id: string) => {
-    const payload = await api.get<Estimate>(`/api/runs/${encodeURIComponent(id)}/estimate`).catch(() => null)
-    if (runIdRef.current === id) setEstimate(payload)
+    const selection = runScope.capture(id)
+    if (!selection.isCurrent()) return null
+    const payload = await api.get<Estimate>(`/api/runs/${encodeURIComponent(id)}/estimate`, { signal: selection.signal }).catch(() => null)
+    if (selection.isCurrent()) setEstimate(payload)
     return payload
-  }, [])
-
-  const loadProviders = useCallback(async () => {
-    const payload = await api.get<{ providers: Provider[] }>('/api/providers')
-    setProviders(payload.providers)
-    return payload.providers
-  }, [])
-
-  const loadStatus = useCallback(async () => {
-    const payload = await api.get<Status>('/api/status').catch(() => null)
-    setStatus(payload)
-    return payload
-  }, [])
-
-  const loadGrants = useCallback(async () => {
-    const payload = await api.get<{ grants: StandingGrant[]; history: any[] }>('/api/grants').catch(() => ({ grants: [], history: [] }))
-    setGrants(payload.grants ?? [])
-    return payload
-  }, [])
+  }, [runScope])
 
   const loadLearnings = useCallback(async (forProject: string | null) => {
+    const selection = projectScope.capture(forProject)
+    if (!selection.isCurrent()) return []
     if (!forProject) {
       setLearnings([])
       return []
     }
-    const payload = await api.get<{ learnings: Array<{ id: string; projectId: string; fact: string; sourceRunId: string | null; createdAt: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/learnings`).catch(() => null)
-    if (payload) setLearnings(payload.learnings ?? [])
+    const payload = await api.get<{ learnings: Array<{ id: string; projectId: string; fact: string; sourceRunId: string | null; createdAt: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/learnings`, { signal: selection.signal }).catch(() => null)
+    if (payload && selection.isCurrent()) setLearnings(payload.learnings ?? [])
     return payload?.learnings ?? []
-  }, [])
+  }, [projectScope])
 
   const loadPlaybooksFor = useCallback(async (forProject: string | null) => {
+    const selection = projectScope.capture(forProject)
+    if (!selection.isCurrent()) return []
     if (!forProject) {
       setPlaybooks([])
       return []
     }
-    const payload = await api.get<{ playbooks: Array<{ id: string; projectId: string; name: string; contentHash: string; budgetUsd: number | null; approvedAt: number | null; createdAt: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/playbooks`).catch(() => null)
-    if (payload) setPlaybooks(payload.playbooks ?? [])
+    const payload = await api.get<{ playbooks: Array<{ id: string; projectId: string; name: string; contentHash: string; budgetUsd: number | null; approvedAt: number | null; createdAt: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/playbooks`, { signal: selection.signal }).catch(() => null)
+    if (payload && selection.isCurrent()) setPlaybooks(payload.playbooks ?? [])
     return payload?.playbooks ?? []
-  }, [])
+  }, [projectScope])
 
   const loadSchedulesFor = useCallback(async (forProject: string | null) => {
+    const selection = projectScope.capture(forProject)
+    if (!selection.isCurrent()) return []
     if (!forProject) {
       setSchedules([])
       return []
     }
-    const payload = await api.get<{ schedules: Array<{ id: string; projectId: string; playbookId: string; everyMinutes: number; budgetUsd: number | null; enabled: boolean; nextFireAt: number; lastRunId: string | null; createdAt: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/schedules`).catch(() => null)
-    if (payload) setSchedules(payload.schedules ?? [])
+    const payload = await api.get<{ schedules: Array<{ id: string; projectId: string; playbookId: string; everyMinutes: number; budgetUsd: number | null; enabled: boolean; nextFireAt: number; lastRunId: string | null; createdAt: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/schedules`, { signal: selection.signal }).catch(() => null)
+    if (payload && selection.isCurrent()) setSchedules(payload.schedules ?? [])
     return payload?.schedules ?? []
-  }, [])
+  }, [projectScope])
 
   const loadBlueprintsFor = useCallback(async () => {
     const payload = await api.get<{ blueprints: Array<{ name: string; version: string; description: string; source: string }> }>('/api/blueprints').catch(() => null)
@@ -233,45 +224,17 @@ export function useBridge() {
     return payload?.blueprints ?? []
   }, [])
 
-  const loadMarketplaceState = useCallback(async () => {
-    const payload = await api.get<{ enabled: boolean; signed: boolean; entries: MarketplaceEntry[]; fetchedAt: number | null; stale: boolean }>('/api/marketplace').catch(() => null)
-    if (payload) setMarketplace({ enabled: payload.enabled, signed: payload.signed ?? false, entries: payload.entries ?? [], fetchedAt: payload.fetchedAt, stale: payload.stale })
-    return payload
-  }, [])
-
-  const loadArsenalState = useCallback(async () => {
-    const payload = await api.get<{ skills: ArsenalItem[]; plugins: ArsenalItem[] }>('/api/arsenal').catch(() => null)
-    if (payload) setArsenal({ skills: payload.skills ?? [], plugins: payload.plugins ?? [] })
-    return payload
-  }, [])
-
   const loadGoalsFor = useCallback(async (forProject: string | null) => {
+    const selection = projectScope.capture(forProject)
+    if (!selection.isCurrent()) return []
     if (!forProject) {
       setGoals([])
       return []
     }
-    const payload = await api.get<{ goals: Array<{ id: string; projectId: string; name: string; objective: string; acceptance: string; budgetUsd: number | null; status: string; createdAt: number; spendUsd?: number; runCount?: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/goals`).catch(() => null)
-    if (payload) setGoals(payload.goals ?? [])
+    const payload = await api.get<{ goals: Array<{ id: string; projectId: string; name: string; objective: string; acceptance: string; budgetUsd: number | null; status: string; createdAt: number; spendUsd?: number; runCount?: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/goals`, { signal: selection.signal }).catch(() => null)
+    if (payload && selection.isCurrent()) setGoals(payload.goals ?? [])
     return payload?.goals ?? []
-  }, [])
-
-  const loadConfig = useCallback(async () => {
-    const payload = await api.get<ConfigReport>('/api/config').catch(() => null)
-    setConfigReport(payload)
-    return payload
-  }, [])
-
-  const loadSettings = useCallback(async () => {
-    const payload = await api.get<{ settings: AppSetting[] }>('/api/settings').catch(() => null)
-    if (payload) setAppSettings(payload.settings)
-    return payload?.settings ?? []
-  }, [])
-
-  const loadUsage = useCallback(async (days = 30) => {
-    const payload = await api.get<Usage>(`/api/usage?days=${days}`).catch(() => null)
-    setUsage(payload)
-    return payload
-  }, [])
+  }, [projectScope])
 
   // ---------------------------------------------------------------- stream
 
@@ -281,53 +244,47 @@ export function useBridge() {
     // run's whole history. Only new message content needs the full copy.
     if (event.type === 'message.assistant' || event.type === 'message.user') {
       await Promise.all([loadRun(id), loadTrace(id)])
-    } else if (event.type.startsWith('task.') || event.type.startsWith('run.') || event.type.startsWith('tool.') || event.type.startsWith('plan.')) {
+    } else if (['task.', 'run.', 'tool.', 'plan.', 'approval.'].some((prefix) => event.type.startsWith(prefix))) {
       await Promise.all([loadRun(id, { light: true }), loadTrace(id), loadPlan(id)])
-      if (event.type === 'tool.completed' || event.type === 'artifact.revert') await loadArtifacts(id)
       if (event.type === 'plan.drafted' || event.type === 'plan.edited') await loadEstimate(id)
     }
+    if (event.type === 'tool.completed' || event.type === 'artifact.revert' || event.type === 'approval.granted' || event.type === 'approval.revoked') await loadArtifacts(id)
     if (event.type === 'claims.recorded' || event.type === 'task.completed') await loadClaims(id)
-    if (event.type === 'run.review.ready' || event.type === 'learning.recorded') await loadLearnings(projectId)
+    if (event.type === 'run.review.ready' || event.type === 'learning.recorded') await loadLearnings(projectScope.id)
     if (event.type === 'approval.requested' || event.type === 'tool.denied' || event.type === 'approval.granted' || event.type === 'approval.standing') await loadGrants()
-  }, [loadArtifacts, loadClaims, loadEstimate, loadGrants, loadLearnings, loadPlan, loadRun, loadTrace, projectId])
+  }, [loadArtifacts, loadClaims, loadEstimate, loadGrants, loadLearnings, loadPlan, loadRun, loadTrace, projectScope])
 
-  // The dock is a queue derived from the run's own state, not the last event that
-  // happened to mention an approval: on load, or after a reconnect, whatever is
-  // genuinely parked still shows, and a stale prompt never lingers after its call
-  // has resolved.
-  const syncApprovalQueue = useCallback(async (id: string) => {
-    // Light is enough: parked approvals ride the light snapshot by design.
-    const snapshot = await loadRun(id, { light: true })
-    if (!snapshot) return
-    const pending = (snapshot.toolCalls as ToolCall[]).filter((call) => call.status === 'approval_required')
-    setApproval((current) => {
-      const next = pending.find((call) => call.id === current?.toolCall.id) ?? pending[0] ?? null
-      return next ? { toolCall: next, rule: next.ruleId ?? null, warnings: next.warnings ?? [], preview: null } : null
-    })
-  }, [loadRun])
+  // Preview on initial load as well as live events. A queue refresh must not
+  // erase a fetched diff, and a late preview cannot attach to a different call.
+  const approvalId = approval?.toolCall.id
+  const approvalFingerprint = approval?.toolCall.fingerprint
+  useEffect(() => {
+    if (!runId || !approvalId) return
+    const selection = runScope.capture(runId)
+    let live = true
+    void api.get<ApprovalDetails>(`/api/runs/${encodeURIComponent(runId)}/tools/${encodeURIComponent(approvalId)}/preview`, { signal: selection.signal })
+      .then((detail) => {
+        if (!live || !selection.isCurrent()) return
+        setApproval((current) => current?.toolCall.id === approvalId && current.toolCall.fingerprint === approvalFingerprint
+          ? { ...current, rule: detail.rule, warnings: detail.warnings ?? [], preview: detail.preview }
+          : current)
+      }).catch(() => {})
+    return () => { live = false }
+  }, [approvalId, approvalFingerprint, runId, runScope])
 
   const ingestEvent = useCallback((event: RunEvent) => {
-    if (runIdRef.current !== event.runId) return
+    if (runScope.id !== event.runId) return
     trackSeq(event.runId, [event])
     setEvents((current) => (current.some((candidate) => candidate.sequence === event.sequence) ? current : [...current, event]))
     if (event.type === 'message.assistant' || event.type === 'message.user') {
       setStreaming(null)
-      void loadRun(event.runId)
     }
     const callId = event.payload?.toolCallId
-    if (event.type === 'approval.requested' && typeof callId === 'string') {
-      void (async () => {
-        const detail = await api.get<{ status: string; rule: string | null; warnings: any[]; preview: any }>(`/api/runs/${encodeURIComponent(event.runId)}/tools/${encodeURIComponent(callId)}/preview`).catch(() => null)
-        const call = (await loadRun(event.runId, { light: true }))?.toolCalls?.find((candidate: ToolCall) => candidate.id === callId)
-        if (call) setApproval({ toolCall: call, rule: detail?.rule ?? call.ruleId ?? event.payload?.rule ?? null, warnings: detail?.warnings ?? call.warnings ?? [], preview: detail?.preview ?? null })
-      })()
-    }
     if ((event.type === 'tool.completed' || event.type === 'tool.denied' || event.type === 'tool.failed') && callId) {
       setApproval((current) => (current?.toolCall.id === callId ? null : current))
     }
-    if (event.type === 'approval.requested') void syncApprovalQueue(event.runId)
     void refreshAfterEvent(event.runId, event)
-  }, [loadRun, refreshAfterEvent, syncApprovalQueue, trackSeq])
+  }, [refreshAfterEvent, runScope, trackSeq])
 
 
   const ingestDelta = useCallback((frame: { role?: string; delta?: string }) => {
@@ -336,95 +293,152 @@ export function useBridge() {
   }, [])
 
   const watchRun = useCallback((id: string) => {
+    const selection = runScope.capture(id)
+    if (!selection.isCurrent()) return
     streamRef.current?.close()
     setStreaming(null)
     // Resume, never replay: the server replays from the cursor, and ingest
     // dedupes by sequence, so overlap between the snapshot and the stream is
     // harmless but unbounded replay is gone.
     const source = openRunStream(id, {
-      onEvent: ingestEvent,
-      onDelta: ingestDelta,
-      onPartial: (text) => setStreaming((current) => ({ role: current?.role ?? 'head', text })),
+      onEvent: (event) => { if (selection.isCurrent()) ingestEvent(event) },
+      onDelta: (frame) => { if (selection.isCurrent()) ingestDelta(frame) },
+      onPartial: (text) => { if (selection.isCurrent()) setStreaming((current) => ({ role: current?.role ?? 'head', text })) },
     }, seqRef.current[id] ?? 0)
     streamRef.current = source
-  }, [ingestDelta, ingestEvent])
-
-  useEffect(() => () => streamRef.current?.close(), [])
+  }, [ingestDelta, ingestEvent, runScope])
 
   // --------------------------------------------------------------- open a run
 
-  const openRun = useCallback(async (id: string) => {
-    setRunId(id)
-    runIdRef.current = id
+  const closeRun = useCallback(() => {
+    runScope.select(null)
+    streamRef.current?.close()
+    streamRef.current = null
+    setRunId(null)
+    setRun(null)
+    setRunLoading(false)
+    setTasks([])
+    setMessages([])
+    setToolCalls([])
+    setEvents([])
+    setPlan(null)
+    setEstimate(null)
+    setAudit(null)
+    rowsRef.current = { tasks: [], calls: [] }
     setApproval(null)
     setArtifacts([])
     setClaims([])
     setTimeline(null)
     setSpend(emptySpend)
     setByTask([])
+    setRunGrants([])
     setStreaming(null)
-    await Promise.all([loadRun(id), loadPlan(id), loadTrace(id), loadArtifacts(id), loadClaims(id), loadEstimate(id)])
-    await syncApprovalQueue(id)
-    watchRun(id)
-  }, [loadArtifacts, loadClaims, loadEstimate, loadPlan, loadRun, loadTrace, syncApprovalQueue, watchRun])
+  }, [runScope])
 
-  /** The newest run for a project, or a new one when there is none to resume. */
-  const loadProjectSettings = useCallback(async (forProject: string) => {
-    const payload = await api.get<{ project: { settings?: Record<string, unknown> } }>(`/api/projects/${encodeURIComponent(forProject)}`).catch(() => null)
-    const settings = payload?.project?.settings ?? {}
-    setProjectSettings(settings)
-    return settings
-  }, [])
-
-  const openProject = useCallback(async (forProject: string, { permissionMode = 'selective', preferRun = null }: { permissionMode?: string; preferRun?: string | null } = {}) => {
-    setProjectId(forProject)
-    await loadProjectSettings(forProject)
-    await loadLearnings(forProject)
-    await loadPlaybooksFor(forProject)
-    await loadSchedulesFor(forProject)
-    await loadGoalsFor(forProject)
-    const list = await loadRuns(forProject)
-    const target = (preferRun ? list.find((candidate) => candidate.id === preferRun) : null)
-      ?? list.find((candidate) => !['cancelled', 'completed', 'failed'].includes(candidate.status))
-      ?? list[0]
-    if (target) {
-      await openRun(target.id)
-      return target.id
+  const openRun = useCallback(async (id: string) => {
+    if (!projectScope.id) return null
+    closeRun()
+    runScope.select(id)
+    const selection = runScope.capture(id)
+    setRunId(id)
+    setRunLoading(true)
+    const [snapshot] = await Promise.all([loadRun(id), loadPlan(id), loadTrace(id), loadArtifacts(id), loadClaims(id), loadEstimate(id)])
+    if (!selection.isCurrent()) return null
+    if (!snapshot) {
+      closeRun()
+      report(new Error('Could not open this run. Try again from run history.'), 'Could not open the run.')
+      return null
     }
-    const created = await api.post<{ run: Run }>('/api/runs', { projectId: forProject, permissionMode })
-    await loadRuns(forProject)
-    await openRun(created.run.id)
-    return created.run.id
-  }, [loadGoalsFor, loadLearnings, loadPlaybooksFor, loadProjectSettings, loadRuns, loadSchedulesFor, openRun])
+    watchRun(id)
+    setRunLoading(false)
+    return id
+  }, [closeRun, loadArtifacts, loadClaims, loadEstimate, loadPlan, loadRun, loadTrace, projectScope, report, runScope, watchRun])
+
+  const loadProjectSettings = useCallback(async (forProject: string) => {
+    const selection = projectScope.capture(forProject)
+    const payload = await api.get<{ project: Project }>(`/api/projects/${encodeURIComponent(forProject)}`, { signal: selection.signal })
+    const settings = payload.project.settings ?? {}
+    if (selection.isCurrent()) setProjectSettings(settings)
+    return settings
+  }, [projectScope])
+
+  const openProject = useCallback(async (forProject: string, { preferRun = null }: { preferRun?: string | null } = {}) => {
+    projectScope.select(forProject)
+    const selection = projectScope.capture(forProject)
+    closeRun()
+    setProjectId(forProject)
+    setProjectLoading(true)
+    setProjectSettings({})
+    setRuns([])
+    setLearnings([])
+    setPlaybooks([])
+    setSchedules([])
+    setGoals([])
+    setError(null)
+    setNotice(null)
+    try {
+      const [list] = await Promise.all([loadRuns(forProject), loadProjectSettings(forProject), loadLearnings(forProject), loadPlaybooksFor(forProject), loadSchedulesFor(forProject), loadGoalsFor(forProject)])
+      if (!selection.isCurrent()) return null
+      const target = (preferRun ? list.find((candidate) => candidate.id === preferRun) : null)
+        ?? list.find((candidate) => !['cancelled', 'completed', 'failed'].includes(candidate.status))
+        ?? list[0]
+      // Reading an empty project must not create work (or create it twice under
+      // StrictMode). The history surface offers an explicit New run action.
+      return target ? await openRun(target.id) : null
+    } catch (caught) {
+      if (selection.isCurrent()) report(caught, 'Could not open the project.')
+      return null
+    } finally {
+      if (selection.isCurrent()) setProjectLoading(false)
+    }
+  }, [closeRun, loadGoalsFor, loadLearnings, loadPlaybooksFor, loadProjectSettings, loadRuns, loadSchedulesFor, openRun, projectScope, report])
 
   // ------------------------------------------------------------------ startup
 
   useEffect(() => {
+    let live = true
     void (async () => {
       try {
         const [list] = await Promise.all([loadProjects(), loadProviders(), loadStatus(), loadGrants(), loadConfig(), loadSettings(), loadBlueprintsFor()])
         const first = list[0]
-        if (first) await openProject(first.id)
+        if (live && first) await openProject(first.id)
       } catch (caught) {
-        report(caught, 'Could not reach the local API.')
+        if (live) report(caught, 'Could not reach the local API.')
       } finally {
-        setBooted(true)
+        if (live) setBooted(true)
       }
     })()
+    return () => {
+      live = false
+      projectScope.select(null)
+      runScope.select(null)
+      streamRef.current?.close()
+    }
     // Runs once: the bridge is local, and a project switch loads what it needs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // ----------------------------------------------------------------- actions
 
+  const canActOnRun = useCallback(() => Boolean(
+    run && runId && !runLoading && !projectLoading && run.id === runId && run.projectId === projectId
+    && runScope.id === runId && projectScope.id === projectId,
+  ), [projectId, projectLoading, projectScope, run, runId, runLoading, runScope])
+  const tree = useCallback((path = '.', depth = 2) => api.get<{ path: string; entries: TreeNode[] }>(`/api/workspace/tree?path=${encodeURIComponent(path)}&depth=${depth}`), [])
+  const fileHistory = useCallback((path: string) => api.get<{ path: string; calls: FileHistoryEntry[] }>(`/api/workspace/history?path=${encodeURIComponent(path)}`), [])
+
   const actions = useMemo(() => ({
     async createProject(name: string) {
+      const selection = projectScope.capture()
       try {
         const created = await api.post<{ project: { id: string } }>('/api/projects', { name })
         await loadProjects()
+        if (!selection.isCurrent()) return null
         await openProject(created.project.id)
+        return created.project.id
       } catch (caught) {
-        report(caught, 'Could not create the project.')
+        if (selection.isCurrent()) report(caught, 'Could not create the project.')
+        return null
       }
     },
     async deleteProject(id: string) {
@@ -442,14 +456,16 @@ export function useBridge() {
      * or completed runs, so the interface must offer the alternative it names.
      */
     async createRun() {
-      if (!projectId) return null
+      const selection = projectScope.capture(projectId)
+      if (!projectId || projectLoading || !selection.isCurrent()) return null
       try {
         const created = await api.post<{ run: Run }>('/api/runs', { projectId })
         await loadRuns(projectId)
+        if (!selection.isCurrent()) return null
         await openRun(created.run.id)
         return created.run.id
       } catch (caught) {
-        report(caught, 'Could not start a new run.')
+        if (selection.isCurrent()) report(caught, 'Could not start a new run.')
         return null
       }
     },
@@ -474,87 +490,115 @@ export function useBridge() {
       }
     },
     async chat(message: string) {
-      if (!runId) return
+      if (!canActOnRun() || !runId) return false
+      const selection = runScope.capture(runId)
       try {
         setStreaming({ role: 'head', text: '' })
         const routing = (projectSettings?.routing as Record<string, string> | undefined) ?? {}
         await api.post('/api/chat', { projectId, runId, message, routing, history: messages.slice(-20).map((entry) => ({ role: entry.role, content: entry.content })) })
+        return true
       } catch (caught) {
-        setStreaming(null)
-        report(caught, 'The message could not be sent.')
+        if (selection.isCurrent()) report(caught, 'The message could not be sent.')
+        return false
       } finally {
-        void loadRun(runId)
+        if (selection.isCurrent()) {
+          setStreaming(null)
+          await loadRun(runId)
+        }
       }
     },
     async draftPlan({ regenerate = false } = {}) {
-      if (!runId) return
+      if (!canActOnRun() || !runId) return false
+      const selection = runScope.capture(runId)
       try {
         setEstimate(null)
         const drafted = await api.post<Plan>(`/api/runs/${encodeURIComponent(runId)}/plan`, { regenerate })
+        if (!selection.isCurrent()) return false
         setPlan(drafted)
         await Promise.all([loadEstimate(runId), loadRun(runId)])
+        return true
       } catch (caught) {
-        report(caught, 'The plan could not be drafted.')
+        if (selection.isCurrent()) report(caught, 'The plan could not be drafted.')
+        return false
       }
     },
     async editPlan(objective: string, tasks: Array<{ role: string; title: string; instructions: string; dependsOn: number[]; acceptanceCheck?: string }>) {
-      if (!runId) return false
+      if (!canActOnRun() || !runId) return false
+      const selection = runScope.capture(runId)
       try {
         const edited = await api.patch<Plan>(`/api/runs/${encodeURIComponent(runId)}/plan`, { objective, tasks })
+        if (!selection.isCurrent()) return false
         setPlan(edited)
         setNotice(`Plan v${edited.plan.version} saved. It needs approving again.`)
         await Promise.all([loadEstimate(runId), loadRun(runId)])
         return true
       } catch (caught) {
-        report(caught, 'The plan could not be saved.')
+        if (selection.isCurrent()) report(caught, 'The plan could not be saved.')
         return false
       }
     },
     async control(action: string, body: Record<string, unknown> = {}) {
-      if (!runId) return null
+      if (!canActOnRun() || !runId) return null
+      const selection = runScope.capture(runId)
       try {
         const result = await api.post<{ run: Run }>(`/api/runs/${encodeURIComponent(runId)}/control`, { action, ...body })
+        if (!selection.isCurrent()) return null
         setRun(result.run)
         await Promise.all([loadRun(runId), loadRuns(projectId)])
         return result.run
       } catch (caught) {
-        report(caught, `Could not ${action}.`)
+        if (selection.isCurrent()) report(caught, `Could not ${action}.`)
         return null
       }
     },
     async approveCall(scope: 'once' | 'run' | 'always', input?: Record<string, unknown>) {
-      if (!runId || !approval) return
+      if (!canActOnRun() || !runId || !approval || approval.toolCall.runId !== runId) return false
+      const selection = runScope.capture(runId)
+      const callId = approval.toolCall.id
       try {
         await api.post(`/api/runs/${encodeURIComponent(runId)}/tools/${encodeURIComponent(approval.toolCall.id)}/approve`, { scope, fingerprint: approval.toolCall.fingerprint, ...(input === undefined ? {} : { editedInput: input }) })
-        setApproval(null)
+        if (!selection.isCurrent()) return false
+        setApproval((current) => current?.toolCall.id === callId ? null : current)
         setNotice(input === undefined
           ? scope === 'always' ? 'Approved, and allowed within that scope from now on.' : scope === 'run' ? 'Approved for the rest of this run.' : 'Approved.'
           : 'Approved with your edits, as a new call.')
         await Promise.all([loadRun(runId), loadGrants(), loadArtifacts(runId)])
+        return true
       } catch (caught) {
-        report(caught, 'The call could not be approved.')
+        if (selection.isCurrent()) report(caught, 'The call could not be approved.')
+        return false
       }
     },
     async answerCall(answer: string) {
-      if (!runId || !approval) return
+      if (!canActOnRun() || !runId || !approval || approval.toolCall.runId !== runId) return false
+      const selection = runScope.capture(runId)
+      const callId = approval.toolCall.id
       try {
         await api.post(`/api/runs/${encodeURIComponent(runId)}/tools/${encodeURIComponent(approval.toolCall.id)}/answer`, { answer })
-        setApproval(null)
+        if (!selection.isCurrent()) return false
+        setApproval((current) => current?.toolCall.id === callId ? null : current)
         setNotice('Answered, and the worker continues on it.')
         await loadRun(runId)
+        return true
       } catch (caught) {
-        report(caught, 'The question could not be answered.')
+        if (selection.isCurrent()) report(caught, 'The question could not be answered.')
+        return false
       }
     },
     async denyCall(reason: string) {
-      if (!runId || !approval) return
+      if (!canActOnRun() || !runId || !approval || approval.toolCall.runId !== runId) return false
+      const selection = runScope.capture(runId)
+      const callId = approval.toolCall.id
       try {
         await api.post(`/api/runs/${encodeURIComponent(runId)}/tools/${encodeURIComponent(approval.toolCall.id)}/deny`, { reason })
-        setApproval(null)
+        if (!selection.isCurrent()) return false
+        setApproval((current) => current?.toolCall.id === callId ? null : current)
         setNotice('Denied, and the worker was told why.')
         await loadRun(runId)
+        return true
       } catch (caught) {
-        report(caught, 'The call could not be denied.')
+        if (selection.isCurrent()) report(caught, 'The call could not be denied.')
+        return false
       }
     },
     async revertArtifact(toolCallId: string) {
@@ -568,48 +612,26 @@ export function useBridge() {
       }
     },
     async revokeRunGrant(toolName: string) {
-      if (!runId) return
+      if (!canActOnRun() || !runId) return
       try {
         await api.delete(`/api/runs/${encodeURIComponent(runId)}/grants/${encodeURIComponent(toolName)}`)
-        await loadRun(runId)
+        await Promise.all([loadRun(runId), loadArtifacts(runId)])
       } catch (caught) {
         report(caught, 'The grant could not be revoked.')
       }
     },
     async forkRun() {
-      if (!runId) return
+      if (!canActOnRun() || !runId) return
+      const selection = runScope.capture(runId)
       try {
         const forked = await api.post<{ run: Run }>(`/api/runs/${encodeURIComponent(runId)}/fork`)
         await loadRuns(projectId)
+        if (!selection.isCurrent()) return
         await openRun(forked.run.id)
         setNotice('Forked: the same plan as a new draft, waiting for approval.')
       } catch (caught) {
-        report(caught, 'The run could not be forked.')
+        if (selection.isCurrent()) report(caught, 'The run could not be forked.')
       }
-    },
-    async saveProvider(provider: Provider, settings: Record<string, unknown>) {
-      const updated = await api.patch<{ provider: Provider }>(`/api/providers/${encodeURIComponent(provider.id)}`, settings)
-      await loadProviders()
-      return updated.provider
-    },
-    async addProvider(input: Record<string, unknown>) {
-      await api.post('/api/providers', input)
-      await loadProviders()
-    },
-    async removeProvider(id: string) {
-      await api.delete(`/api/providers/${encodeURIComponent(id)}`)
-      await loadProviders()
-    },
-    async testProvider(id: string) {
-      return api.post<{ result: any }>(`/api/providers/${encodeURIComponent(id)}/test`)
-    },
-    async createGrant(toolName: string, scopeKind: 'path' | 'host', scopeValue: string) {
-      await api.post('/api/grants', { toolName, scopeKind, scopeValue })
-      await loadGrants()
-    },
-    async revokeGrant(id: string) {
-      await api.delete(`/api/grants/${encodeURIComponent(id)}`)
-      await loadGrants()
     },
     async deleteLearning(id: string) {
       if (!projectId) return
@@ -686,64 +708,11 @@ export function useBridge() {
       await api.delete(`/api/projects/${encodeURIComponent(projectId)}/goals/${encodeURIComponent(id)}`)
       await loadGoalsFor(projectId)
     },
-    async refreshMarketplace() {
-      try {
-        const fresh = await api.post<{ entries: unknown[]; fetchedAt: number }>('/api/marketplace/refresh', {})
-        await loadMarketplaceState()
-        setNotice(`Marketplace refreshed: ${fresh.entries.length} entries.`)
-        return fresh
-      } catch (caught) {
-        report(caught, 'The marketplace could not be refreshed.')
-        return null
-      }
-    },
-    async installMarketplaceEntry(id: string) {
-      try {
-        const installed = await api.post<{ installed: { kind: string; id: string; version: string }; permissions: { tools: string[]; hosts: string[] } }>(`/api/marketplace/${encodeURIComponent(id)}`, {})
-        await Promise.all([loadMarketplaceState(), loadArsenalState()])
-        const permissions = [...installed.permissions.tools, ...installed.permissions.hosts].filter(Boolean).join(', ')
-        setNotice(`Installed ${installed.installed.id} v${installed.installed.version}${permissions ? ` (${permissions})` : ''}.`)
-        return installed
-      } catch (caught) {
-        report(caught, 'That entry could not be installed.')
-        return null
-      }
-    },
-    async uninstallMarketplaceEntry(id: string) {
-      await api.delete(`/api/marketplace/${encodeURIComponent(id)}`)
-      await Promise.all([loadMarketplaceState(), loadArsenalState()])
-      setNotice(`Removed ${id} and revoked its scoped grants.`)
-    },
-    async browseRegistry(registryUrl: string) {
-      try {
-        const catalog = await api.post<{ candidates: MarketplaceEntry[]; skipped: string[]; fetchedAt: number }>('/api/marketplace/browse', { registry: registryUrl })
-        setRegistry(catalog)
-        return catalog
-      } catch (caught) {
-        report(caught, 'That registry could not be read.')
-        return null
-      }
-    },
-    clearRegistry() {
-      setRegistry(null)
-    },
-    async importMarketplaceSkill(input: { url?: string; localPath?: string }) {
-      try {
-        const result = await api.post<{ staged: MarketplaceEntry }>('/api/marketplace/import', input)
-        await loadMarketplaceState()
-        const findings = result.staged.findings ?? []
-        const flagged = findings.filter((finding) => finding.severity === 'medium').length
-        setNotice(`Staged ${result.staged.id} v${result.staged.version} for review${flagged ? ` (${flagged} thing${flagged === 1 ? '' : 's'} worth a look)` : ''}. Install it when ready.`)
-        return result
-      } catch (caught) {
-        report(caught, 'That skill could not be staged.')
-        return null
-      }
-    },
     async loadTimeline(seq: number) {
       if (!runId) return null
-      const payload = await api.get<{ seq: number; files: Array<{ path: string; content: string | null; truncated: boolean; unknown: string | null }>; gaps: string[] }>(`/api/runs/${encodeURIComponent(runId)}/timeline/${seq}`).catch(() => null)
-      if (payload) setTimeline(payload)
+      const selection = runScope.capture(runId)
+      const payload = await api.get<{ seq: number; files: Array<{ path: string; content: string | null; truncated: boolean; unknown: string | null }>; gaps: string[] }>(`/api/runs/${encodeURIComponent(runId)}/timeline/${seq}`, { signal: selection.signal }).catch(() => null)
+      if (payload && selection.isCurrent()) setTimeline(payload)
       return payload
     },
     clearTimeline() {
@@ -788,47 +757,9 @@ export function useBridge() {
         return null
       }
     },
-    async verifyAudit() {
-      const result = await api.post<{ record: any }>('/api/maintenance/verify')
-      await loadStatus()
-      setNotice(result.record?.ok ? 'Audit chain intact.' : 'Audit verification found a problem — see the status panel.')
-      return result
-    },
-    async saveSetting(name: string, value: unknown) {
-      try {
-        const updated = await api.patch<{ setting: AppSetting; settings: AppSetting[] }>('/api/settings', { name, value })
-        setAppSettings(updated.settings)
-        const saved = updated.setting
-        setNotice(saved.restartRequired
-          ? `${name} saved. It takes effect after a restart.`
-          : `${name} saved and live.`)
-        await loadConfig()
-        return saved
-      } catch (caught) {
-        report(caught, 'The setting could not be saved.')
-        return null
-      }
-    },
-    async resetSetting(name: string) {
-      try {
-        const updated = await api.patch<{ setting: AppSetting; settings: AppSetting[] }>('/api/settings', { name, value: null })
-        setAppSettings(updated.settings)
-        setNotice(`${name} reset to its default.`)
-        await loadConfig()
-        return updated.setting
-      } catch (caught) {
-        report(caught, 'The setting could not be reset.')
-        return null
-      }
-    },
-    async backupNow() {
-      const result = await api.post<{ record: any }>('/api/maintenance/backup')
-      await loadStatus()
-      setNotice('A copy of the database was written.')
-      return result
-    },
     async saveRouting(role: string, route: string) {
-      if (!projectId) return false
+      const selection = projectScope.capture(projectId)
+      if (!projectId || !selection.isCurrent()) return false
       // Settings replace wholesale, so the current object is read first and
       // merged: a routing edit must never drop checks, reasoning, or anything
       // else the project carries. Casting is not plan content, so no
@@ -836,30 +767,33 @@ export function useBridge() {
       // the next time the run starts, like any routing change.
       try {
         const current = await loadProjectSettings(projectId)
+        if (!selection.isCurrent()) return false
         const routing = { ...((current.routing as Record<string, string> | undefined) ?? {}), [role]: route.trim() }
         const updated = await api.patch<{ project: { settings?: Record<string, unknown> } }>(`/api/projects/${encodeURIComponent(projectId)}`, { settings: { ...current, routing } })
+        if (!selection.isCurrent()) return false
         setProjectSettings(updated.project?.settings ?? { ...current, routing })
         setNotice(`${roleLabel(role)} now runs on ${route.trim() || 'the default provider'}.`)
         return true
       } catch (caught) {
-        report(caught, 'The routing could not be saved.')
+        if (selection.isCurrent()) report(caught, 'The routing could not be saved.')
         return false
       }
     },
     search: (query: string) => api.get<SearchResults>(`/api/search?q=${encodeURIComponent(query)}`),
-    tree: (path = '.', depth = 2) => api.get<{ path: string; entries: TreeNode[] }>(`/api/workspace/tree?path=${encodeURIComponent(path)}&depth=${depth}`),
-    fileHistory: (path: string) => api.get<{ path: string; calls: FileHistoryEntry[] }>(`/api/workspace/history?path=${encodeURIComponent(path)}`),
+    tree,
+    fileHistory,
     reloadRuns: () => loadRuns(projectId),
-  }), [approval, loadArsenalState, loadArtifacts, loadConfig, loadEstimate, loadGoalsFor, loadGrants, loadLearnings, loadMarketplaceState, loadPlaybooksFor, loadProjectSettings, loadProjects, loadProviders, loadRun, loadRuns, loadSchedulesFor, loadStatus, messages, openProject, openRun, projectId, projects, projectSettings, report, runId, timeline])
+  }), [approval, canActOnRun, fileHistory, loadArtifacts, loadEstimate, loadGoalsFor, loadGrants, loadLearnings, loadPlaybooksFor, loadProjectSettings, loadProjects, loadRun, loadRuns, loadSchedulesFor, messages, openProject, openRun, projectId, projectLoading, projectScope, projects, projectSettings, report, runId, runScope, timeline, tree])
 
   const bridge = useMemo(() => ({
-    projects, projectId, runs, runId, run, tasks, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, estimate, audit,
-    providers, status, grants, learnings, playbooks, schedules, goals, blueprints, marketplace, arsenal, registry, timeline, configReport, usage, error, notice, streaming, approval, booted, appSettings, projectSettings,
+    ...workspace,
+    projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit,
+    learnings, playbooks, schedules, goals, blueprints, timeline, error, notice, streaming, approval, booted, projectSettings,
     setError, setNotice, setApproval,
-    openProject, openRun, loadRuns, loadStatus, loadGrants, loadConfig, loadUsage, loadProviders, loadSettings, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadMarketplaceState, loadArsenalState, loadBlueprintsFor,
+    openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor,
     ...actions,
     approveWithKeyboard: (scope: 'once' | 'run' | 'always') => actions.approveCall(scope),
-  }), [projects, projectId, runs, runId, run, tasks, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, estimate, audit, providers, status, grants, learnings, playbooks, schedules, goals, blueprints, marketplace, arsenal, registry, timeline, configReport, usage, error, notice, streaming, approval, booted, appSettings, projectSettings, actions, openProject, openRun, loadRuns, loadStatus, loadGrants, loadConfig, loadUsage, loadProviders, loadSettings, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadMarketplaceState, loadArsenalState, loadBlueprintsFor])
+  }), [workspace, projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit, learnings, playbooks, schedules, goals, blueprints, timeline, error, notice, streaming, approval, booted, projectSettings, actions, openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor])
   return bridge
 }
 

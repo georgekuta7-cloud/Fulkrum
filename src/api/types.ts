@@ -10,7 +10,7 @@
 
 export type Mode = 'plan' | 'review'
 export type PermissionMode = 'guided' | 'selective' | 'autopilot'
-export type AgentId = 'head' | 'research' | 'builder'
+export type AgentId = 'head' | 'research' | 'builder' | 'architect' | 'editor' | 'debug' | 'reviewer'
 
 export type ReasoningLevel = 'minimal' | 'low' | 'medium' | 'high'
 
@@ -29,6 +29,7 @@ export type Project = {
 export type Provider = {
   id: string
   label: string
+  aliases?: string[]
   protocol: string
   baseUrl: string
   model: string
@@ -55,6 +56,7 @@ export type Run = {
   planVersion: number
   budgetUsd: number | null
   interruptionReason?: string | null
+  interruptedFrom?: string | null
   createdAt: number
   updatedAt: number
   objective?: string | null
@@ -119,6 +121,30 @@ export type ToolCall = {
   approvalScope: string | null
   error: string | null
   createdAt: number
+}
+
+export type Message = { id: number; role: string; agentId: string | null; content: string; createdAt: number; metadata: Record<string, unknown> | null }
+export type TaskSpend = { taskId: string | null; title: string | null; agentId: string | null; costUsd: number; calls: number; unpricedCalls: number }
+export type RunGrant = { id: string; runId: string; toolName: string; kind: string; grantedAt: number; grantedBy: string; revokedAt: number | null }
+export type LineDiff = {
+  added: number | null
+  removed: number | null
+  hunks?: Array<{ beforeStart?: number | null; afterStart?: number | null; entries: Array<{ type: 'context' | 'add' | 'remove'; line: string; beforeLine?: number | null; afterLine?: number | null }> }>
+  truncated?: boolean
+  reason?: string
+}
+export type WritePreview = LineDiff & { path: string; content: string; created: boolean; bytes: number; previousBytes: number | null }
+export type ApprovalDetails = { status: string; rule: string | null; warnings: ToolCall['warnings']; preview: WritePreview | null }
+export type RunSnapshot = {
+  run: Run
+  tasks: Task[]
+  toolCalls: ToolCall[]
+  events: RunEvent[]
+  messages: Message[]
+  audit?: { ok: boolean; checked: number; unverified?: number }
+  light?: boolean
+  taskStatuses?: Array<{ id: string; status: string }>
+  toolCallStatuses?: Array<{ id: string; status: string }>
 }
 
 export type Artifact = {

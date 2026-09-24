@@ -162,3 +162,33 @@ TDD per component; `typecheck + lint + test + build` green; UI tests
 only on shipped components; dead-file scan (zero unreferenced files);
 live smoke (seed → install → run → approve → verdict) before every
 commit; reviewer subagent before merge; commit + push.
+
+The functional repair batch runs the same gates plus `npm run test:browser`:
+the built UI is driven through Chromium at 1440/1024/390 in both themes,
+against the real API bridge with a temporary store and only model calls
+stubbed.
+
+## 11. Deferred: the visual design pass
+
+The functional repairs above ship on the existing style regime. The dedicated
+visual pass is deliberately deferred, and its first act is to settle the
+reference problem this spec currently has:
+
+1. **Pick one authoritative reference.** The spec names
+   `6-chatfirst-workers-0.png`, which is not in the repository;
+   `design-preview/` holds three different generated systems (a purple mobile
+   chat, an "AgentHub Engine" settings export, and a "Nexus" marketplace).
+   Record the chosen screen id, viewport, and token set here, and delete or
+   archive the rest so the target cannot drift mid-pass.
+2. **Restyle against that reference**, screen by screen, keeping the shipped
+   component boundaries (`Header`, `RunControls`, `ProjectMenu`, `PlanCard`,
+   `ApprovalCard`, `RunHistory`, `RunRecovery`, view modules). Tokens live in
+   `src/index.css`; spacing comes from utilities, never a global unlayered
+   reset.
+3. **Every redesigned screen keeps the browser workflows green.** Layout
+   assertions, plan approval, run history, project switching, approval
+   previews, and failure recovery are the acceptance gate; a restyle that
+   breaks one is a regression, not a redesign.
+4. **Finish the deferred audit items here too:** density and measure polish,
+   `prefers-reduced-motion` motion review, remaining `&`/ellipsis copy
+   placeholders, and a contrast sweep in both themes.

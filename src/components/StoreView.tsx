@@ -71,7 +71,7 @@ export function StoreView({ bridge }: { bridge: Bridge }) {
           }
         >
           <label className="visually-hidden" htmlFor="store-search">Search marketplace</label>
-          <input id="store-search" className={inputClass} placeholder="Search skills&" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <input id="store-search" className={inputClass} placeholder="Search skills…" value={query} onChange={(e) => setQuery(e.target.value)} />
           {bridge.marketplace?.stale ? <p className="text-label-md text-error">The signed index has never been fetched — community imports below still work.</p> : null}
           {entries.length ? (
             <ul className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
@@ -112,7 +112,7 @@ export function StoreView({ bridge }: { bridge: Bridge }) {
         <Panel title="Bring a skill in">
           <div className="flex gap-2 flex-wrap">
             <label className="visually-hidden" htmlFor="import-url">Skill URL</label>
-            <input id="import-url" className={`${inputClass} flex-1 min-w-[200px]`} placeholder="https://&/SKILL.md (raw file URL)" value={importUrl} onChange={(e) => setImportUrl(e.target.value)} />
+            <input id="import-url" className={`${inputClass} flex-1 min-w-[200px]`} placeholder="https://example.com/SKILL.md (raw file URL)" value={importUrl} onChange={(e) => setImportUrl(e.target.value)} />
             <Button variant="primary" disabled={busy || !importUrl.trim()} onClick={() => void doImport()}>Stage for review</Button>
           </div>
           <div className="flex gap-2 flex-wrap">
