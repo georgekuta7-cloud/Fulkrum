@@ -257,7 +257,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       'Cache-Control': file === uiIndex ? 'no-store' : 'public, max-age=31536000, immutable',
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
-      'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+      'Content-Security-Policy': "default-src 'self'; font-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
     })
     response.end(request.method === 'HEAD' ? undefined : body)
   }
@@ -1576,8 +1576,15 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
             sendJson(response, 400, { error: 'Unknown run or permission mode.' })
             return
           }
-          const nextRun = store.updateRun(runId, { permissionMode: body.permissionMode })
-          const event = store.appendEvent({ runId, type: 'run.permission.changed', payload: { permissionMode: body.permissionMode, source: 'user' } })
+          if (['cancelled', 'completed', 'failed'].includes(run.status)) {
+            sendJson(response, 409, { error: `A run in ${run.status} state no longer takes permission changes.` })
+            return
+          }
+          const { nextRun, event } = store.transaction(() => {
+            const updated = store.updateRun(runId, { permissionMode: body.permissionMode })
+            const recorded = store.appendEvent({ runId, type: 'run.permission.changed', payload: { permissionMode: body.permissionMode, source: 'user' } })
+            return { nextRun: updated, event: recorded }
+          })
           sendJson(response, 200, { run: nextRun, event })
           return
         }
@@ -1592,8 +1599,11 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
             sendJson(response, 400, { error: 'A budget must be a positive number, or null for the environment default.' })
             return
           }
-          const nextRun = store.updateRun(runId, { budgetUsd: requested })
-          const event = store.appendEvent({ runId, type: 'run.budget.changed', payload: { budgetUsd: requested, source: 'user', spend: store.spendForRun(runId) } })
+          const { nextRun, event } = store.transaction(() => {
+            const updated = store.updateRun(runId, { budgetUsd: requested })
+            const recorded = store.appendEvent({ runId, type: 'run.budget.changed', payload: { budgetUsd: requested, source: 'user', spend: store.spendForRun(runId) } })
+            return { nextRun: updated, event: recorded }
+          })
           sendJson(response, 200, { run: nextRun, event })
           return
         }
@@ -1692,8 +1702,14 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           patch.interruptedAt = null
           patch.interruptionReason = null
         }
-        const nextRun = store.updateRun(runId, patch)
-        const event = store.appendEvent({ runId, type: transition[1], payload: { source: 'user', previousStatus: run.status, ...(approvalPayload ?? {}) } })
+        // The transition and its record save together: a crash between a status
+        // change and its event would leave a run in a state the chain cannot
+        // explain.
+        const { nextRun, event } = store.transaction(() => {
+          const updated = store.updateRun(runId, patch)
+          const recorded = store.appendEvent({ runId, type: transition[1], payload: { source: 'user', previousStatus: run.status, ...(approvalPayload ?? {}) } })
+          return { nextRun: updated, event: recorded }
+        })
         if (body.action === 'approve-plan' || (body.action === 'resume' && !resumePlanning)) {
           orchestrator.start(runId, { routing })
         }

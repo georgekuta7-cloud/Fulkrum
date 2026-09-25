@@ -26,6 +26,18 @@ export function applyMigrations(database, { directory = defaultDirectory, log = 
     .filter((name) => /^\d{3}_.+\.sql$/.test(name))
     .sort()
 
+  // Two files may not share a version number: on a fresh database both would
+  // apply and the second would silently overwrite the first's place in the
+  // sequence. A migration that ships must be uniquely reachable.
+  const seen = new Map()
+  for (const file of files) {
+    const version = Number(file.slice(0, 3))
+    if (seen.has(version)) {
+      throw new Error(`Duplicate migration version ${version}: ${seen.get(version)} and ${file} share it. Migration numbers must be unique.`)
+    }
+    seen.set(version, file)
+  }
+
   const startingVersion = readUserVersion(database)
   let applied = 0
 

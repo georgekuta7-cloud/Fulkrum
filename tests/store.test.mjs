@@ -4,6 +4,8 @@ import { existsSync } from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
 import { FulkrumStore } from '../server/store.mjs'
+import { applyMigrations } from '../server/migrations.mjs'
+import { DatabaseSync } from 'node:sqlite'
 import { reconcileInterruptedRuns } from '../server/recovery.mjs'
 import { withStore, withTempDirectory } from './helpers.mjs'
 
@@ -408,5 +410,44 @@ test('interruption is recorded rather than leaving a run looking active', async 
     assert.equal(updated.status, 'interrupted')
     assert.equal(updated.interruptionReason.includes('stopped'), true)
     assert.equal(updated.ownerId, null)
+  })
+})
+
+test('taking ownership of a run is atomic across processes', async () => {
+  await withTempDirectory(async (directory) => {
+    const dbPath = path.join(directory, 'shared.sqlite')
+    const storeA = new FulkrumStore(dbPath)
+    const storeB = new FulkrumStore(dbPath)
+    try {
+      const project = storeA.createProject({ name: 'two processes' })
+      const run = storeA.createRun({ projectId: project.id })
+
+      assert.equal(storeA.acquireRunLease(run.id, 'owner-a', 60_000).ownerId, 'owner-a', 'a free run can be taken')
+      assert.equal(storeB.acquireRunLease(run.id, 'owner-b', 60_000), null, 'a second live owner is refused')
+      assert.equal(storeB.getRun(run.id).ownerId, 'owner-a', 'and the first owner is untouched')
+
+      storeA.releaseRunLease(run.id, 'owner-a')
+      assert.equal(storeB.acquireRunLease(run.id, 'owner-b', 60_000).ownerId, 'owner-b', 'a released run can be retaken')
+
+      storeB.updateRun(run.id, { leaseExpiresAt: Date.now() - 1 })
+      assert.equal(storeA.acquireRunLease(run.id, 'owner-a', 60_000).ownerId, 'owner-a', 'an expired lease can be reclaimed')
+    } finally {
+      storeA.close()
+      storeB.close()
+    }
+  })
+})
+
+test('migrations refuse duplicate version numbers', async () => {
+  await withTempDirectory(async (directory) => {
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(path.join(directory, '001_a.sql'), 'CREATE TABLE t (id TEXT);')
+    await writeFile(path.join(directory, '001_b.sql'), 'CREATE TABLE u (id TEXT);')
+    const database = new DatabaseSync(':memory:')
+    try {
+      assert.throws(() => applyMigrations(database, { directory }), /Duplicate migration version 1/, 'two files may not share a version')
+    } finally {
+      database.close()
+    }
   })
 })

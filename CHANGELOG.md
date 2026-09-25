@@ -6,6 +6,25 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **Deterministic ordering, enforced with `rowid` tiebreakers.** Every
+  timestamp-ordered listing in the store broke ties arbitrarily — on fast
+  machines two rows share a millisecond and "newest first" came back
+  oldest-first, which the learnings suite caught on CI. All 32 sorts now
+  carry an insertion-order tiebreaker (`r.rowid`/`m.rowid`/`e.rowid` where
+  joins would make a bare `rowid` ambiguous), ascending sorts match their
+  direction, and a frozen-clock regression suite pins every list method.
+  `acquireRunLease` takes ownership conditionally, so two processes on one
+  database can no longer both believe they own a run — the loser stands
+  down. Control transitions (status changes, permission and budget edits)
+  save with their audit events in one transaction, permission changes are
+  refused on finished runs, and duplicate migration version numbers are
+  rejected outright.
+- **Fonts ship as files, not inline data.** Nine inlined `data:font` URIs
+  were silently refused by the Content-Security-Policy (`font-src` was
+  missing), logging console errors and falling back to system fonts. The
+  policy now names `font-src 'self'` and the build emits fonts as
+  same-origin files. Browser tests fail on any console error from now on,
+  so that class of bug cannot return unnoticed.
 - **The shell renders at its intended spacing again.** An unlayered universal
   `margin: 0; padding: 0` rule was overriding every Tailwind 4 spacing utility,
   so the fixed header and navigation overlapped the content and cards collapsed.

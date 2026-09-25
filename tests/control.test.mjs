@@ -322,3 +322,40 @@ test('denying twice, or denying a call that was approved, resolves once', async 
     assert.equal((await request('POST', `/api/runs/${runId}/tools/${toolCallId}/approve`, { fingerprint: requested.payload.toolCall.fingerprint })).status, 409, 'a denied call cannot then be approved')
   })
 })
+
+test('a control transition and its event save together or not at all', async () => {
+  await withServer(async ({ request, store }) => {
+    const runId = await makeRun(request)
+
+    const original = store.appendEvent.bind(store)
+    let once = true
+    store.appendEvent = (...args) => {
+      if (once) {
+        once = false
+        throw new Error('event write failed')
+      }
+      return original(...args)
+    }
+    const failed = await request('POST', `/api/runs/${runId}/control`, { action: 'pause' })
+    store.appendEvent = original
+
+    assert.equal(failed.status, 500, 'the failed transition surfaces as an error')
+    assert.equal(store.getRun(runId).status, 'planning', 'the status change rolled back with the event')
+    assert.equal(store.listEvents(runId).some((event) => event.type === 'run.paused'), false, 'no half-written transition is on the chain')
+
+    const paused = await request('POST', `/api/runs/${runId}/control`, { action: 'pause' })
+    assert.equal(paused.status, 200)
+    assert.equal(store.getRun(runId).status, 'paused')
+  })
+})
+
+test('permission changes are refused once a run has finished', async () => {
+  await withServer(async ({ request, store }) => {
+    const runId = await makeRun(request)
+    store.updateRun(runId, { status: 'completed' })
+
+    const refused = await request('POST', `/api/runs/${runId}/control`, { action: 'set-permission', permissionMode: 'autopilot' })
+    assert.equal(refused.status, 409, 'a finished run no longer takes permission changes')
+    assert.equal(store.getRun(runId).permissionMode, 'selective', 'and the mode was not changed')
+  })
+})

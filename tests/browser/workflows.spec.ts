@@ -1,4 +1,20 @@
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { expect, test as base, type APIRequestContext, type Page } from '@playwright/test'
+
+// Console errors are regressions even when the assertions pass: the font
+// refusal was invisible to every other check. The suite deliberately stubs
+// failed requests, so that expected "Failed to load resource" noise is
+// filtered out; anything else (a refused asset, a page error) fails.
+const test = base.extend({
+  page: async ({ page }, runTest) => {
+    const errors: string[] = []
+    page.on('console', (message) => {
+      if (message.type() === 'error' && !/^Failed to load resource/.test(message.text())) errors.push(message.text())
+    })
+    page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`))
+    await runTest(page)
+    expect(errors, `console errors:\n${errors.join('\n')}`).toEqual([])
+  },
+})
 
 async function createProject(request: APIRequestContext, name: string) {
   const response = await request.post('/api/projects', { data: { name, settings: { routing: { head: 'Browser fixture', research: 'Browser fixture', builder: 'Browser fixture' } } } })

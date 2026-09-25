@@ -7,8 +7,22 @@ on:
   workflow_dispatch:
 
 jobs:
-  verify:
-    name: Node ${{ matrix.node }} on ${{ matrix.os }}
+  static:
+    name: Lint and typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+
+  backend:
+    name: Backend tests, Node ${{ matrix.node }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -23,21 +37,46 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
-      - run: npm run lint
-      - run: npm run typecheck
       - run: npm test
+
+  frontend:
+    name: Component and browser tests, Node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
       - run: npm run test:ui
       - run: npm run build
-      # One job drives the built UI through a real browser and API fixture, so
-      # layout and cross-surface workflows are checked, not only components.
+      # The built UI goes through a real browser and API fixture, so layout
+      # and cross-surface workflows are checked, not only components.
       - name: Browser workflow tests
         if: matrix.os == 'ubuntu-latest' && matrix.node == '24'
         run: npx playwright install --with-deps chromium && npm run test:browser
-      # One job measures coverage: the thresholds live in the script, so a
-      # regression fails here rather than being noticed later.
-      - name: Coverage thresholds
-        if: matrix.os == 'ubuntu-latest' && matrix.node == '24'
-        run: npm run test:coverage
+
+  coverage:
+    name: Coverage thresholds
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      # The thresholds live in the script, so a regression fails here rather
+      # than being noticed later.
+      - run: npm run test:coverage
 
   container:
     name: Runner image boundary

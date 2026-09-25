@@ -53,18 +53,18 @@ still verifies — as JSON, or as Markdown with `?format=md`.
 ## Checks
 
 ```powershell
-npm test               # 195 tests: policy, persistence, durability, execution boundary, providers, outbound HTTP, redaction, collaboration, and the HTTP API
-npm run test:ui        # component tests: the approval dock, the run header, the plan editor, search
-npm run test:browser   # builds the UI and drives real browser workflows against a fixture bridge
+npm test               # 333 tests: policy, persistence, durability, ordering, execution boundary, providers, outbound HTTP, redaction, collaboration, and the HTTP API
+npm run test:ui        # 38 component tests: the approval dock, the run header, the plan editor, workflows, search
+npm run test:browser   # builds the UI and drives 8 real browser workflows (layout, planning, approvals, recovery) against a fixture bridge, failing on any console error
 npm run lint
 npm run typecheck      # the client, and the server and tests via checkJs
 npm run build
 npm run audit:verify   # prove the run event log has not been edited
 ```
 
-`npm run test:browser` installs nothing beyond the repo: Playwright uses its own
-Chromium (install once with `npx playwright install chromium`), and the fixture
-runs on `127.0.0.1:4174` with a temporary database, workspace, and a stubbed
+`npm run test:browser` needs a browser in addition to the repo: install it once with
+`npx playwright install chromium` (`--with-deps` on CI for the system libraries).
+The fixture runs on `127.0.0.1:4174` with a temporary database, workspace, and a stubbed
 model — no provider key, Docker, or real data is involved.
 
 `npm test` boots the real API bridge on an ephemeral port against a temporary

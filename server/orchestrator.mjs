@@ -1126,7 +1126,11 @@ Rules:
     // declared routing rather than a forgotten override.
     const escalatedRoutes = new Map()
 
-    store.acquireRunLease(runId, ownerId, leaseMs)
+    const lease = store.acquireRunLease(runId, ownerId, leaseMs)
+    // Losing the acquire means another live process owns this run. Standing
+    // down here is what keeps one run from being executed twice; the owner
+    // continues the work, and this process never starts a second copy of it.
+    if (!lease) return
     // Casting is not plan content, but "what ran" still includes who played
     // whom: every execution records its effective routing, so a resumed or
     // re-routed run never leaves the casting to guesswork.

@@ -9,6 +9,13 @@
   "engines": {
     "node": ">=22.13.0"
   },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": ">=22.22.2",
+      "onFail": "warn"
+    }
+  },
   "scripts": {
     "dev": "concurrently -k \"npm:dev:client\" \"npm:dev:server\"",
     "dev:client": "vite --host 127.0.0.1",

@@ -15,7 +15,10 @@ test('E1: a dangling symlink is refused, not followed', async (t) => {
     const link = path.join(dir, 'link.txt')
     try {
       await symlink(target, link)
-    } catch {
+    } catch (error) {
+      if (process.env.CI === 'true') {
+        assert.fail(`symlink creation failed on CI (${error instanceof Error ? error.message : error}); these tests must run there, not skip`)
+      }
       t.skip('symlink creation requires elevated privileges on this OS')
       return
     }
@@ -32,7 +35,10 @@ test('E1: a symlink pointing outside the workspace is refused', async (t) => {
     await writeFile(path.join(outside, 'secret.txt'), 'do not read\n', 'utf8')
     try {
       await symlink(path.join(outside, 'secret.txt'), path.join(dir, 'escape.txt'))
-    } catch {
+    } catch (error) {
+      if (process.env.CI === 'true') {
+        assert.fail(`symlink creation failed on CI (${error instanceof Error ? error.message : error}); these tests must run there, not skip`)
+      }
       t.skip('symlink creation requires elevated privileges on this OS')
       return
     }

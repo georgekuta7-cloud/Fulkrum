@@ -378,7 +378,7 @@ export class FulkrumStore {
   }
 
   listProjects() {
-    return this.database.prepare('SELECT * FROM projects ORDER BY updated_at DESC').all().map(projectFromRow)
+    return this.database.prepare('SELECT * FROM projects ORDER BY updated_at DESC, rowid DESC').all().map(projectFromRow)
   }
 
   getProject(projectId) {
@@ -386,7 +386,7 @@ export class FulkrumStore {
     if (!row) return null
     return {
       project: projectFromRow(row),
-      runs: this.database.prepare('SELECT * FROM runs WHERE project_id = ? ORDER BY updated_at DESC').all(projectId).map(runFromRow),
+      runs: this.database.prepare('SELECT * FROM runs WHERE project_id = ? ORDER BY updated_at DESC, rowid DESC').all(projectId).map(runFromRow),
     }
   }
 
@@ -433,7 +433,7 @@ export class FulkrumStore {
   }
 
   ensureActiveRun(projectId, mode = 'plan') {
-    const row = this.database.prepare("SELECT * FROM runs WHERE project_id = ? AND status NOT IN ('cancelled', 'completed') ORDER BY updated_at DESC LIMIT 1").get(projectId)
+    const row = this.database.prepare("SELECT * FROM runs WHERE project_id = ? AND status NOT IN ('cancelled', 'completed') ORDER BY updated_at DESC, rowid DESC LIMIT 1").get(projectId)
     return row ? runFromRow(row) : this.createRun({ projectId, mode })
   }
 
@@ -469,7 +469,7 @@ export class FulkrumStore {
           (SELECT COUNT(*) FROM run_tasks WHERE run_id = r.id) AS task_count,
           (SELECT COUNT(*) FROM tool_calls WHERE run_id = r.id AND kind = 'write' AND status = 'completed') AS write_count,
           (SELECT objective FROM plans WHERE plans.id = r.plan_id) AS objective
-        FROM runs r ${where} ORDER BY r.updated_at DESC LIMIT ?`)
+        FROM runs r ${where} ORDER BY r.updated_at DESC, r.rowid DESC LIMIT ?`)
       .all(...parameters, limit)
       .map((row) => ({
         ...runFromRow(row),
@@ -488,7 +488,7 @@ export class FulkrumStore {
     // `%` or `_` must match itself, not everything those wildcards would match.
     const escapedPath = String(relativePath).replaceAll('"', '').replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
     const needle = `%"relative":"${escapedPath}"%`
-    return this.database.prepare('SELECT * FROM tool_calls WHERE resolved_json LIKE ? ESCAPE \'\\\' ORDER BY created_at DESC LIMIT ?').all(needle, limit).map(toolCallFromRow)
+    return this.database.prepare('SELECT * FROM tool_calls WHERE resolved_json LIKE ? ESCAPE \'\\\' ORDER BY created_at DESC, rowid DESC LIMIT ?').all(needle, limit).map(toolCallFromRow)
   }
 
   /**
@@ -509,7 +509,7 @@ export class FulkrumStore {
     const messages = this.database
       .prepare(`SELECT m.id, m.run_id, m.project_id, m.role, m.agent_id, m.content, m.created_at
         FROM messages m JOIN runs r ON r.id = m.run_id
-        WHERE m.content LIKE ? ESCAPE '\\' ${scope} ORDER BY m.created_at DESC LIMIT ?`)
+        WHERE m.content LIKE ? ESCAPE '\\' ${scope} ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?`)
       .all(...parameters)
       .map((row) => ({
         kind: 'message',
@@ -525,7 +525,7 @@ export class FulkrumStore {
     const events = this.database
       .prepare(`SELECT e.event_id, e.run_id, r.project_id, e.type, e.agent_id, e.payload_json, e.sequence, e.created_at
         FROM run_events e JOIN runs r ON r.id = e.run_id
-        WHERE e.payload_json LIKE ? ESCAPE '\\' ${scope} ORDER BY e.created_at DESC LIMIT ?`)
+        WHERE e.payload_json LIKE ? ESCAPE '\\' ${scope} ORDER BY e.created_at DESC, e.rowid DESC LIMIT ?`)
       .all(...parameters)
       .map((row) => ({
         kind: 'event',
@@ -568,11 +568,16 @@ export class FulkrumStore {
   /**
    * Take ownership of a run and start a lease. A run whose lease has expired was
    * abandoned by a process that died, which is how a restart can tell the
-   * difference between "still working" and "gone".
+   * difference between "still working" and "gone". The take is conditional on
+   * the run being unowned or its lease having lapsed: two processes on one
+   * database must not both believe they own the run, so a live owner is never
+   * silently overwritten — the second process gets null and stands down.
    */
   acquireRunLease(runId, ownerId, leaseMs) {
     const now = Date.now()
-    this.database.prepare('UPDATE runs SET owner_id = ?, heartbeat_at = ?, lease_expires_at = ?, updated_at = ? WHERE id = ?').run(ownerId, now, now + leaseMs, now, runId)
+    const result = this.database.prepare('UPDATE runs SET owner_id = ?, heartbeat_at = ?, lease_expires_at = ?, updated_at = ? WHERE id = ? AND (owner_id IS NULL OR lease_expires_at IS NULL OR lease_expires_at < ?)')
+      .run(ownerId, now, now + leaseMs, now, runId, now)
+    if (Number(result.changes) === 0) return null
     return this.getRun(runId)
   }
 
@@ -588,7 +593,7 @@ export class FulkrumStore {
 
   /** Runs that claim to be active but whose owner is gone or whose lease lapsed. */
   listStrandedRuns(now = Date.now()) {
-    return this.database.prepare("SELECT * FROM runs WHERE status IN ('executing', 'paused') AND (lease_expires_at IS NULL OR lease_expires_at < ?) ORDER BY updated_at ASC").all(now).map(runFromRow)
+    return this.database.prepare("SELECT * FROM runs WHERE status IN ('executing', 'paused') AND (lease_expires_at IS NULL OR lease_expires_at < ?) ORDER BY updated_at ASC, rowid ASC").all(now).map(runFromRow)
   }
 
   markRunInterrupted(runId, reason) {
@@ -604,7 +609,7 @@ export class FulkrumStore {
   }
 
   listMessages(runId) {
-    return this.database.prepare('SELECT * FROM messages WHERE run_id = ? ORDER BY created_at ASC, id ASC').all(runId).map(messageFromRow)
+    return this.database.prepare('SELECT * FROM messages WHERE run_id = ? ORDER BY created_at ASC, rowid ASC, id ASC').all(runId).map(messageFromRow)
   }
 
   /**
@@ -972,7 +977,7 @@ export class FulkrumStore {
   }
 
   listTasks(runId) {
-    return this.database.prepare('SELECT * FROM run_tasks WHERE run_id = ? ORDER BY created_at ASC').all(runId).map(taskFromRow)
+    return this.database.prepare('SELECT * FROM run_tasks WHERE run_id = ? ORDER BY created_at ASC, rowid ASC').all(runId).map(taskFromRow)
   }
 
   /**
@@ -1015,7 +1020,7 @@ export class FulkrumStore {
   }
 
   listTaskEvidence(taskId) {
-    return this.database.prepare('SELECT * FROM task_evidence WHERE task_id = ? ORDER BY created_at ASC').all(taskId).map(evidenceFromRow)
+    return this.database.prepare('SELECT * FROM task_evidence WHERE task_id = ? ORDER BY created_at ASC, rowid ASC').all(taskId).map(evidenceFromRow)
   }
 
   /**
@@ -1036,11 +1041,11 @@ export class FulkrumStore {
   }
 
   listRunClaims(runId) {
-    return this.database.prepare('SELECT * FROM run_claims WHERE run_id = ? ORDER BY created_at ASC').all(runId).map(claimFromRow)
+    return this.database.prepare('SELECT * FROM run_claims WHERE run_id = ? ORDER BY created_at ASC, rowid ASC').all(runId).map(claimFromRow)
   }
 
   listTaskClaims(taskId) {
-    return this.database.prepare('SELECT * FROM run_claims WHERE task_id = ? ORDER BY created_at ASC').all(taskId).map(claimFromRow)
+    return this.database.prepare('SELECT * FROM run_claims WHERE task_id = ? ORDER BY created_at ASC, rowid ASC').all(taskId).map(claimFromRow)
   }
 
   /**
@@ -1069,12 +1074,12 @@ export class FulkrumStore {
   }
 
   getTaskVerdict(taskId) {
-    const row = this.database.prepare('SELECT * FROM task_verdicts WHERE task_id = ? ORDER BY created_at DESC LIMIT 1').get(taskId)
+    const row = this.database.prepare('SELECT * FROM task_verdicts WHERE task_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(taskId)
     return row ? verdictFromRow(row) : null
   }
 
   listTaskVerdicts(taskId) {
-    return this.database.prepare('SELECT * FROM task_verdicts WHERE task_id = ? ORDER BY created_at ASC').all(taskId).map(verdictFromRow)
+    return this.database.prepare('SELECT * FROM task_verdicts WHERE task_id = ? ORDER BY created_at ASC, rowid ASC').all(taskId).map(verdictFromRow)
   }
 
   recordLearning({ projectId, fact, sourceRunId = null, id = `learning-${randomUUID()}` }) {
@@ -1088,7 +1093,7 @@ export class FulkrumStore {
   }
 
   listProjectLearnings(projectId, limit = 50) {
-    return this.database.prepare('SELECT * FROM project_learnings WHERE project_id = ? ORDER BY created_at DESC LIMIT ?').all(projectId, Math.max(Number(limit) || 50, 1))
+    return this.database.prepare('SELECT * FROM project_learnings WHERE project_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?').all(projectId, Math.max(Number(limit) || 50, 1))
       .map((row) => ({ id: row.id, projectId: row.project_id, fact: row.fact ?? '', sourceRunId: row.source_run_id ?? null, createdAt: Number(row.created_at) }))
   }
 
@@ -1167,7 +1172,7 @@ export class FulkrumStore {
   }
 
   listToolCalls(runId) {
-    return this.database.prepare('SELECT * FROM tool_calls WHERE run_id = ? ORDER BY created_at ASC').all(runId).map(toolCallFromRow)
+    return this.database.prepare('SELECT * FROM tool_calls WHERE run_id = ? ORDER BY created_at ASC, rowid ASC').all(runId).map(toolCallFromRow)
   }
 
   getRunSnapshot(runId, { light = false, sinceSequence = 0 } = {}) {
@@ -1191,8 +1196,8 @@ export class FulkrumStore {
       }
       const live = "status NOT IN ('cancelled', 'completed', 'failed')"
       const liveCall = "status NOT IN ('completed', 'denied', 'failed')"
-      const tasks = this.database.prepare(`SELECT * FROM run_tasks WHERE run_id = ? AND (${live} OR created_at >= ?) ORDER BY created_at ASC`).all(runId, sinceTime).map(taskFromRow)
-      const toolCalls = this.database.prepare(`SELECT * FROM tool_calls WHERE run_id = ? AND (${liveCall} OR created_at >= ?) ORDER BY created_at ASC`).all(runId, sinceTime).map(toolCallFromRow)
+      const tasks = this.database.prepare(`SELECT * FROM run_tasks WHERE run_id = ? AND (${live} OR created_at >= ?) ORDER BY created_at ASC, rowid ASC`).all(runId, sinceTime).map(taskFromRow)
+      const toolCalls = this.database.prepare(`SELECT * FROM tool_calls WHERE run_id = ? AND (${liveCall} OR created_at >= ?) ORDER BY created_at ASC, rowid ASC`).all(runId, sinceTime).map(toolCallFromRow)
       const statuses = (table) => this.database.prepare(`SELECT id, status FROM ${table} WHERE run_id = ?`).all(runId)
       const count = (table) => this.database.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE run_id = ?`).get(runId)?.n ?? 0
       return {
@@ -1237,7 +1242,7 @@ export class FulkrumStore {
   }
 
   listModelCalls(runId) {
-    return this.database.prepare('SELECT * FROM model_calls WHERE run_id = ? ORDER BY created_at ASC').all(runId).map((row) => ({
+    return this.database.prepare('SELECT * FROM model_calls WHERE run_id = ? ORDER BY created_at ASC, rowid ASC').all(runId).map((row) => ({
       id: row.id,
       runId: row.run_id,
       taskId: row.task_id,
@@ -1292,7 +1297,7 @@ export class FulkrumStore {
   }
 
   listSpans(runId) {
-    return this.database.prepare('SELECT * FROM spans WHERE run_id = ? ORDER BY started_at ASC').all(runId).map((row) => ({
+    return this.database.prepare('SELECT * FROM spans WHERE run_id = ? ORDER BY started_at ASC, rowid ASC').all(runId).map((row) => ({
       id: row.id,
       runId: row.run_id,
       parentSpanId: row.parent_span_id,
@@ -1486,7 +1491,7 @@ export class FulkrumStore {
   }
 
   listPlaybooks(projectId) {
-    return this.database.prepare('SELECT * FROM playbooks WHERE project_id = ? ORDER BY created_at DESC').all(projectId).map((row) => ({
+    return this.database.prepare('SELECT * FROM playbooks WHERE project_id = ? ORDER BY created_at DESC, rowid DESC').all(projectId).map((row) => ({
       id: row.id,
       projectId: row.project_id,
       name: row.name,
@@ -1542,7 +1547,7 @@ export class FulkrumStore {
   }
 
   listSchedules(projectId) {
-    return this.database.prepare('SELECT * FROM schedules WHERE project_id = ? ORDER BY created_at DESC').all(projectId).map((row) => ({
+    return this.database.prepare('SELECT * FROM schedules WHERE project_id = ? ORDER BY created_at DESC, rowid DESC').all(projectId).map((row) => ({
       id: row.id,
       projectId: row.project_id,
       playbookId: row.playbook_id,
@@ -1556,7 +1561,7 @@ export class FulkrumStore {
   }
 
   listDueSchedules(now) {
-    return this.database.prepare('SELECT * FROM schedules WHERE enabled = 1 AND next_fire_at <= ? ORDER BY next_fire_at ASC').all(now).map((row) => this.getSchedule(row.id))
+    return this.database.prepare('SELECT * FROM schedules WHERE enabled = 1 AND next_fire_at <= ? ORDER BY next_fire_at ASC, rowid ASC').all(now).map((row) => this.getSchedule(row.id))
   }
 
   updateSchedule(id, patch = {}) {
@@ -1612,7 +1617,7 @@ export class FulkrumStore {
   }
 
   listGoals(projectId) {
-    return this.database.prepare('SELECT * FROM goals WHERE project_id = ? ORDER BY created_at DESC').all(projectId).map((row) => this.getGoal(row.id))
+    return this.database.prepare('SELECT * FROM goals WHERE project_id = ? ORDER BY created_at DESC, rowid DESC').all(projectId).map((row) => this.getGoal(row.id))
   }
 
   deleteGoal(id) {
@@ -1620,7 +1625,7 @@ export class FulkrumStore {
   }
 
   listGoalRuns(goalId) {
-    return this.database.prepare('SELECT r.* FROM runs r JOIN goal_runs g ON g.run_id = r.id WHERE g.goal_id = ? ORDER BY r.created_at ASC').all(goalId).map(runFromRow)
+    return this.database.prepare('SELECT r.* FROM runs r JOIN goal_runs g ON g.run_id = r.id WHERE g.goal_id = ? ORDER BY r.created_at ASC, r.rowid ASC').all(goalId).map(runFromRow)
   }
 
   goalSpend(goalId) {
@@ -1665,8 +1670,8 @@ export class FulkrumStore {
 
   listApprovalGrants(runId, { includeRevoked = false } = {}) {
     const rows = includeRevoked
-      ? this.database.prepare('SELECT * FROM approval_grants WHERE run_id = ? ORDER BY granted_at ASC').all(runId)
-      : this.database.prepare('SELECT * FROM approval_grants WHERE run_id = ? AND revoked_at IS NULL ORDER BY granted_at ASC').all(runId)
+      ? this.database.prepare('SELECT * FROM approval_grants WHERE run_id = ? ORDER BY granted_at ASC, rowid ASC').all(runId)
+      : this.database.prepare('SELECT * FROM approval_grants WHERE run_id = ? AND revoked_at IS NULL ORDER BY granted_at ASC, rowid ASC').all(runId)
     return rows.map((row) => ({
       id: row.id,
       runId: row.run_id,
@@ -1705,8 +1710,8 @@ export class FulkrumStore {
 
   listStandingGrants({ includeRevoked = false } = {}) {
     const rows = includeRevoked
-      ? this.database.prepare('SELECT * FROM standing_grants ORDER BY created_at DESC').all()
-      : this.database.prepare('SELECT * FROM standing_grants WHERE revoked_at IS NULL ORDER BY created_at DESC').all()
+      ? this.database.prepare('SELECT * FROM standing_grants ORDER BY created_at DESC, rowid DESC').all()
+      : this.database.prepare('SELECT * FROM standing_grants WHERE revoked_at IS NULL ORDER BY created_at DESC, rowid DESC').all()
     return rows.map(standingGrantFromRow)
   }
 
@@ -1844,13 +1849,13 @@ export class FulkrumStore {
   }
 
   lastMaintenance(kind) {
-    const row = this.database.prepare('SELECT * FROM maintenance_log WHERE kind = ? ORDER BY created_at DESC LIMIT 1').get(kind)
+    const row = this.database.prepare('SELECT * FROM maintenance_log WHERE kind = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(kind)
     if (!row) return null
     return { kind: row.kind, ok: Number(row.ok) === 1, summary: row.summary, payload: parseJson(row.payload_json), createdAt: Number(row.created_at) }
   }
 
   listMaintenance({ limit = 20 } = {}) {
-    return this.database.prepare('SELECT * FROM maintenance_log ORDER BY created_at DESC LIMIT ?').all(limit).map((row) => ({
+    return this.database.prepare('SELECT * FROM maintenance_log ORDER BY created_at DESC, rowid DESC LIMIT ?').all(limit).map((row) => ({
       kind: row.kind,
       ok: Number(row.ok) === 1,
       summary: row.summary,
