@@ -30,7 +30,7 @@ jobs:
       # The image is part of the execution boundary, so a release publishes the
       # exact one the tag was tested with, and the release notes carry its digest:
       # a digest cannot be moved the way a tag can.
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

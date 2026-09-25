@@ -12,7 +12,7 @@ const AGENT_NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/
  *
  * @param {string} text
  * @param {{ source?: string }} [options]
- * @returns {{ ok: boolean, skill?: object, problems?: string[] }}
+ * @returns {{ ok: boolean, skill?: { name: string, description: string, license: string, compatibility: string, allowedTools: string, author: string, version: string, contentLength: number, division: string, content: string }, problems?: string[] }}
  */
 export function parseAgencyAgent(text, { source: _source = 'agency-agents' } = {}) {
   const body = String(text ?? '')
