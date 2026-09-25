@@ -24,7 +24,7 @@ function WorkerStrip({ bridge }: { bridge: Bridge }) {
       const active = tasks.find((task) => task.status === 'running')
       const waiting = bridge.approval?.toolCall.agentId === role
       const state = waiting ? 'waiting' : active ? (bridge.run?.status === 'paused' ? 'paused' : 'working') : bridge.streaming?.role === role ? 'working' : tasks.at(-1)?.status === 'completed' ? 'done' : tasks.at(-1)?.status === 'failed' ? 'failed' : 'idle'
-      return <div key={role} className="p-2.5 rounded-xl border border-outline-variant/30 bg-surface-container min-w-0 space-y-1">
+      return <div key={role} className="p-2 rounded-lg border border-outline-variant/40 bg-surface-container min-w-0 space-y-1">
         <div className="flex items-center justify-between gap-2"><span className="text-label-md font-semibold">{roleLabel(role)}</span><Chip tone={state === 'failed' ? 'bad' : waiting || state === 'done' ? 'ok' : state === 'working' ? 'busy' : 'idle'}>{state}</Chip></div>
         <p className="text-body-sm text-on-surface-variant truncate" title={active?.title}>{active?.title ?? (waiting ? 'parked on approval' : 'no active task')}</p>
         <p className="font-mono text-label-sm text-outline truncate" title={resolveRouteDisplay(routing, bridge.providers, role) ?? undefined}>{resolveRouteDisplay(routing, bridge.providers, role) ?? 'default provider'}{costs.get(role) ? ` · $${costs.get(role)!.toFixed(4)}` : ''}</p>
@@ -37,7 +37,7 @@ function PipelineStrip({ bridge }: { bridge: Bridge }) {
   const tasks = bridge.tasks
   if (!tasks.length) return null
   const done = tasks.filter((task) => task.status === 'completed').length
-  return <div className="flex items-center gap-2 px-3 py-2 bg-surface-container rounded-xl overflow-x-auto" role="status" aria-label={`Plan progress: ${done} of ${tasks.length} tasks done`}>
+  return <div className="flex items-center gap-2 px-3 py-2 bg-surface-container rounded-lg border border-outline-variant/40 overflow-x-auto" role="status" aria-label={`Plan progress: ${done} of ${tasks.length} tasks done`}>
     {tasks.map((task, index) => <div key={task.id} className="flex items-center gap-2 shrink-0">
       {index > 0 ? <span className="w-6 h-px bg-outline-variant" aria-hidden="true" /> : null}
       <span className={`w-2 h-2 rounded-full ${task.status === 'completed' ? 'bg-secondary' : task.status === 'running' ? 'bg-primary' : task.status === 'failed' ? 'bg-error' : 'bg-outline-variant'}`} aria-hidden="true" />
@@ -51,7 +51,7 @@ function ProofSection({ bridge }: { bridge: Bridge }) {
   const claims = bridge.claims
   if (!claims.length) return null
   const proven = claims.filter((claim) => claim.verdict === 'PASS').length
-  return <details className="bg-surface-container rounded-xl group">
+  return <details className="bg-surface-container rounded-lg group">
     <summary className="flex items-center gap-2 p-4 cursor-pointer list-none"><Icon name="verified" className="text-secondary text-xl" /><span className="text-label-lg font-semibold">Proof</span><span className="font-mono text-label-sm text-secondary">{proven}/{claims.length} proven</span><span className="ml-auto text-label-sm text-outline group-open:hidden">show</span></summary>
     <div className="px-4 pb-4 space-y-2">
       <p className="text-label-sm text-outline">The fraction of claims proven is the value of the run.</p>
@@ -92,15 +92,15 @@ export function ChatView({ bridge, onOpenSettings }: { bridge: Bridge; onOpenSet
 
   return (
     <div className="w-full max-w-4xl mx-auto px-3 sm:px-4 py-4 pb-48 flex flex-col gap-4 min-w-0">
-      {!providersReady ? <div className="flex items-start gap-3 p-4 rounded-xl bg-error-container/20 border border-error/40" role="alert"><Icon name="key_off" className="text-error text-xl" /><div className="space-y-2 min-w-0"><p className="text-body-md">No provider has a key, so nothing can answer yet. Configure a provider in Settings.</p>{onOpenSettings ? <Button onClick={onOpenSettings}>Open provider settings</Button> : null}</div></div> : null}
+      {!providersReady ? <div className="flex items-start gap-3 p-4 rounded-lg bg-error-container/20 border border-error/40" role="alert"><Icon name="key_off" className="text-error text-xl" /><div className="space-y-2 min-w-0"><p className="text-body-md">No provider has a key, so nothing can answer yet. Configure a provider in Settings.</p>{onOpenSettings ? <Button onClick={onOpenSettings}>Open provider settings</Button> : null}</div></div> : null}
       <RunRecovery key={run?.id} bridge={bridge} />
       <WorkerStrip bridge={bridge} />
       <PipelineStrip bridge={bridge} />
       {messages.length === 0 && !plan ? <p className="text-body-md text-on-surface-variant py-4">Give the Head AI a direction: what to build, fix, or investigate. Draft and inspect its plan before approving execution.</p> : null}
       {messages.map((message) => message.role === 'user' ? (
-        <div className="flex justify-end pl-4 sm:pl-8 min-w-0" key={message.id}><div className="max-w-xl min-w-0 bg-surface-container-high rounded-2xl rounded-tr-sm px-4 py-3"><p className="text-body-md whitespace-pre-wrap break-words">{message.content}</p><p className="text-right font-mono text-label-sm text-on-surface-variant mt-1">{time(message.createdAt)}</p></div></div>
+        <div className="flex justify-end pl-4 sm:pl-8 min-w-0" key={message.id}><div className="max-w-xl min-w-0 bg-surface-container-high rounded-lg rounded-tr-sm px-4 py-3"><p className="text-body-md whitespace-pre-wrap break-words">{message.content}</p><p className="text-right font-mono text-label-sm text-on-surface-variant mt-1">{time(message.createdAt)}</p></div></div>
       ) : (
-        <div className="flex items-start gap-2 sm:gap-3 min-w-0" key={message.id}><div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-primary-container/40 flex items-center justify-center shrink-0" aria-hidden="true"><Icon name="smart_toy" className="text-primary text-lg" /></div><div className="flex-1 space-y-1 min-w-0"><div className="flex items-center gap-2"><span className="text-label-md font-semibold">{roleLabel(message.agentId ?? 'head')}</span><span className="font-mono text-label-sm text-on-surface-variant">{time(message.createdAt)}</span></div><Suspense fallback={<p className="text-body-md whitespace-pre-wrap break-words">{message.content}</p>}><MessageContent text={message.content} /></Suspense></div></div>
+        <div className="flex items-start gap-2 sm:gap-3 min-w-0" key={message.id}><div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-primary-container/40 flex items-center justify-center shrink-0" aria-hidden="true"><Icon name="smart_toy" className="text-primary text-lg" /></div><div className="flex-1 space-y-1 min-w-0"><div className="flex items-center gap-2"><span className="text-label-md font-semibold">{roleLabel(message.agentId ?? 'head')}</span><span className="font-mono text-label-sm text-on-surface-variant">{time(message.createdAt)}</span></div><Suspense fallback={<p className="text-body-md whitespace-pre-wrap break-words">{message.content}</p>}><MessageContent text={message.content} /></Suspense></div></div>
       ))}
       {streaming ? <div className="space-y-1 min-w-0" aria-live="polite"><span className="text-label-md font-semibold">{roleLabel(streaming.role)} · writing</span><p className="text-body-md whitespace-pre-wrap break-words">{streaming.text || '…'}</p></div> : null}
       <PlanCard key={plan?.plan.id ?? 'new-plan'} bridge={bridge} />
@@ -109,10 +109,10 @@ export function ChatView({ bridge, onOpenSettings }: { bridge: Bridge; onOpenSet
       <ProofSection bridge={bridge} />
       <div ref={endRef} aria-hidden="true" />
       <div className="fixed bottom-4 left-16 right-0 z-30 pointer-events-none">
-        <div className="max-w-4xl mx-auto px-3 sm:px-4 pointer-events-auto"><div className="bg-surface-container/95 rounded-2xl shadow-float p-2.5">
+        <div className="max-w-4xl mx-auto px-3 sm:px-4 pointer-events-auto"><div className="bg-surface-container/95 rounded-lg border border-outline-variant/40 shadow-panel p-2.5">
           <label className="visually-hidden" htmlFor="chat-prompt">Direct the Head AI</label>
           <div className="flex items-end gap-2 px-2 pb-1">
-            <textarea ref={inputRef} id="chat-prompt" className="w-full min-w-0 bg-transparent text-body-md placeholder:text-on-surface-variant/60 focus:outline-none resize-none max-h-32 py-1 leading-relaxed" rows={1} placeholder={chatDisabled ? 'Resume this run or start a new one…' : 'Direct the Head AI, or describe what to build…'} value={prompt} disabled={chatDisabled} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void send() } }} />
+            <textarea ref={inputRef} id="chat-prompt" className="w-full min-w-0 bg-transparent text-body-md placeholder:text-outline focus:outline-none resize-none max-h-32 py-1 leading-relaxed" rows={1} placeholder={chatDisabled ? 'Resume this run or start a new one…' : 'Direct the Head AI, or describe what to build…'} value={prompt} disabled={chatDisabled} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void send() } }} />
             <Button variant="primary" className="!px-2.5 !py-2 shrink-0" disabled={!prompt.trim() || sending || chatDisabled || !providersReady} onClick={() => void send()} aria-label="Send (Ctrl+Enter)"><Icon name="arrow_upward" className="text-xl" /></Button>
           </div>
         </div></div>

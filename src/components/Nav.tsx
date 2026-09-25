@@ -27,9 +27,10 @@ export function Nav({ view, onViewChange, approvalWaiting, reachable = false }: 
               title={link.title}
               aria-label={link.title}
               aria-current={view === link.path ? 'page' : undefined}
-              className={`relative h-10 w-full rounded-lg flex items-center justify-center transition-colors ${view === link.path ? 'bg-primary-container text-on-primary-container' : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'}`}
+              className={`relative h-10 w-full rounded-lg flex items-center justify-center transition-colors ${view === link.path ? 'bg-surface-container text-on-surface' : 'text-on-surface-variant hover:bg-surface-container/60 hover:text-on-surface'}`}
               onClick={() => onViewChange(link.path)}
             >
+              {view === link.path ? <span className="absolute left-0 top-2 bottom-2 w-0.5 rounded-[1px] bg-primary" aria-hidden="true" /> : null}
               <Icon name={link.icon} className="text-[22px]" />
               {link.path === 'chat' && approvalWaiting ? (
                 <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-secondary" title="A decision is waiting" />

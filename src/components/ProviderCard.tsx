@@ -18,7 +18,7 @@ export function ProviderCard({ bridge, provider, probe, onProbed }: { bridge: Br
   const key = provider.keySource === 'stored' ? 'stored locally' : provider.keySource === 'env' ? `from ${provider.envKey}` : provider.authStyle === 'none' ? 'no key needed' : 'not configured'
 
   return (
-    <section aria-label={`Provider ${provider.label}`} className="bg-surface-container-low p-4 rounded-xl flex flex-col gap-3 min-w-0">
+    <section aria-label={`Provider ${provider.label}`} className="bg-surface-container-low p-4 rounded-lg border border-outline-variant/40 flex flex-col gap-3 min-w-0">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex items-start gap-3 min-w-0">
           <Icon name="terminal" className="text-primary text-xl mt-1" />

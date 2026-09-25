@@ -123,7 +123,7 @@ export function ControlView({ bridge, onOpenChat }: { bridge: Bridge; onOpenChat
   return (
     <div className="w-full max-w-7xl mx-auto px-4 py-4 flex flex-col gap-4">
       {bridge.approval ? (
-        <button type="button" className="flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-secondary/10 border border-secondary/40 text-left hover:bg-secondary/15 transition-colors" onClick={onOpenChat}>
+        <button type="button" className="flex items-center justify-between gap-3 px-4 py-3 rounded-lg bg-secondary/10 border border-secondary/40 text-left hover:bg-secondary/15 transition-colors" onClick={onOpenChat}>
           <span className="flex items-center gap-2.5 min-w-0">
             <span className="relative flex h-2.5 w-2.5 flex-shrink-0" aria-hidden="true">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-secondary opacity-75" />
@@ -136,7 +136,7 @@ export function ControlView({ bridge, onOpenChat }: { bridge: Bridge; onOpenChat
       ) : null}
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
-        <div className="xl:col-span-8 bg-surface-container-low rounded-xl p-3">
+        <div className="xl:col-span-8 bg-surface-container-low rounded-lg p-3">
           <MapCanvas bridge={bridge} />
         </div>
         <div className="xl:col-span-4 flex flex-col gap-4">

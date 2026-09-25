@@ -79,7 +79,7 @@ export function StoreView({ bridge }: { bridge: Bridge }) {
                 const installed = installedIds.has(entry.id)
                 const medium = (entry.findings ?? []).filter((f: any) => f.severity === 'medium')
                 return (
-                  <li key={entry.id} className="flex flex-col gap-1.5 p-3 rounded-xl border border-outline-variant/40 bg-surface-container">
+                  <li key={entry.id} className="flex flex-col gap-1.5 p-3 rounded-lg border border-outline-variant/40 bg-surface-container">
                     <div className="flex items-center gap-2 flex-wrap">
                       <strong className="text-body-md text-on-surface">{entry.id}</strong>
                       {entry.trust === 'verified' ? <Chip tone="ok">Verified</Chip> : <Chip tone="busy">Community</Chip>}
@@ -124,7 +124,7 @@ export function StoreView({ bridge }: { bridge: Bridge }) {
           {bridge.registry ? (
             <ul className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
               {bridge.registry.candidates.map((candidate: any) => (
-                <li key={candidate.id} className="flex flex-col gap-1.5 p-3 rounded-xl border border-outline-variant/40 bg-surface-container">
+                <li key={candidate.id} className="flex flex-col gap-1.5 p-3 rounded-lg border border-outline-variant/40 bg-surface-container">
                   <div className="flex items-center gap-2">
                     <strong className="text-body-md text-on-surface">{candidate.id}</strong>
                     <span className="font-mono text-label-sm text-outline">v{candidate.version}</span>

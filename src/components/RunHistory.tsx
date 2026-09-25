@@ -27,7 +27,7 @@ export function RunHistory({ bridge }: { bridge: Bridge }) {
         <ul className="space-y-2">
           {bridge.runs.map((run) => (
             <li key={run.id}>
-              <button type="button" aria-label={`Open run ${run.id}`} className="w-full p-4 bg-surface-container rounded-xl flex items-start justify-between gap-3 hover:bg-surface-container-high text-left" onClick={() => void bridge.openRun(run.id)}>
+              <button type="button" aria-label={`Open run ${run.id}`} className="w-full p-4 bg-surface-container rounded-lg border border-outline-variant/40 hover:border-outline-variant/60 flex items-start justify-between gap-3 hover:bg-surface-container-high text-left" onClick={() => void bridge.openRun(run.id)}>
                 <span className="min-w-0 space-y-1">
                   <span className="block text-body-md break-words">{run.objective || 'Untitled run'}</span>
                   <span className="block font-mono text-label-sm text-on-surface-variant break-all">{run.id}</span>

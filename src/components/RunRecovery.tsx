@@ -15,7 +15,7 @@ export function RunRecovery({ bridge }: { bridge: Bridge }) {
           : 'This run is paused. Resume returns to planning if no plan was approved, or continues the approved work.'
   const latestFailure = [...(bridge.events ?? [])].reverse().find((event) => event.type === 'run.failed')?.payload?.error
   return (
-    <section aria-label="Run status" className="space-y-3 p-4 rounded-xl bg-surface-container border border-outline-variant/40">
+    <section aria-label="Run status" className="space-y-3 p-4 rounded-lg bg-surface-container border border-outline-variant/40">
       <h2 className="text-label-lg font-semibold">This run is {run.status.replaceAll('_', ' ')}</h2>
       <p className="text-body-md text-on-surface-variant">{message}</p>
       {run.interruptionReason || latestFailure ? <p className="text-body-sm text-error break-words">{run.interruptionReason ?? String(latestFailure)}</p> : null}

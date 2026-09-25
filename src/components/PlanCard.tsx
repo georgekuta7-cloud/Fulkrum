@@ -22,14 +22,14 @@ export function PlanCard({ bridge }: { bridge: Bridge }) {
   }
 
   if (!plan) return plannable ? (
-    <section className="p-4 rounded-xl bg-surface-container space-y-3" aria-label="Execution plan">
+    <section className="p-4 rounded-lg bg-surface-container space-y-3" aria-label="Execution plan">
       <p className="text-body-md text-on-surface-variant">{hasDirection ? 'Turn this direction into an executable plan. Review the tasks before starting work.' : 'Send a direction first, then draft a plan to review.'}</p>
       <Button variant="primary" disabled={busy || !hasDirection || !providersReady} onClick={() => void perform(() => bridge.draftPlan())}>{busy ? 'Drafting…' : 'Draft plan'}</Button>
     </section>
   ) : null
 
   return (
-    <section className="bg-surface-container rounded-xl p-4 space-y-4 min-w-0" aria-label="Execution plan">
+    <section className="bg-surface-container rounded-lg p-4 space-y-4 min-w-0" aria-label="Execution plan">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <h2 className="text-label-lg font-semibold break-words">Plan: {plan.plan.objective}</h2>
         <Chip tone={plan.plan.status === 'approved' ? 'ok' : 'plan'}>v{plan.plan.version} · {plan.plan.status}</Chip>

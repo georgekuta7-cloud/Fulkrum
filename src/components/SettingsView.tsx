@@ -55,7 +55,7 @@ export function SettingsView({ bridge }: { bridge: Bridge }) {
 
   return (
     <div className="w-full max-w-7xl mx-auto px-4 py-4 flex flex-col gap-4">
-      <div className="w-full bg-surface-container-low p-1.5 rounded-xl flex items-center gap-1 overflow-x-auto" role="group" aria-label="Settings sections">
+      <div className="w-full bg-surface-container-low p-1.5 rounded-lg border border-outline-variant/40 flex items-center gap-1 overflow-x-auto" role="group" aria-label="Settings sections">
         {TABS.map((entry) => (
           <button
             key={entry.id}
@@ -75,17 +75,17 @@ export function SettingsView({ bridge }: { bridge: Bridge }) {
           {tab === 'providers' ? (
             <>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="bg-surface-container-low p-4 rounded-xl">
+                <div className="bg-surface-container-low p-4 rounded-lg border border-outline-variant/40">
                   <p className="text-label-sm text-outline uppercase">Configured</p>
                   <p className="mt-1 font-mono text-headline-lg text-on-surface">{configuredCount}<span className="text-body-md text-outline">/{bridge.providers.length}</span></p>
                   <p className="text-label-sm text-outline mt-1">Keys stay on this machine; nothing is displayed here.</p>
                 </div>
-                <div className="bg-surface-container-low p-4 rounded-xl">
+                <div className="bg-surface-container-low p-4 rounded-lg border border-outline-variant/40">
                   <p className="text-label-sm text-outline uppercase">Schema</p>
                   <p className="mt-1 font-mono text-headline-lg text-on-surface">v{bridge.status?.schemaVersion ?? '—'}</p>
                   <p className="text-label-sm text-outline mt-1">{bytes(bridge.status?.storage.databaseBytes)} db · {bytes(bridge.status?.storage.walBytes)} WAL</p>
                 </div>
-                <div className="bg-surface-container-low p-4 rounded-xl">
+                <div className="bg-surface-container-low p-4 rounded-lg border border-outline-variant/40">
                   <p className="text-label-sm text-outline uppercase">Breakers</p>
                   <p className="mt-1 font-mono text-headline-lg text-on-surface">{(bridge.status?.providers ?? []).filter((p) => p.breaker?.open).length}<span className="text-body-md text-outline"> skipped</span></p>
                   <p className="text-label-sm text-outline mt-1">Providers cool down after repeated failures.</p>

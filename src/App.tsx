@@ -89,7 +89,7 @@ export default function App() {
                   <label className="visually-hidden" htmlFor="first-project-name">Project name</label>
                   <input
                     id="first-project-name"
-                    className="px-4 py-2.5 bg-surface-container border border-outline-variant/30 rounded-lg text-body-md text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/50 w-full min-w-0 sm:w-64"
+                    className="px-4 py-2.5 bg-surface-container border border-outline-variant/40 hover:border-outline-variant rounded-lg text-body-md text-on-surface placeholder:text-outline focus:outline-none focus:border-primary w-full min-w-0 sm:w-64"
                     autoFocus value={projectName} placeholder="Project name"
                     disabled={creatingProject}
                     onChange={(event) => setProjectName(event.target.value)}
@@ -116,14 +116,14 @@ export default function App() {
 
         <div className="fixed bottom-24 right-3 left-20 sm:left-auto sm:bottom-4 sm:right-4 z-50 space-y-2" aria-live="polite">
           {bridge.error ? (
-            <div className="flex items-center gap-3 px-4 py-3 bg-surface-container-high border border-error/30 rounded-xl shadow-float max-w-sm" role="alert">
+            <div className="flex items-center gap-3 px-4 py-3 bg-surface-container-high border border-error/40 rounded-lg shadow-panel max-w-sm" role="alert">
               <Icon name="error" className="text-error text-xl" />
               <span className="text-body-sm flex-1 min-w-0 break-words">{bridge.error}</span>
               <button type="button" onClick={() => bridge.setError(null)} aria-label="Dismiss error" className="text-on-surface-variant hover:text-on-surface p-1"><Icon name="close" className="text-base" /></button>
             </div>
           ) : null}
           {bridge.notice ? (
-            <div className="flex items-center gap-3 px-4 py-3 bg-surface-container-high border border-outline-variant/30 rounded-xl shadow-float max-w-sm">
+            <div className="flex items-center gap-3 px-4 py-3 bg-surface-container-high border border-outline-variant/40 rounded-lg shadow-panel max-w-sm">
               <span className="text-body-sm flex-1">{bridge.notice}</span>
               <button type="button" onClick={() => bridge.setNotice(null)} aria-label="Dismiss notice" className="text-on-surface-variant hover:text-on-surface p-1"><Icon name="close" className="text-base" /></button>
             </div>

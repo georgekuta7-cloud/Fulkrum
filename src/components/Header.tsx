@@ -24,7 +24,7 @@ export function Header({ bridge, theme, onToggleTheme, onOpenSettings, onOpenCha
           <div className="w-7 h-8 sm:w-8 rounded-lg bg-primary-container/40 flex items-center justify-center shrink-0" aria-hidden="true"><Icon name="hub" className="text-primary text-lg" /></div>
           <span className="text-headline-md hidden sm:inline">Fulkrum</span>
           <ProjectMenu bridge={bridge} onOpenChat={onOpenChat} />
-          <div className="hidden md:flex shrink-0 items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-container-low border border-outline-variant/30" title={engine?.reason}>
+          <div className="hidden md:flex shrink-0 items-center gap-1.5 h-6 px-1.5 rounded-[4px] bg-surface-container-low border border-outline-variant/40 font-mono uppercase" title={engine?.reason}>
             {engine?.available ? <><span className="w-1.5 h-1.5 rounded-full bg-secondary" aria-hidden="true" /><span className="text-label-sm text-secondary">{engine.label} sandbox</span></> : <span className="text-label-sm text-outline">commands: disabled</span>}
           </div>
         </div>

@@ -40,6 +40,22 @@ All notable changes to Fulkrum are documented here. This project follows
   reaches the recursion limit.
 
 ### Changed
+- **The visual regime is decided: hardened, not replaced.** The interface now
+  carries the Precision Engineering Dark character on its own tokens: 8px
+  panels and 4–6px chips with mono uppercase labels (fully circular pills are
+  gone — dots and meters stay round), hairline borders instead of blurred
+  edges, the system's focus ring (1px primary stroke plus a soft halo), one
+  `shadow-panel` for floating surfaces, the primary accent halo on hover, and
+  a 2px accent stroke on the active nav item. The app itself is the single
+  authoritative design (`docs/ui-spec.md` §11); the legacy mockups are
+  archived under `design-preview/archive/`, and
+  `scripts/design-screenshots.mjs` regenerates the living reference set in
+  `design-preview/current/`.
+- **Design-bug fixes from the hardening pass:** light-theme outline contrast
+  raised to WCAG AA (`#777680` → `#67666f`, 5.5:1), placeholder text moved to
+  the outline token (was 50–60% variant), `kbd` shortcuts render as mono
+  chips instead of browser defaults, diff hunks name absent line numbers
+  honestly (— not 0), and every input gained a visible hairline at rest.
 - **The 4 MB icon font is gone.** Material Symbols was replaced with the exact
   set of SVG glyphs the interface uses, cutting the built font payload and the
   client bundle warning. Markdown rendering is code-split, workspace settings

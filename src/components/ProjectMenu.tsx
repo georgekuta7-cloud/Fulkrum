@@ -33,7 +33,7 @@ export function ProjectMenu({ bridge, onOpenChat }: { bridge: Bridge; onOpenChat
       </button>
       {open ? (
         <div id="project-menu" role="dialog" aria-label="Projects and runs"
-          className="fixed left-2 top-14 sm:absolute sm:left-0 sm:top-full mt-1.5 w-80 max-w-[calc(100vw-1rem)] bg-surface-container-high rounded-lg p-2 shadow-float z-50 space-y-3">
+          className="fixed left-2 top-14 sm:absolute sm:left-0 sm:top-full mt-1.5 w-80 max-w-[calc(100vw-1rem)] bg-surface-container-high rounded-lg border border-outline-variant/60 p-2 shadow-panel z-50 space-y-3">
           <div role="menu" aria-label="Choose project" className="max-h-56 overflow-y-auto"
             onKeyDown={(event) => {
               if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
@@ -53,7 +53,7 @@ export function ProjectMenu({ bridge, onOpenChat }: { bridge: Bridge; onOpenChat
               </button>
             ))}
           </div>
-          <div className="flex flex-wrap gap-2 border-t border-outline-variant/30 pt-2">
+          <div className="flex flex-wrap gap-2 border-t border-outline-variant/40 pt-2">
             <Button disabled={!bridge.projectId || bridge.projectLoading} onClick={() => { bridge.closeRun(); setOpen(false); onOpenChat() }}>Run history</Button>
             <Button variant="primary" disabled={!bridge.projectId || bridge.projectLoading || busy} onClick={async () => {
               setBusy(true)

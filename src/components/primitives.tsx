@@ -13,8 +13,8 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 
 export function Button({ variant = 'ghost', className = '', type = 'button', ...props }: ButtonProps) {
   const tones = {
-    primary: 'bg-primary text-on-primary hover:opacity-90 font-medium shadow-sm',
-    danger: 'text-error hover:bg-error-container/30',
+    primary: 'bg-primary text-on-primary font-medium shadow-sm hover:shadow-glow-primary',
+    danger: 'text-error border border-outline-variant/40 hover:bg-error-container/30 hover:border-error/40',
     ghost: 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high',
   } as const
   return <button type={type} className={`inline-flex items-center justify-center gap-1.5 min-h-8 px-3.5 py-1.5 rounded-lg text-label-md transition-colors disabled:opacity-40 ${tones[variant]} ${className}`} {...props} />
@@ -29,14 +29,14 @@ const CHIP_TONES = {
 } as const
 
 export function Chip({ tone = 'idle', children }: { tone?: keyof typeof CHIP_TONES; children: ReactNode }) {
-  return <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full font-mono text-label-sm ${CHIP_TONES[tone]}`}>{children}</span>
+  return <span className={`inline-flex items-center gap-1.5 min-h-5 px-1.5 py-0.5 rounded-[4px] font-mono text-label-sm uppercase ${CHIP_TONES[tone]}`}>{children}</span>
 }
 
 export function Panel({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
-    <section className="bg-surface-container-low rounded-xl p-4 flex flex-col gap-3 min-w-0" aria-label={title}>
+    <section className="bg-surface-container-low rounded-lg border border-outline-variant/40 p-4 flex flex-col gap-3 min-w-0" aria-label={title}>
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <h2 className="text-label-lg font-semibold text-on-surface">{title}</h2>
+        <h2 className="font-mono uppercase text-label-sm text-on-surface-variant">{title}</h2>
         {action}
       </div>
       {children}
@@ -57,5 +57,5 @@ export function EmptyState({ icon, title, body, action }: { icon: IconName; titl
   )
 }
 
-export const inputClass = 'min-w-0 max-w-full bg-surface-container-lowest px-3 py-2 rounded-lg text-body-md text-on-surface placeholder:text-outline focus:outline-none focus:ring-1 focus:ring-primary'
-export const selectClass = 'max-w-full bg-surface-container-lowest px-3 py-1.5 rounded-lg text-body-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-primary min-w-[180px]'
+export const inputClass = 'min-w-0 max-w-full bg-surface-container-lowest border border-outline-variant/60 px-3 py-2 rounded-lg text-body-md text-on-surface placeholder:text-outline hover:border-outline-variant focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent'
+export const selectClass = 'max-w-full min-h-8 bg-surface-container-lowest border border-outline-variant/60 px-3 py-1.5 rounded-lg text-body-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-primary focus:border-transparent min-w-[180px]'

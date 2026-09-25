@@ -70,7 +70,7 @@
   --color-surface-variant: #e3dbea;
   --color-on-surface: #1b1b21;
   --color-on-surface-variant: #47464f;
-  --color-outline: #777680;
+  --color-outline: #67666f;
   --color-outline-variant: #c8c5d0;
   --color-inverse-surface: #2f3036;
   --color-inverse-on-surface: #f0f0f4;
@@ -137,9 +137,13 @@ body {
 
 /* Rebuild foundations: keyboard users, screen readers, and reduced motion
  * are load-bearing from the first screen, not a polish pass later. */
+/* The system's focus ring: a 1px primary stroke with a soft halo, not a
+ * heavy outline. Primary is ≥3:1 against every surface in both themes, so
+ * the indicator itself carries the contrast. Inputs pair this with their
+ * own 1px ring utility; both are the same stroke. */
 :focus-visible {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: 0 0 0 1px var(--color-primary), 0 0 8px color-mix(in srgb, var(--color-primary) 20%, transparent);
 }
 .visually-hidden {
   position: absolute;
@@ -182,6 +186,11 @@ body {
  * shadow-sm; overlays share this and nothing else. */
 @theme inline {
   --shadow-float: 0px 0px 0px 1px rgba(0, 0, 0, 0.06), 0px 1px 1px -0.5px rgba(0, 0, 0, 0.06), 0px 3px 3px -1.5px rgba(0, 0, 0, 0.06), 0px 6px 6px -3px rgba(0, 0, 0, 0.06), 0px 12px 12px -6px rgba(0, 0, 0, 0.06), 0px 24px 24px -12px rgba(0, 0, 0, 0.06);
+  /* The system's elevation for panels that float over the shell: a restrained
+   * inner top highlight plus one deep drop — depth from luminescence, not blur. */
+  --shadow-panel: inset 0 1px 0 0 rgba(255, 255, 255, 0.05), 0px 8px 32px 0px rgba(0, 0, 0, 0.45);
+  /* Primary controls hover with the system's accent halo. */
+  --shadow-glow-primary: 0px 0px 12px color-mix(in srgb, var(--color-primary) 35%, transparent);
 }
 /* View changes fade in once, 200ms, ease-out. Orientation, not decoration:
  * it tells the eye something replaced something. The global reduced-motion
@@ -199,6 +208,18 @@ body {
 }
 
 @layer components {
+  /* Keyboard shortcuts render as small mono chips — the system's badge
+   * geometry, never a bare browser default. */
+  kbd {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1;
+    padding: 2px 4px;
+    border-radius: 3px;
+    border: 1px solid var(--color-outline-variant);
+    background: var(--color-surface-container);
+    color: var(--color-on-surface-variant);
+  }
   .message-content { overflow-wrap: anywhere; }
   .message-content > * + * { margin-top: 0.75rem; }
   .message-content :where(h1, h2, h3, h4) { font-size: 1.05em; font-weight: 600; line-height: 1.5; }
@@ -206,7 +227,7 @@ body {
   .message-content ul { list-style: disc; }
   .message-content ol { list-style: decimal; }
   .message-content li + li { margin-top: 0.25rem; }
-  .message-content pre { max-width: 100%; overflow: auto; padding: 0.75rem; border-radius: 0.5rem; background: var(--color-surface-container-lowest); }
+  .message-content pre { max-width: 100%; overflow: auto; padding: 0.75rem; border-radius: 0.5rem; background: var(--color-surface-container-lowest); border: 1px solid color-mix(in srgb, var(--color-outline-variant) 60%, transparent); }
   .message-content code { font-family: var(--font-mono); font-size: 0.9em; }
   .message-content :not(pre) > code { padding: 0.1rem 0.25rem; border-radius: 0.25rem; background: var(--color-surface-container); }
   .message-content a { color: var(--color-primary); text-decoration: underline; text-underline-offset: 0.15em; }
