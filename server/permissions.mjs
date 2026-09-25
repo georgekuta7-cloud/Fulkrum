@@ -76,16 +76,13 @@ export function resolveWorkspacePath(workspaceRoot, candidate, { forWrite = fals
   const resolved = path.resolve(root, String(candidate ?? '.'))
   assertInsideWorkspace(root, resolved)
 
-  const ancestor = deepestExistingAncestor(resolved)
-  if (ancestor) {
-    const realAncestor = realpathOrNull(ancestor)
-    if (realAncestor) assertInsideWorkspace(root, realAncestor)
-  }
-
   // lstat does not follow a link, so a symlink is visible as a symlink and a
   // dangling link is visible at all. statSync would follow it and either land
   // outside the workspace or throw on a missing target, and the isSymbolicLink
-  // branch below would never run.
+  // branch below would never run. The leaf check runs before the ancestor
+  // walk below, so a link that escapes the workspace is refused as a link,
+  // with the message that names the cause, instead of surfacing as a generic
+  // containment failure from the ancestor's realpath.
   const stats = (() => {
     try {
       return lstatSync(resolved)
@@ -99,6 +96,12 @@ export function resolveWorkspacePath(workspaceRoot, candidate, { forWrite = fals
   }
   if (stats && !stats.isFile() && !stats.isDirectory()) {
     throw new Error('Only regular files and directories are available to agent tools.')
+  }
+
+  const ancestor = deepestExistingAncestor(resolved)
+  if (ancestor) {
+    const realAncestor = realpathOrNull(ancestor)
+    if (realAncestor) assertInsideWorkspace(root, realAncestor)
   }
 
   if (forWrite) {
