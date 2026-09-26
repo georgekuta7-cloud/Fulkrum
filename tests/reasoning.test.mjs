@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { buildRequest } from '../server/modelCall.mjs'
-import { normalizeReasoningLevel, reasoningPayload, resolveReasoning } from '../server/reasoning.mjs'
+import { normalizeReasoningLevel, reasoningOffPayload, reasoningPayload, resolveReasoning } from '../server/reasoning.mjs'
 
 const base = { baseUrl: 'https://example.test/v1', messages: [{ role: 'user', content: 'hi' }], instructions: 'sys' }
 
@@ -68,4 +68,20 @@ test('buildRequest spreads the translated reasoning into each dialect', () => {
 
   const unset = buildRequest('anthropic', { ...base, model: 'claude-opus-4-1' })
   assert.equal('thinking' in unset.body, false)
+})
+
+test('an explicit off is the dialect each protocol understands, for any model', () => {
+  // Some providers reason by default and refuse function tools unless the
+  // request says off out loud: the learned answer must reach even a model
+  // the reasoning-capable list has never heard of.
+  assert.deepEqual(reasoningOffPayload('openai-compatible'), { reasoning_effort: 'none' })
+  assert.deepEqual(reasoningOffPayload('google'), { thinkingConfig: { thinkingBudget: 0 } })
+  assert.deepEqual(reasoningOffPayload('anthropic'), {}, 'Claude reasons only when asked, so absence is off')
+
+  const off = buildRequest('openai-compatible', { ...base, model: 'openai/gpt-6-luna', reasoning: 'none', tools: [{ name: 'workspace.read', description: 'Read a file', parameters: { type: 'object', properties: {} } }] })
+  assert.equal(off.body.reasoning_effort, 'none', 'the off word reaches a model outside the capable list')
+  assert.equal(off.body.tools.length, 1, 'and the tools travel with it')
+
+  const googleOff = buildRequest('google', { ...base, model: 'some-unknown-model', reasoning: 'none' })
+  assert.equal(googleOff.body.generationConfig.thinkingConfig.thinkingBudget, 0)
 })

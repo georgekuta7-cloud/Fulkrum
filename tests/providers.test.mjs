@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import test from 'node:test'
-import { bodySendsTemperature, bodyWithoutTemperature, buildRequest, parseResponse, providerAuthHeaders, resolveToolNames, wireToolName, wireToolDefinitions } from '../server/modelCall.mjs'
+import { bodySendsTemperature, bodyWithoutTemperature, buildRequest, createModelCaller, parseResponse, providerAuthHeaders, resolveToolNames, wireToolName, wireToolDefinitions } from '../server/modelCall.mjs'
 import { createProviderRegistry } from '../server/providerRegistry.mjs'
 import { isPrivateAddress } from '../server/networkPolicy.mjs'
 import { agentRoles } from '../server/roles.mjs'
@@ -297,6 +297,46 @@ test('a rejected temperature is retried without it, then remembered', async () =
       const provider = (await request('GET', '/api/providers')).payload.providers.find((item) => item.label === 'Picky')
       assert.equal(provider.temperature, 'omit', 'the model is remembered, so the rejection costs one call ever')
     }, { realModelCall: true })
+  })
+})
+
+test('a reasoning-by-default model that rejects tools is told off explicitly, then remembered', async () => {
+  // The provider that reported this in the wild reasons by default and refuses
+  // function tools on /v1/chat/completions unless the request says
+  // reasoning_effort: 'none' out loud — absence is not off for it.
+  await withProviderServer((_record, response, count) => {
+    if (count === 1) {
+      json(response, { error: { message: "Function tools with reasoning_effort are not supported for gpt-6-luna in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'" } }, 400)
+    } else {
+      json(response, { choices: [{ message: { content: 'tool call worked' } }] })
+    }
+  }, async ({ baseUrl, requests }) => {
+    await withStore(async (store) => {
+      const registry = createProviderRegistry(store)
+      registry.addCustom({ label: 'Luna', baseUrl, model: 'openai/gpt-6-luna', apiKey: 'sk-luna', allowPrivate: true })
+      const caller = createModelCaller({ providerRegistry: registry })
+      const provider = registry.resolve('Luna')
+      const tool = { name: 'workspace.read', description: 'Read a file.', parameters: { type: 'object', properties: {} } }
+
+      const first = await caller.callModel(provider, 'openai/gpt-6-luna', [{ role: 'user', content: 'go' }], { tools: [tool], instructions: 'sys' })
+      assert.equal(first.text, 'tool call worked')
+      assert.equal(requests.length, 2, 'one rejected call, then one retry')
+      assert.equal(requests[0].body.tools.length, 1, 'the tools were there the first time')
+      assert.equal('reasoning_effort' in requests[0].body, false, 'and nothing asked for reasoning')
+      assert.equal(requests[1].body.reasoning_effort, 'none', 'the retry says off in the words the provider named')
+      assert.equal(requests[1].body.tools.length, 1, 'and keeps the tools')
+
+      await caller.callModel(provider, 'openai/gpt-6-luna', [{ role: 'user', content: 'again' }], { tools: [tool], instructions: 'sys' })
+      assert.equal(requests.length, 3)
+      assert.equal(requests[2].body.reasoning_effort, 'none', 'remembered, so the conflict costs one call ever')
+
+      await caller.callModel(provider, 'openai/gpt-6-luna', [{ role: 'user', content: 'no tools' }], { instructions: 'sys' })
+      assert.equal(requests.length, 4)
+      assert.equal('reasoning_effort' in requests[3].body, false, 'a call without tools is untouched by the lesson')
+
+      assert.equal(store.getProviderSettings('custom-luna').reasoningTools, 'none', 'the lesson is persisted with the provider')
+      assert.equal(registry.resolve('Luna') ? true : true, true)
+    })
   })
 })
 

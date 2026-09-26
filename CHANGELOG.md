@@ -6,6 +6,21 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **A provider that reasons by default no longer rejects every worker call.**
+  Some models (seen in the wild with `openai/gpt-6-luna`) refuse function
+  tools on `/v1/chat/completions` unless the request says
+  `reasoning_effort: 'none'` out loud — for them, absence is not off, and
+  every tool-carrying worker call died while chat and planning passed. The
+  call now retries once with the explicit off in the provider's dialect,
+  remembers the lesson in its stored settings, and applies it from then on —
+  the same one-call-ever bargain temperature makes. The provider card shows
+  the learned state.
+- **The chat can pick the speaker and the depth again.** The rebuilt
+  interface had lost the old "using" dropdown and the reasoning picker: a
+  project could carry a reasoning level no screen showed (one did), and the
+  Head's model could only be cast from Settings. The prompt bar now carries
+  both — the Head's model from the configured providers, and its reasoning
+  level — writing through to the project's casting and settings.
 - **A lost lease stops the work.** A process that slept past its lease (or
   stalled while another process reclaimed the run) kept executing tasks on a
   run it no longer owned. The walk now checks ownership before every task

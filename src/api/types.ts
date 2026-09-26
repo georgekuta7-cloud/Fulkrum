@@ -43,6 +43,7 @@ export type Provider = {
   headers: Record<string, string>
   allowPrivate: boolean
   temperature: string
+  reasoningTools: string | null
 }
 
 export type Run = {

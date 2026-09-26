@@ -87,6 +87,7 @@ function publicProvider(provider, settings) {
     ])),
     allowPrivate: credentials.allowPrivate,
     temperature: credentials.temperature,
+    reasoningTools: settings?.reasoningTools ?? null,
   }
 }
 
@@ -274,6 +275,21 @@ export function createProviderRegistry(store) {
       if (settingsFor(provider.id)?.temperature === temperature) return
       store.saveProviderSettings(provider.id, { temperature })
       console.log(`[fulkrum] ${provider.label} rejected a temperature value; calls to it will omit sampling parameters from now on.`)
+    },
+
+    /**
+     * A provider that reasons by default can refuse function tools unless the
+     * request says off explicitly — the lesson is stored with its settings so
+     * the conflict costs one call ever, the same bargain temperature makes.
+     */
+    reasoningWithTools(provider) {
+      return settingsFor(provider.id)?.reasoningTools ?? null
+    },
+
+    rememberReasoningWithTools(provider) {
+      if (settingsFor(provider.id)?.reasoningTools === 'none') return
+      store.saveProviderSettings(provider.id, { reasoningTools: 'none' })
+      console.log(`[fulkrum] ${provider.label} refuses tools unless reasoning is off; tool calls now say so explicitly.`)
     },
 
     /** Fallback routes, in order, from FULKRUM_FALLBACK_ROUTES. */

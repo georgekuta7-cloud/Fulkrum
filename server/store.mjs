@@ -220,6 +220,7 @@ function providerSettingsFromRow(row) {
     headers: parseJson(row.headers_json, {}),
     allowPrivate: Number(row.allow_private) === 1,
     temperature: row.temperature ?? 'auto',
+    reasoningTools: row.reasoning_tools ?? null,
     updatedAt: Number(row.updated_at),
   }
 }
@@ -1780,11 +1781,12 @@ export class FulkrumStore {
       headers: patch.headers === undefined ? current?.headers ?? {} : patch.headers,
       allowPrivate: patch.allowPrivate === undefined ? current?.allowPrivate ?? false : Boolean(patch.allowPrivate),
       temperature: patch.temperature ?? current?.temperature ?? 'auto',
+      reasoningTools: patch.reasoningTools === undefined ? current?.reasoningTools ?? null : patch.reasoningTools,
     }
-    this.database.prepare(`INSERT INTO provider_settings(provider_id, api_key, auth_style, auth_header, headers_json, allow_private, temperature, updated_at)
-      VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(provider_id) DO UPDATE SET api_key = excluded.api_key, auth_style = excluded.auth_style, auth_header = excluded.auth_header, headers_json = excluded.headers_json, allow_private = excluded.allow_private, temperature = excluded.temperature, updated_at = excluded.updated_at`)
-      .run(providerId, next.apiKey, next.authStyle, next.authHeader, JSON.stringify(next.headers), next.allowPrivate ? 1 : 0, next.temperature, Date.now())
+    this.database.prepare(`INSERT INTO provider_settings(provider_id, api_key, auth_style, auth_header, headers_json, allow_private, temperature, reasoning_tools, updated_at)
+      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(provider_id) DO UPDATE SET api_key = excluded.api_key, auth_style = excluded.auth_style, auth_header = excluded.auth_header, headers_json = excluded.headers_json, allow_private = excluded.allow_private, temperature = excluded.temperature, reasoning_tools = excluded.reasoning_tools, updated_at = excluded.updated_at`)
+      .run(providerId, next.apiKey, next.authStyle, next.authHeader, JSON.stringify(next.headers), next.allowPrivate ? 1 : 0, next.temperature, next.reasoningTools, Date.now())
     return this.getProviderSettings(providerId)
   }
 

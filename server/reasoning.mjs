@@ -76,3 +76,18 @@ export function reasoningPayload(protocol, model, level, maxOutputTokens = null)
   // openai-compatible: grok and gpt-5 both take an effort word.
   return { reasoning_effort: normalized }
 }
+
+/**
+ * The explicit off, in the dialect each protocol understands.
+ *
+ * Some providers reason by default and refuse function tools unless the
+ * request says off out loud — for them absence is not off. The learned
+ * answer is this payload, and it goes to any model: a provider that asked
+ * for it once has already told us its rules, regardless of what the
+ * capability list guesses.
+ */
+export function reasoningOffPayload(protocol) {
+  if (protocol === 'google') return { thinkingConfig: { thinkingBudget: 0 } }
+  if (protocol === 'anthropic') return {}
+  return { reasoning_effort: 'none' }
+}

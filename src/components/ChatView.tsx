@@ -1,16 +1,18 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { Bridge } from '../hooks/useBridge'
+import type { ReasoningLevel } from '../api/types'
 import { resolveRouteDisplay, roleLabel } from '../lib/runGraph'
 import { canChatInRun } from '../lib/runState'
 import { ApprovalCard } from './ApprovalCard'
 import { Icon } from './Icon'
 import { PlanCard } from './PlanCard'
 import { RunRecovery } from './RunRecovery'
-import { Button, Chip } from './primitives'
+import { Button, Chip, selectClass } from './primitives'
 
 const time = (value: number) => new Date(value).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 const MessageContent = lazy(() => import('./MessageContent').then((module) => ({ default: module.MessageContent })))
 const WORKER_ROLES = ['head', 'research', 'builder', 'architect', 'editor', 'debug', 'reviewer'] as const
+const REASONING_OPTIONS: ReasoningLevel[] = ['minimal', 'low', 'medium', 'high']
 
 function WorkerStrip({ bridge }: { bridge: Bridge }) {
   const routing = (bridge.projectSettings?.routing ?? {}) as Record<string, string>
@@ -73,6 +75,8 @@ export function ChatView({ bridge, onOpenSettings }: { bridge: Bridge; onOpenSet
   const { messages, plan, approval, streaming, run } = bridge
   const providersReady = bridge.providers.some((provider) => provider.configured)
   const chatDisabled = !run || !canChatInRun(run.status) || bridge.projectLoading || bridge.runLoading
+  const headRoute = ((bridge.projectSettings?.routing ?? {}) as Record<string, string>).head ?? ''
+  const headReasoning = ((bridge.projectSettings?.reasoning ?? {}) as Record<string, string>).head ?? ''
 
   useEffect(() => { endRef.current?.scrollIntoView?.({ block: 'end' }) }, [messages.length, streaming?.text])
   useEffect(() => {
@@ -111,8 +115,36 @@ export function ChatView({ bridge, onOpenSettings }: { bridge: Bridge; onOpenSet
       <div className="fixed bottom-4 left-16 right-0 z-30 pointer-events-none">
         <div className="max-w-4xl mx-auto px-3 sm:px-4 pointer-events-auto"><div className="bg-surface-container/95 rounded-lg border border-outline-variant/40 shadow-panel p-2.5">
           <label className="visually-hidden" htmlFor="chat-prompt">Direct the Head AI</label>
+          {providersReady ? (
+            <div className="flex items-center gap-2 px-2 pb-1.5 flex-wrap">
+              <label className="visually-hidden" htmlFor="head-cast">Model speaking for the Head AI</label>
+              <select
+                id="head-cast"
+                className={`${selectClass} !py-1 !px-2 !min-w-0 max-w-[240px] font-mono text-label-sm`}
+                value={headRoute}
+                onChange={(event) => void bridge.saveRouting('head', event.target.value)}
+                title="Which configured provider speaks for the Head AI in this project"
+              >
+                <option value="">Head model: first configured</option>
+                {bridge.providers.filter((provider) => provider.configured).map((provider) => (
+                  <option key={provider.id} value={`${provider.label} · ${provider.model}`}>{provider.label} · {provider.model}</option>
+                ))}
+              </select>
+              <label className="visually-hidden" htmlFor="head-reasoning">Reasoning level for the Head AI</label>
+              <select
+                id="head-reasoning"
+                className={`${selectClass} !py-1 !px-2 !min-w-0 font-mono text-label-sm`}
+                value={headReasoning}
+                onChange={(event) => void bridge.setReasoning('head', (event.target.value || null) as ReasoningLevel | null)}
+                title="How hard the Head AI thinks; default leaves it to the provider"
+              >
+                <option value="">Reasoning: provider default</option>
+                {REASONING_OPTIONS.map((level) => <option key={level} value={level}>Reasoning: {level}</option>)}
+              </select>
+            </div>
+          ) : null}
           <div className="flex items-end gap-2 px-2 pb-1">
-            <textarea ref={inputRef} id="chat-prompt" className="w-full min-w-0 bg-transparent text-body-md placeholder:text-outline focus:outline-none resize-none max-h-32 py-1 leading-relaxed" rows={1} placeholder={chatDisabled ? 'Resume this run or start a new one…' : 'Direct the Head AI, or describe what to build…'} value={prompt} disabled={chatDisabled} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void send() } }} />
+            <textarea ref={inputRef} id="chat-prompt" className="w-full min-w-0 bg-transparent text-body-md placeholder:text-outline focus:outline-none resize-none max-h-32 py-1 leading-relaxed" rows={1} placeholder={chatDisabled ? 'Resume this run or start a new run…' : 'Direct the Head AI, or describe what to build…'} value={prompt} disabled={chatDisabled} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void send() } }} />
             <Button variant="primary" className="!px-2.5 !py-2 shrink-0" disabled={!prompt.trim() || sending || chatDisabled || !providersReady} onClick={() => void send()} aria-label="Send (Ctrl+Enter)"><Icon name="arrow_upward" className="text-xl" /></Button>
           </div>
         </div></div>

@@ -41,7 +41,7 @@ export function ProviderCard({ bridge, provider, probe, onProbed }: { bridge: Br
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
         <div className="bg-surface-container p-2.5 rounded-lg"><p className="text-label-sm text-outline uppercase">Auth</p><code className="font-mono text-body-sm text-secondary break-all">{provider.authHeader || provider.authStyle || 'auto'}</code></div>
-        <div className="bg-surface-container p-2.5 rounded-lg"><p className="text-label-sm text-outline uppercase">Sampling</p><span className="font-mono text-body-sm text-primary">{provider.temperature === 'omit' ? 'provider default' : `temp ${provider.temperature ?? 'auto'}`}</span></div>
+        <div className="bg-surface-container p-2.5 rounded-lg"><p className="text-label-sm text-outline uppercase">Sampling</p><span className="font-mono text-body-sm text-primary">{provider.temperature === 'omit' ? 'provider default' : `temp ${provider.temperature ?? 'auto'}`}{provider.reasoningTools === 'none' ? ' · tools say reasoning off' : ''}</span></div>
         <div className="bg-surface-container p-2.5 rounded-lg min-w-0"><p className="text-label-sm text-outline uppercase">Latency</p><span className={`font-mono text-body-sm break-words ${probe?.startsWith('ok') ? 'text-secondary' : probe ? 'text-error' : 'text-outline'}`}>{probe ?? 'not probed yet'}</span></div>
       </div>
       {error ? <p role="alert" className="text-error text-body-sm break-words">{error}</p> : null}

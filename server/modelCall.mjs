@@ -1,7 +1,7 @@
 import { createSseParser } from './sse.mjs'
 import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
 import { pinnedRequest, pinnedStream } from './outboundHttp.mjs'
-import { reasoningPayload } from './reasoning.mjs'
+import { reasoningOffPayload, reasoningPayload } from './reasoning.mjs'
 
 /**
  * One normalized conversation format over three provider protocols.
@@ -167,7 +167,11 @@ export function buildRequest(protocol, { baseUrl, model, messages, tools = [], i
   const endpoint = String(baseUrl).replace(/\/$/, '')
   // Model-native reasoning, in the dialect this protocol speaks. Empty when the
   // level is unset or the model does not reason, so the spread is always safe.
-  const effort = reasoningPayload(protocol, model, reasoning, maxTokens())
+  // 'none' is the learned explicit off — it goes to any model, because the
+  // provider that asked for it has already stated its rules.
+  const effort = reasoning === 'none'
+    ? reasoningOffPayload(protocol)
+    : reasoningPayload(protocol, model, reasoning, maxTokens())
 
   if (protocol === 'anthropic') {
     return {
@@ -677,7 +681,11 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
     const allow = credentials.allowPrivate || allowPrivate
     const sampling = providerRegistry.sampling(provider, model)
     const streaming = typeof onDelta === 'function'
-    const { url, body } = buildRequest(provider.protocol, { baseUrl: provider.baseUrl, model, messages, tools, instructions, temperature: sampling.temperature, stream: streaming, reasoning })
+    // A provider that reasons by default can refuse tools unless told off out
+    // loud; the lesson is stored with its settings and applied before the ask.
+    const learnedReasoningOff = tools.length ? providerRegistry.reasoningWithTools?.(provider) : null
+    const effectiveReasoning = learnedReasoningOff === 'none' ? 'none' : reasoning
+    const { url, body } = buildRequest(provider.protocol, { baseUrl: provider.baseUrl, model, messages, tools, instructions, temperature: sampling.temperature, stream: streaming, reasoning: effectiveReasoning })
     const headers = { 'Content-Type': 'application/json', ...providerAuthHeaders(provider.protocol, credentials) }
     const requestOptions = { method: 'POST', headers, body: JSON.stringify(body), allowPrivate: allow }
 
@@ -695,10 +703,24 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
           // temperature we send. Retry once without it and remember the answer, so
           // a model this application has never seen costs at most one rejected call.
           const rejectedTemperature = bodySendsTemperature(body) && error instanceof ProviderError && error.status === 400 && /temperature/i.test(error.message)
-          if (!rejectedTemperature) throw error
-          const retried = await send({ ...requestOptions, body: JSON.stringify(bodyWithoutTemperature(body)) })
-          providerRegistry.rememberTemperature?.(provider, 'omit')
-          return retried
+          if (rejectedTemperature) {
+            const retried = await send({ ...requestOptions, body: JSON.stringify(bodyWithoutTemperature(body)) })
+            providerRegistry.rememberTemperature?.(provider, 'omit')
+            return retried
+          }
+          // "Function tools with reasoning_effort are not supported… set
+          // reasoning_effort to 'none'": the provider reasons by default and
+          // refuses tools unless the request says off explicitly — absence is
+          // not off for it. The retry says the word in its dialect, and the
+          // lesson is remembered so the conflict costs one call ever.
+          const rejectedReasoningWithTools = tools.length && error instanceof ProviderError && error.status === 400 && /reasoning/i.test(error.message)
+          if (rejectedReasoningWithTools) {
+            const retry = buildRequest(provider.protocol, { baseUrl: provider.baseUrl, model, messages, tools, instructions, temperature: sampling.temperature, stream: streaming, reasoning: 'none' })
+            const retried = await send({ ...requestOptions, body: JSON.stringify(retry.body) })
+            providerRegistry.rememberReasoningWithTools?.(provider)
+            return retried
+          }
+          throw error
         }
       })
     } catch (error) {

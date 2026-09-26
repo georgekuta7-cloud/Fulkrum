@@ -203,6 +203,31 @@ describe('chat', () => {
     expect(createRun).toHaveBeenCalled()
   })
 
+  it('picks the speaking model and the reasoning level from the prompt bar', () => {
+    const saveRouting = vi.fn().mockResolvedValue(true)
+    const setReasoning = vi.fn()
+    render(<ChatView bridge={chatBridge({
+      providers: [
+        { id: 'grok', label: 'Grok', model: 'grok-4', configured: true },
+        { id: 'luna', label: 'Luna', model: 'gpt-6-luna', configured: true },
+      ] as any,
+      projectSettings: { routing: { head: 'Grok · grok-4' }, reasoning: { head: 'high' } } as any,
+      saveRouting,
+      setReasoning,
+    })} />)
+    const model = screen.getByLabelText('Model speaking for the Head AI') as HTMLSelectElement
+    expect(model.value).toBe('Grok · grok-4')
+    fireEvent.change(model, { target: { value: 'Luna · gpt-6-luna' } })
+    expect(saveRouting).toHaveBeenCalledWith('head', 'Luna · gpt-6-luna')
+
+    const reasoning = screen.getByLabelText('Reasoning level for the Head AI') as HTMLSelectElement
+    expect(reasoning.value).toBe('high')
+    fireEvent.change(reasoning, { target: { value: 'low' } })
+    expect(setReasoning).toHaveBeenCalledWith('head', 'low')
+    fireEvent.change(reasoning, { target: { value: '' } })
+    expect(setReasoning).toHaveBeenCalledWith('head', null)
+  })
+
   it('says plainly when no provider can answer', () => {
     render(<ChatView bridge={chatBridge({ providers: [] })} />)
     expect(screen.getByText(/No provider has a key/)).toBeInTheDocument()
