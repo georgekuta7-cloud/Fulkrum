@@ -6,6 +6,11 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **A plan says what it will cost before it is approved.** The estimate —
+  task count, expected model calls, and a price range with its basis, or an
+  honest "cost not estimable yet" when no priced calls exist — was computed
+  and loaded but never shown, so approving a five-worker plan was blind.
+  It now sits on the plan card beside the version chip.
 - **A provider that reasons by default no longer rejects every worker call.**
   Some models (seen in the wild with `openai/gpt-6-luna`) refuse function
   tools on `/v1/chat/completions` unless the request says

@@ -50,12 +50,23 @@ describe('conversation decisions', () => {
 
   it('makes plan instructions and acceptance criteria inspectable and editable', async () => {
     const editPlan = vi.fn().mockResolvedValue(true)
-    const bridge = fixture({ editPlan, plan: { plan: { id: 'plan1', version: 1, status: 'draft', objective: 'Inspect the workspace.', contentHash: 'hash', source: 'model' }, tasks: [{ id: 'pt1', orderIndex: 0, role: 'research', title: 'Read files', instructions: 'Read the source.', acceptanceCheck: 'Cite the relevant files.', dependsOn: [] }] } })
+    const bridge = fixture({ editPlan, estimate: { runId: 'r1', tasks: 2, expectedCalls: 14, basis: 'from 12 priced call(s) in this database', estimateUsd: { low: 0.02, average: 0.04, high: 0.06 }, perCall: null, ceilingUsd: null }, plan: { plan: { id: 'plan1', version: 1, status: 'draft', objective: 'Inspect the workspace.', contentHash: 'hash', source: 'model' }, tasks: [{ id: 'pt1', orderIndex: 0, role: 'research', title: 'Read files', instructions: 'Read the source.', acceptanceCheck: 'Cite the relevant files.', dependsOn: [] }] } })
     render(<ChatView bridge={bridge} />)
     expect(screen.getByText('Cite the relevant files.')).toBeVisible()
+    expect(screen.getByText(/~14 model calls/)).toBeInTheDocument()
+    expect(screen.getByText(/est\. \$0\.02–\$0\.06/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Edit plan' }))
     fireEvent.change(screen.getByLabelText('Task 1 acceptance'), { target: { value: 'Include file and line references.' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save plan' }))
     await waitFor(() => expect(editPlan).toHaveBeenCalledWith('Inspect the workspace.', [expect.objectContaining({ acceptanceCheck: 'Include file and line references.', instructions: 'Read the source.', role: 'research', dependsOn: [] })]))
+  })
+
+  it('says when a plan cannot be priced instead of guessing', () => {
+    render(<ChatView bridge={fixture({
+      estimate: { runId: 'r1', tasks: 3, expectedCalls: 21, basis: 'no priced calls in this database yet', estimateUsd: null, perCall: null, ceilingUsd: null },
+      plan: { plan: { id: 'plan1', version: 1, status: 'draft', objective: 'O', contentHash: 'hash', source: 'model' }, tasks: [{ id: 'pt1', orderIndex: 0, role: 'research', title: 'T', instructions: 'I', acceptanceCheck: '', dependsOn: [] }] },
+    })} />)
+    expect(screen.getByText(/cost not estimable yet/)).toBeInTheDocument()
+    expect(screen.getByText(/no priced calls in this database yet/)).toBeInTheDocument()
   })
 })

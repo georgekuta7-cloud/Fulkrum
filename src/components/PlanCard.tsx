@@ -34,6 +34,14 @@ export function PlanCard({ bridge }: { bridge: Bridge }) {
         <h2 className="text-label-lg font-semibold break-words">Plan: {plan.plan.objective}</h2>
         <Chip tone={plan.plan.status === 'approved' ? 'ok' : 'plan'}>v{plan.plan.version} · {plan.plan.status}</Chip>
       </div>
+      {bridge.estimate ? (
+        <p className="font-mono text-label-sm text-outline">
+          {bridge.estimate.tasks} task(s) · ~{bridge.estimate.expectedCalls} model calls
+          {bridge.estimate.estimateUsd
+            ? ` · est. $${bridge.estimate.estimateUsd.low.toFixed(2)}–$${bridge.estimate.estimateUsd.high.toFixed(2)} (${bridge.estimate.basis})`
+            : ` · cost not estimable yet (${bridge.estimate.basis})`}
+        </p>
+      ) : null}
       {editing ? (
         <form className="space-y-4" onSubmit={async (event) => {
           event.preventDefault()
