@@ -1131,6 +1131,11 @@ Rules:
     // down here is what keeps one run from being executed twice; the owner
     // continues the work, and this process never starts a second copy of it.
     if (!lease) return
+    // The same stand-down applies mid-run: a lease can be lost while this
+    // process sleeps past its expiry or stalls, and another process reclaims
+    // it. In-flight work finishes, but no new task may start on a run this
+    // process no longer owns — the row's owner is the only authority.
+    const leaseStillOurs = () => store.getRun(runId)?.ownerId === ownerId
     // Casting is not plan content, but "what ran" still includes who played
     // whom: every execution records its effective routing, so a resumed or
     // re-routed run never leaves the casting to guesswork.
@@ -1218,6 +1223,7 @@ Rules:
       const layers = planLayers(plan.tasks)
 
         const runOne = async (planTask) => {
+          if (!leaseStillOurs()) return { cancelled: true }
           let task = taskByPlanTaskId.get(planTask.id)
           if (!task) return null
           // Refresh: earlier work in this pass may have changed states, and a
@@ -1394,6 +1400,10 @@ Rules:
           failRun(checkpoint.reason || 'The checkpoint stopped the run after task failures.')
           return
         }
+
+      // The review is this process's last act on the run; it belongs to
+      // whoever holds the lease now.
+      if (!leaseStillOurs()) return
 
       const summaries = plan.tasks
         .map((planTask, index) => ({ planTask, result: digestForTask(taskByPlanTaskId.get(planTask.id), resultsByPlanTask.get(index) ?? '(no summary)') }))

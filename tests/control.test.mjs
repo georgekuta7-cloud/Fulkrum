@@ -359,3 +359,67 @@ test('permission changes are refused once a run has finished', async () => {
     assert.equal(store.getRun(runId).permissionMode, 'selective', 'and the mode was not changed')
   })
 })
+
+test('a run stops working when another process takes over its lease', async () => {
+  const definition = {
+    objective: 'Two layers under one lease.',
+    tasks: [
+      { role: 'builder', title: 'Parks on a write', instructions: 'Write the first file.', dependsOn: [] },
+      { role: 'builder', title: 'Must never start', instructions: 'Write the second file.', dependsOn: [0] },
+    ],
+  }
+  let written = false
+  const model = async ({ options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) return { text: JSON.stringify(definition), toolCalls: [], usage: null }
+    if (!written) {
+      written = true
+      return { text: 'Writing.', toolCalls: [{ id: 'w1', name: 'workspace.write', arguments: { path: 'lease-takeover.txt', content: 'first\n' } }], usage: null }
+    }
+    return { text: 'Forge finished the write.', toolCalls: [], usage: null }
+  }
+
+  await withServer(async ({ request, store, providerRegistry, orchestrator }) => {
+    providerRegistry.addCustom({ label: 'Fixture provider', baseUrl: 'https://example.invalid/v1', model: 'fixture-model', apiKey: 'fixture-key' })
+    const runId = await makeRun(request)
+    await request('POST', '/api/chat', { runId, message: 'Write both files.', history: [] })
+    const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+    const approved = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+    assert.equal(approved.status, 200, JSON.stringify(approved.payload))
+
+    const parked = await new Promise((resolve) => {
+      const deadline = Date.now() + 10_000
+      const tick = () => {
+        const call = store.listToolCalls(runId).find((candidate) => candidate.status === 'approval_required')
+        if (call) { resolve(call); return }
+        if (Date.now() > deadline) { resolve(null); return }
+        setTimeout(tick, 20)
+      }
+      tick()
+    })
+    assert.ok(parked, 'the first task parks on its write')
+    assert.equal(orchestrator.approvalWaiters.has(parked.id), true, 'and this process holds the waiter')
+
+    // The laptop wakes after the lease lapsed: another process has taken it.
+    store.updateRun(runId, { leaseExpiresAt: Date.now() - 1 })
+    const taken = store.acquireRunLease(runId, 'second-process', 60_000)
+    assert.ok(taken, 'the expired lease can be reclaimed')
+
+    const resolved = await request('POST', `/api/runs/${runId}/tools/${parked.id}/approve`, { fingerprint: parked.fingerprint })
+    assert.equal(resolved.status, 200, JSON.stringify(resolved.payload))
+
+    // The parked task finishes its in-flight work, then the walk must stand
+    // down before the second task: no new work on a run this process no
+    // longer owns.
+    const deadline = Date.now() + 10_000
+    while (Date.now() < deadline && orchestrator.activeRuns.has(runId)) {
+      await new Promise((resolve) => setTimeout(resolve, 40))
+    }
+    assert.equal(orchestrator.activeRuns.has(runId), false, 'the execution ends instead of continuing')
+
+    const started = store.listEvents(runId).filter((event) => event.type === 'task.started')
+    assert.equal(started.some((event) => event.payload?.title === 'Must never start'), false, 'the second task never starts under a lost lease')
+    assert.equal(store.getTask(store.listTasks(runId).find((task) => task.title === 'Must never start').id).status, 'queued', 'the second task is left for the new owner')
+    assert.equal(store.getRun(runId).status, 'executing', 'the stand-down marks nothing — the run belongs to the other process now')
+  }, { model })
+})

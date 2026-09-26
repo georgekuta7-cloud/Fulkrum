@@ -245,7 +245,12 @@ export function useBridge() {
     if (event.type === 'message.assistant' || event.type === 'message.user') {
       await Promise.all([loadRun(id), loadTrace(id)])
     } else if (['task.', 'run.', 'tool.', 'plan.', 'approval.'].some((prefix) => event.type.startsWith(prefix))) {
-      await Promise.all([loadRun(id, { light: true }), loadTrace(id), loadPlan(id)])
+      // The light snapshot arrives first and carries planId, so a planless
+      // run never asks the plan endpoint for what it cannot have — the 404
+      // is the designed answer there, and asking logs a console error.
+      const snapshot = await loadRun(id, { light: true })
+      const hasPlan = Boolean(snapshot?.run?.planId)
+      await Promise.all([loadTrace(id), hasPlan ? loadPlan(id) : Promise.resolve(null)])
       if (event.type === 'plan.drafted' || event.type === 'plan.edited') await loadEstimate(id)
     }
     if (event.type === 'tool.completed' || event.type === 'artifact.revert' || event.type === 'approval.granted' || event.type === 'approval.revoked') await loadArtifacts(id)
@@ -342,7 +347,19 @@ export function useBridge() {
     const selection = runScope.capture(id)
     setRunId(id)
     setRunLoading(true)
-    const [snapshot] = await Promise.all([loadRun(id), loadPlan(id), loadTrace(id), loadArtifacts(id), loadClaims(id), loadEstimate(id)])
+    // The plan and its estimate are plan-bound subresources: a run that has
+    // never drafted one answers them 404 by design, and asking anyway logs a
+    // console error on every fresh run. The run row carries planId, so a
+    // planless run simply does not ask.
+    const snapshot = await loadRun(id)
+    const hasPlan = Boolean(snapshot?.run?.planId)
+    await Promise.all([
+      hasPlan ? loadPlan(id) : Promise.resolve(null),
+      loadTrace(id),
+      loadArtifacts(id),
+      loadClaims(id),
+      hasPlan ? loadEstimate(id) : Promise.resolve(null),
+    ])
     if (!selection.isCurrent()) return null
     if (!snapshot) {
       closeRun()

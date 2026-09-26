@@ -59,6 +59,9 @@ test('a map honours ignore rules and never leaves the workspace', async (t) => {
     try {
       await symlink(outside, path.join(inside, 'linked'), process.platform === 'win32' ? 'junction' : 'dir')
     } catch (error) {
+      if (process.env.CI === 'true') {
+        assert.fail(`directory link creation failed on CI (${error instanceof Error ? error.message : error}); these tests must run there, not skip`)
+      }
       t.skip(`cannot create a directory link here (${error.code})`)
       return
     }

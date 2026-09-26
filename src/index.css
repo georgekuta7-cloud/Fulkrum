@@ -139,10 +139,11 @@ body {
  * are load-bearing from the first screen, not a polish pass later. */
 /* The system's focus ring: a 1px primary stroke with a soft halo, not a
  * heavy outline. Primary is ≥3:1 against every surface in both themes, so
- * the indicator itself carries the contrast. Inputs pair this with their
- * own 1px ring utility; both are the same stroke. */
+ * the indicator itself carries the contrast. The stroke is a transparent
+ * outline rather than outline: none, so Windows high-contrast mode — which
+ * strips box-shadows but forces outlines visible — still shows the ring. */
 :focus-visible {
-  outline: none;
+  outline: 1px solid transparent;
   box-shadow: 0 0 0 1px var(--color-primary), 0 0 8px color-mix(in srgb, var(--color-primary) 20%, transparent);
 }
 .visually-hidden {

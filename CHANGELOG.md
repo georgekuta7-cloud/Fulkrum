@@ -6,6 +6,28 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **A lost lease stops the work.** A process that slept past its lease (or
+  stalled while another process reclaimed the run) kept executing tasks on a
+  run it no longer owned. The walk now checks ownership before every task
+  and before the review: in-flight work finishes, new work does not start,
+  and the run is left to its new owner without a word written on its behalf.
+- **A planless run no longer asks for a plan.** Opening or refreshing a run
+  without one requested the plan and estimate endpoints anyway, collecting
+  the designed 404s as console errors on every fresh run — invisible until
+  the browser suite stopped ignoring them. The client now reads the run's
+  planId from the snapshot it already has and only asks for what exists;
+  the strict console gate then passes with zero exemptions beyond the
+  failures a test deliberately stubs.
+- **The runner base stays on Node 24 LTS.** The bump to `node:25` passed CI,
+  but a passing build proves containment, not patches — Node 25 stopped
+  receiving security fixes in June 2026, and this image is the boundary for
+  everything an agent runs. Back to `node:24-bookworm-slim` (supported to
+  April 2028), digest re-read from the registry; revisit when Node 26 goes
+  LTS in October 2026.
+- **The focus ring survives Windows high-contrast mode.** `outline: none`
+  plus a shadow left keyboard users with no visible focus at all once
+  forced-colors stripped shadows. The stroke is now a 1px transparent
+  outline (forced visible in high-contrast) with the same shadow.
 - **Deterministic ordering, enforced with `rowid` tiebreakers.** Every
   timestamp-ordered listing in the store broke ties arbitrarily — on fast
   machines two rows share a millisecond and "newest first" came back
@@ -15,16 +37,22 @@ All notable changes to Fulkrum are documented here. This project follows
   direction, and a frozen-clock regression suite pins every list method.
   `acquireRunLease` takes ownership conditionally, so two processes on one
   database can no longer both believe they own a run — the loser stands
-  down. Control transitions (status changes, permission and budget edits)
-  save with their audit events in one transaction, permission changes are
-  refused on finished runs, and duplicate migration version numbers are
-  rejected outright.
+  down. Pause, resume, and cancel transitions, and permission and budget
+  edits, save with their audit events in one transaction (approval answers
+  and the events appended after a cancel are still separate writes); set-permission is refused on
+  finished runs, and duplicate migration version numbers are rejected
+  outright.
 - **Fonts ship as files, not inline data.** Nine inlined `data:font` URIs
   were silently refused by the Content-Security-Policy (`font-src` was
   missing), logging console errors and falling back to system fonts. The
   policy now names `font-src 'self'` and the build emits fonts as
-  same-origin files. Browser tests fail on any console error from now on,
-  so that class of bug cannot return unnoticed.
+  same-origin files. Browser tests fail on any console error a test did not
+  deliberately stub, so that class of bug cannot return unnoticed — and a
+  real missing asset or server error now fails the suite too.
+- **Link and symlink tests fail instead of skipping under CI** — every
+  site that creates a link (edge-case symlinks, the permissions root-link,
+  the broker and map junction walks) asserts on CI rather than skipping,
+  so a runner that cannot create them is a red build, not a quiet gap.
 - **The shell renders at its intended spacing again.** An unlayered universal
   `margin: 0; padding: 0` rule was overriding every Tailwind 4 spacing utility,
   so the fixed header and navigation overlapped the content and cards collapsed.
@@ -84,6 +112,14 @@ All notable changes to Fulkrum are documented here. This project follows
   real API bridge against a temporary store and workspace with only model calls
   stubbed, and drives layout, planning, run history, project switching,
   approvals, provider forms, and failure recovery through Chromium.
+- **Dependency refresh, with two honest notes.** jsdom 30.1, TypeScript 7,
+  @types/node pinned back to the oldest supported runtime (^22, so type
+  checking cannot accept APIs Node 22 lacks), and docker/login-action v4.
+  TypeScript 7 tightened a loose JSDoc annotation that 6.x allowed —
+  `parseAgencyAgent`'s return type said `object`, hiding its real shape from
+  every caller; the code already behaved correctly, and the type now states
+  the contract. The runner image bump to Node 25 was reverted to the 24 LTS
+  line once its security-support window was noticed (see Fixed above).
 
 ### Added
 - **The interface, rebuilt from a clean slate.** Three stacked redesigns had

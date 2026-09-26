@@ -6,9 +6,12 @@
 # writable. Nothing here is trusted to be safe on its own.
 #
 # The base is pinned by manifest digest, not by tag: a tag can be moved, and this
-# image is part of the boundary. To update it deliberately, read the current digest
-# with `docker buildx imagetools inspect node:25-bookworm-slim` and replace it here.
-FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370
+# image is part of the boundary. It stays on the LTS line (24 is supported
+# until April 2028; 25 stopped receiving security fixes in June 2026) — a
+# passing build proves containment, not patches. Revisit when Node 26 goes LTS
+# (October 2026): read the current digest with
+# `docker buildx imagetools inspect node:24-bookworm-slim` and replace it here.
+FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
 
 # git and a shell are the only real tools: enough to inspect and build a
 # repository offline. Network clients are deliberately absent, so an enabled

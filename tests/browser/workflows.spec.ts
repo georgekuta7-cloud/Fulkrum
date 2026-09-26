@@ -1,18 +1,22 @@
 import { expect, test as base, type APIRequestContext, type Page } from '@playwright/test'
 
 // Console errors are regressions even when the assertions pass: the font
-// refusal was invisible to every other check. The suite deliberately stubs
-// failed requests, so that expected "Failed to load resource" noise is
-// filtered out; anything else (a refused asset, a page error) fails.
-const test = base.extend({
-  page: async ({ page }, runTest) => {
-    const errors: string[] = []
+// refusal was invisible to every other check. A test that deliberately stubs
+// a failed request declares the URL it means to fail; any other error — a
+// missing asset, a page error, an unexpected failure — fails the test.
+const test = base.extend<{ expectedFailedRequests: string[] }>({
+  expectedFailedRequests: [],
+  page: async ({ page, expectedFailedRequests }, runTest) => {
+    const errors: Array<{ text: string; url: string }> = []
     page.on('console', (message) => {
-      if (message.type() === 'error' && !/^Failed to load resource/.test(message.text())) errors.push(message.text())
+      if (message.type() !== 'error') return
+      const url = message.location()?.url ?? ''
+      if (/^Failed to load resource/.test(message.text()) && expectedFailedRequests.some((fragment) => url.includes(fragment))) return
+      errors.push({ text: message.text(), url })
     })
-    page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`))
+    page.on('pageerror', (error) => errors.push({ text: `pageerror: ${error.message}`, url: '' }))
     await runTest(page)
-    expect(errors, `console errors:\n${errors.join('\n')}`).toEqual([])
+    expect(errors, `console errors:\n${errors.map((error) => `${error.url} — ${error.text}`).join('\n')}`).toEqual([])
   },
 })
 
@@ -143,10 +147,11 @@ test('write approval displays the exact proposed content after loading the run',
   await expect(approval).toHaveCount(0)
 })
 
-test('failed sends preserve the draft and assistant Markdown renders as structured content', async ({ page, request }) => {
+test('failed sends preserve the draft and assistant Markdown renders as structured content', async ({ page, request, expectedFailedRequests }) => {
   const project = await createProject(request, 'Message fixture')
   await createRun(request, project.id)
   await page.goto('/')
+  expectedFailedRequests.push('/api/chat')
   await page.route('**/api/chat', (route) => route.fulfill({ status: 502, contentType: 'application/problem+json', body: JSON.stringify({ detail: 'Fixture provider is unavailable.' }) }))
   const prompt = page.getByLabel('Direct the Head AI')
   await prompt.fill('Keep this draft after the failure.')
@@ -173,7 +178,7 @@ test('opening run history refreshes state changed outside the current view', asy
   await expect(page.getByRole('button', { name: `Open run ${run.id}`, exact: true })).toContainText('paused')
 })
 
-test('provider forms persist edits, retain rejected input, and remove keys only explicitly', async ({ page, request }) => {
+test('provider forms persist edits, retain rejected input, and remove keys only explicitly', async ({ page, request, expectedFailedRequests }) => {
   const created = await request.post('/api/providers', { data: { label: 'Provider form fixture', baseUrl: 'https://example.invalid/v1', model: 'model-one', apiKey: 'fixture-credential' } })
   expect(created.status()).toBe(201)
   const { provider } = await created.json()
@@ -190,6 +195,7 @@ test('provider forms persist edits, retain rejected input, and remove keys only 
   expect(current).toMatchObject({ model: 'model-two', baseUrl: 'https://edited.invalid/v2', hasKey: true })
   await card.getByRole('button', { name: 'Edit', exact: true }).click()
   await card.getByLabel('Model', { exact: true }).fill('model-three')
+  expectedFailedRequests.push(`/api/providers/${provider.id}`)
   await page.route(`**/api/providers/${provider.id}`, (route) => route.fulfill({ status: 400, contentType: 'application/problem+json', body: JSON.stringify({ detail: 'Fixture rejected this save.' }) }))
   await card.getByRole('button', { name: 'Save', exact: true }).click()
   await expect(card.getByRole('alert')).toContainText('Fixture rejected this save.')

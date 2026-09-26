@@ -63,6 +63,9 @@ test('a workspace root reached through a link still contains its files', async (
     // case (linked project folders); elsewhere a plain directory symlink.
     await symlink(real, link, process.platform === 'win32' ? 'junction' : 'dir')
   } catch (error) {
+    if (process.env.CI === 'true') {
+      assert.fail(`directory link creation failed on CI (${error instanceof Error ? error.message : error}); these tests must run there, not skip`)
+    }
     await rm(holder, { recursive: true, force: true })
     await rm(real, { recursive: true, force: true })
     t.skip(`cannot create a directory link here (${error.code})`)

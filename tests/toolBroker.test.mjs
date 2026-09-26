@@ -18,6 +18,9 @@ test('search does not follow a link out of the workspace, and honours .fulkrumig
       // ordinary directory, which is how the walk used to leave the workspace.
       await symlink(outside, path.join(inside, 'linked'), process.platform === 'win32' ? 'junction' : 'dir')
     } catch (error) {
+      if (process.env.CI === 'true') {
+        assert.fail(`directory link creation failed on CI (${error instanceof Error ? error.message : error}); these tests must run there, not skip`)
+      }
       t.skip(`cannot create a directory link here (${error.code})`)
       return
     }
