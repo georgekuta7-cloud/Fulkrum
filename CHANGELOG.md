@@ -16,6 +16,15 @@ All notable changes to Fulkrum are documented here. This project follows
   distinctly; the worker strip says `unproven`, not `done`.
 
 ### Added
+- **Shell changes are snapshotted after every command, failed ones
+  included.** A command that exits nonzero still changed files, and a
+  receipt that omitted them understated what happened. The broker now
+  attaches the same before/after manifest diff to the failure, and both
+  execution paths checkpoint those paths: `checkpoint.shell` records the
+  commit, added/modified/removed counts, truncation, and the honest
+  attribution ("changed during this command interval; not proof of
+  causation"). A failed snapshot interrupts the run with the reason on the
+  chain, like a failed write checkpoint.
 - **A write-capable run starts with a baseline checkpoint, or it does not
   start.** Per P1.1, approving a plan now snapshots the covered live folder
   first, records `checkpoint.baseline` with the commit and file count, and

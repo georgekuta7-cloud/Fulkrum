@@ -545,7 +545,25 @@ export class FulkrumToolBroker {
       // The argv goes to the container engine as an array: nothing here is
       // interpreted by a shell on either side of the boundary. The run id lets a
       // cancellation stop this command rather than wait for its timeout.
-      const result = await this.execution.run(resolved.argv, { cwd: relativeCwd, runId })
+      let result
+      try {
+        result = await this.execution.run(resolved.argv, { cwd: relativeCwd, runId })
+      } catch (error) {
+        // A command that failed still changed files, and a receipt that omits
+        // them would understate what happened. The same manifest diff the
+        // success path computes is attached to the failure (P1.2).
+        if (manifestLimit > 0) {
+          try {
+            const after = new Map()
+            await snapshotManifest(this.workspaceRoot, this.workspaceRoot, after, await readIgnoreRules(this.workspaceRoot), manifestLimit)
+            const failure = /** @type {any} */ (error)
+            failure.changedFiles = diffManifests(before, after)
+          } catch {
+            // The command's own failure is the error that matters.
+          }
+        }
+        throw error
+      }
       let changedFiles = null
       if (manifestLimit > 0) {
         const after = new Map()

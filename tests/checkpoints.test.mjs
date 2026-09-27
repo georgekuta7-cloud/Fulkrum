@@ -200,6 +200,44 @@ test('a run does not start when the baseline cannot be taken', async () => {
   })
 })
 
+test('a shell command that changes files is snapshotted, even when it fails', async () => {
+  await withTempDirectory(async (workspace) => {
+    const dataDir = path.join(workspace, 'data')
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir })
+    let calls = 0
+    const execution = { run: async () => {
+      calls += 1
+      if (calls === 1) {
+        await writeFile(path.join(workspace, 'out.txt'), 'v1\n', 'utf8')
+        return { stdout: 'ok\n', stderr: '', container: 'stub' }
+      }
+      await writeFile(path.join(workspace, 'out.txt'), 'v2\n', 'utf8')
+      throw Object.assign(new Error('The command failed. (exit 1)\nboom'), { code: 1, stderr: 'boom\n' })
+    } }
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'shell snapshot fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
+      const runId = run.payload.run.id
+
+      const first = await request('POST', `/api/runs/${runId}/tools`, { name: 'shell.exec', agentId: 'builder', input: { command: 'make', args: ['one'] } })
+      assert.equal(first.status, 200, JSON.stringify(first.payload))
+      const firstEvent = store.listEvents(runId).find((event) => event.type === 'checkpoint.shell')
+      assert.ok(firstEvent, 'the success is snapshotted')
+      assert.match(String(firstEvent.payload.note), /not proof of causation/)
+      const blob1 = await checkpoints.run(['show', `${firstEvent.payload.commit}:out.txt`])
+      assert.equal(blob1.stdout, 'v1\n')
+
+      const second = await request('POST', `/api/runs/${runId}/tools`, { name: 'shell.exec', agentId: 'builder', input: { command: 'make', args: ['two'] } })
+      assert.equal(second.status, 502, 'the command failed')
+      const shellEvents = store.listEvents(runId).filter((event) => event.type === 'checkpoint.shell')
+      assert.equal(shellEvents.length, 2, 'the failed command is snapshotted too')
+      const blob2 = await checkpoints.run(['show', `${shellEvents[1].payload.commit}:out.txt`])
+      assert.equal(blob2.stdout, 'v2\n', 'the bytes the failed command left are captured')
+      assert.equal(store.getToolCall(store.listToolCalls(runId).filter((call) => call.name === 'shell.exec').at(-1).id).status, 'failed')
+    }, { workspaceRoot: workspace, checkpoints, execution })
+  })
+})
+
 test('the status endpoint reports the checkpoint store honestly', async () => {
   await withTempDirectory(async (workspace) => {
     const dataDir = path.join(workspace, 'data')

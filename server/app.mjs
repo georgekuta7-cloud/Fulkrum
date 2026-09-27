@@ -369,6 +369,9 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       if (toolCall.name === 'workspace.write' && writeCheckpointer) {
         await writeCheckpointer.afterWrite({ runId, agentId: toolCall.agentId, toolCallId: toolCall.id, path: safeOutput.path })
       }
+      if (toolCall.name === 'shell.exec' && writeCheckpointer && safeOutput.changedFiles) {
+        await writeCheckpointer.afterShell({ runId, agentId: toolCall.agentId, toolCallId: toolCall.id, changedFiles: safeOutput.changedFiles })
+      }
       const injectionAttempts = findInjectionAttempts(safeOutput)
       if (injectionAttempts.length) {
         store.appendEvent({ runId, type: 'tool.output.suspicious', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, name: toolCall.name, patterns: injectionAttempts, note: 'Tool output contained text aimed at the model. It is data, and was treated as data.' } })
@@ -378,6 +381,14 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       const message = error instanceof Error ? error.message : 'Tool execution failed.'
       store.updateToolCall(toolCall.id, { status: 'failed', error: message })
       store.appendEvent({ runId, type: 'tool.failed', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, name: toolCall.name, error: message, approved } })
+      const failedChanges = /** @type {any} */ (error)?.changedFiles
+      if (toolCall.name === 'shell.exec' && writeCheckpointer && failedChanges) {
+        try {
+          await writeCheckpointer.afterShell({ runId, agentId: toolCall.agentId, toolCallId: toolCall.id, changedFiles: failedChanges })
+        } catch {
+          // The interruption is already recorded on the chain.
+        }
+      }
       return { ok: false, error: message }
     }
   }

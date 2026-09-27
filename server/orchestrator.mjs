@@ -298,6 +298,9 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
       if (toolCall.name === 'workspace.write' && writeCheckpointer) {
         await writeCheckpointer.afterWrite({ runId, taskId: task.id, agentId: task.agentId, toolCallId: toolCall.id, path: safeOutput.path })
       }
+      if (toolCall.name === 'shell.exec' && writeCheckpointer && safeOutput.changedFiles) {
+        await writeCheckpointer.afterShell({ runId, taskId: task.id, agentId: task.agentId, toolCallId: toolCall.id, changedFiles: safeOutput.changedFiles })
+      }
       // Tool output is where an injected instruction would arrive, so a match is
       // recorded rather than acted on: the log explains a strange run afterwards.
       const injectionAttempts = findInjectionAttempts(safeOutput)
@@ -312,6 +315,17 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
       if (toolCall.name === 'shell.exec') {
         const exit = message.match(/\(exit (\d+)\)/)?.[1]
         recordShellReceipt({ runId, task, toolCall, startedAt, exitCode: exit === undefined ? null : Number(exit), error: message.slice(0, 300) })
+        // A failed command that changed files is still captured; if that
+        // snapshot fails the run is already interrupted, so the throw stays
+        // contained here.
+        const failedChanges = /** @type {any} */ (error)?.changedFiles
+        if (writeCheckpointer && failedChanges) {
+          try {
+            await writeCheckpointer.afterShell({ runId, taskId: task.id, agentId: task.agentId, toolCallId: toolCall.id, changedFiles: failedChanges })
+          } catch {
+            // The interruption is already recorded on the chain.
+          }
+        }
       }
       return { ok: false, error: message }
     }

@@ -349,5 +349,44 @@ export function createWriteCheckpointer({ store, checkpoints }) {
     return result
   }
   const baseline = ({ runId }) => checkpoints.baseline({ runId })
-  return { assertReady, afterWrite, baseline }
+  /**
+   * After every shell command, including failed ones (P1.2): the receipt
+   * names the changed paths; this snapshots them so the change is on the
+   * chain even when the command exited nonzero. Attribution is an interval,
+   * not a proof: the event says "changed during this command", never "caused
+   * by it".
+   */
+  const afterShell = async ({ runId, taskId = null, agentId = null, toolCallId, changedFiles }) => {
+    const paths = [...(changedFiles?.added ?? []), ...(changedFiles?.modified ?? []), ...(changedFiles?.removed ?? [])].filter((entry) => typeof entry === 'string' && entry)
+    if (!paths.length) return { commit: null, unchanged: true, files: 0 }
+    let result
+    try {
+      result = await checkpoints.checkpoint({ paths, message: `shell changed ${paths.length} path(s)`, runId, taskId, toolCallId })
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? error.message : 'the checkpoint failed'
+      const reason = `The shell command's changes could not be checkpointed: ${detail}`
+      store.appendEvent({ runId, type: 'checkpoint.failed', agentId: agentId ?? 'head', payload: { source: 'shell', toolCallId, reason: detail } })
+      store.updateRun(runId, { status: 'interrupted', interruptedFrom: 'executing' })
+      store.markRunInterrupted(runId, reason)
+      throw new Error(reason)
+    }
+    if (result.commit) {
+      store.appendEvent({
+        runId,
+        type: 'checkpoint.shell',
+        agentId: agentId ?? 'head',
+        payload: {
+          toolCallId,
+          commit: result.commit,
+          added: changedFiles.added?.length ?? 0,
+          modified: changedFiles.modified?.length ?? 0,
+          removed: changedFiles.removed?.length ?? 0,
+          truncated: Boolean(changedFiles.truncated),
+          note: 'changed during this command interval; not proof of causation',
+        },
+      })
+    }
+    return result
+  }
+  return { assertReady, afterWrite, afterShell, baseline }
 }
