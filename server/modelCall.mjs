@@ -443,7 +443,10 @@ const maxResponseBytes = () => Number(process.env.FULKRUM_MAX_PROVIDER_BYTES ?? 
 // Read where they are used rather than at import, so a caller can configure them
 // before the first call and a test does not have to reload the module.
 const configuredMaxAttempts = () => Number(process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS ?? defaultMaxAttempts)
-const configuredConcurrency = () => Math.max(Number(process.env.FULKRUM_PROVIDER_MAX_CONCURRENCY ?? 3), 1)
+const configuredConcurrency = () => {
+  const parsed = Number(process.env.FULKRUM_PROVIDER_MAX_CONCURRENCY ?? 3)
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : 3
+}
 
 /**
  * One provider at a time, up to a limit.
@@ -451,13 +454,22 @@ const configuredConcurrency = () => Math.max(Number(process.env.FULKRUM_PROVIDER
  * Parallel readers share a provider, and a slow one otherwise holds a worker for
  * the whole timeout on every attempt. Queuing here bounds how many are in flight
  * rather than letting them pile up.
+ *
+ * The limit is read at use time, never latched: the setting says it is live,
+ * so a change saved in the app has to reach a limiter that already exists
+ * (OP-27). A raised limit wakes the backlog as slots free; a lowered limit
+ * stops admitting new entries and drains the queue as in-flight work finishes.
  */
-export function createLimiter(max = configuredConcurrency()) {
+export function createLimiter(max = configuredConcurrency) {
+  const limitNow = () => {
+    const value = typeof max === 'function' ? max() : max
+    return Number.isFinite(Number(value)) && Number(value) >= 1 ? Math.floor(Number(value)) : 1
+  }
   let active = 0
   const queue = []
   return {
     async run(task) {
-      if (active < max) {
+      if (active < limitNow() && !queue.length) {
         active += 1
       } else {
         // The slot is handed over inside the releaser, which is why nothing is
@@ -468,10 +480,9 @@ export function createLimiter(max = configuredConcurrency()) {
         return await task()
       } finally {
         active -= 1
-        const resume = queue.shift()
-        if (resume) {
+        while (queue.length && active < limitNow()) {
           active += 1
-          resume()
+          queue.shift()()
         }
       }
     },

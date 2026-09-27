@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import test from 'node:test'
-import { bodySendsTemperature, bodyWithoutTemperature, buildRequest, createModelCaller, parseResponse, providerAuthHeaders, resolveToolNames, wireToolName, wireToolDefinitions } from '../server/modelCall.mjs'
+import { bodySendsTemperature, bodyWithoutTemperature, buildRequest, createLimiter, createModelCaller, parseResponse, providerAuthHeaders, resolveToolNames, wireToolName, wireToolDefinitions } from '../server/modelCall.mjs'
 import { createProviderRegistry } from '../server/providerRegistry.mjs'
 import { isPrivateAddress } from '../server/networkPolicy.mjs'
 import { agentRoles } from '../server/roles.mjs'
@@ -338,6 +338,44 @@ test('a reasoning-by-default model that rejects tools is told off explicitly, th
       assert.equal(registry.resolve('Luna') ? true : true, true)
     })
   })
+})
+
+test('the provider concurrency limit is read when used, not latched at construction', async () => {
+  let limit = 1
+  const limiter = createLimiter(() => limit)
+  const started = []
+  const releases = []
+  const run = (name) => limiter.run(async () => {
+    started.push(name)
+    await new Promise((resolve) => releases.push(resolve))
+  })
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 10))
+
+  const a = run('a')
+  await tick()
+  const b = run('b')
+  await tick()
+  assert.deepEqual(started, ['a'], 'b queues behind the one-slot limit')
+
+  // Raising the limit is honored as slots free: finishing a wakes b.
+  limit = 2
+  releases.shift()()
+  await a
+  await tick()
+  assert.deepEqual(started, ['a', 'b'], 'the raise took effect without a restart')
+
+  // Lowering it below what is in flight refuses new entries: c waits until b
+  // finishes, because the limit is read at use time, not remembered.
+  limit = 1
+  const c = run('c')
+  await tick()
+  assert.deepEqual(started, ['a', 'b'], 'c queues under the lowered limit')
+  releases.shift()()
+  await b
+  await tick()
+  assert.deepEqual(started, ['a', 'b', 'c'], 'the backlog drains as in-flight work finishes')
+  releases.shift()()
+  await c
 })
 
 test('a provider that keeps failing is skipped without being dialed', async () => {

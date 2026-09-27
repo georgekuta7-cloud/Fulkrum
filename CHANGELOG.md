@@ -53,6 +53,13 @@ All notable changes to Fulkrum are documented here. This project follows
   running` — read straight from the call log, not from a timer.
 
 ### Fixed
+- **The provider concurrency limit is live, as the settings screen claimed.**
+  `FULKRUM_PROVIDER_MAX_CONCURRENCY` was read once when the model caller was
+  built, so a value saved in the app never reached the limiter that was
+  already running. The limiter now reads its limit at use time: a raise wakes
+  the backlog as slots free, a lowering stops admitting new entries and
+  drains as in-flight work finishes, and a garbage value falls back to the
+  default instead of freezing every call in the queue.
 - **A failed load is no longer dressed as an empty workspace.** Learnings,
   playbooks, schedules, goals, blueprints, marketplace, arsenal, and run
   artifacts all swallowed their fetch failures, so a bridge that was down or
