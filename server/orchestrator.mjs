@@ -70,7 +70,7 @@ export function compactTaskMessages(messages, budgetTokens = taskTokenBudget()) 
   return { compacted }
 }
 
-export function createRunOrchestrator({ store, providerRegistry, toolBroker, callModel, pricing, ownerId = 'orchestrator', leaseMs = 60_000 }) {
+export function createRunOrchestrator({ store, providerRegistry, toolBroker, callModel, pricing, ownerId = 'orchestrator', leaseMs = 60_000, writeCheckpointer = null }) {
   const activeRuns = new Map()
   const budget = createBudgetGuard({ store })
   const gate = createApprovalGate({ store })
@@ -270,6 +270,9 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
     store.appendEvent({ runId, type: 'tool.started', agentId: task.agentId, payload: { toolCallId: toolCall.id, name: toolCall.name, approved } })
     const startedAt = Date.now()
     try {
+      // ADR 0010: without host Git there is no undo, so a write is refused
+      // before it happens rather than landing unrecorded.
+      if (toolCall.name === 'workspace.write') await writeCheckpointer?.assertReady()
       const output = await toolBroker.execute(toolCall.name, input, resolution ?? null, { runId })
       const safeOutput = toolBroker.redact(output)
       if (toolCall.name === 'shell.exec') recordShellReceipt({ runId, task, toolCall, startedAt, stdout: safeOutput.stdout, stderr: safeOutput.stderr, exitCode: 0 })
@@ -291,6 +294,9 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
         // `run.snapshot` because `run.checkpoint` already means the head's
         // repair/replan/stop decision.
         store.appendEvent({ runId, type: 'run.snapshot', agentId: task.agentId, payload: { toolCallId: toolCall.id, path: safeOutput.path, previousSha256: safeOutput.previousSha256 } })
+      }
+      if (toolCall.name === 'workspace.write' && writeCheckpointer) {
+        await writeCheckpointer.afterWrite({ runId, taskId: task.id, agentId: task.agentId, toolCallId: toolCall.id, path: safeOutput.path })
       }
       // Tool output is where an injected instruction would arrive, so a match is
       // recorded rather than acted on: the log explains a strange run afterwards.

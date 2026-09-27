@@ -12,7 +12,7 @@ import { createModelCaller } from './modelCall.mjs'
 import { createPlanService } from './planService.mjs'
 import { createPricing } from './pricing.mjs'
 import { createExecutionRuntime } from './execution.mjs'
-import { createCheckpointStore } from './checkpoints.mjs'
+import { createCheckpointStore, createWriteCheckpointer } from './checkpoints.mjs'
 import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
 import { reconcileInterruptedRuns } from './recovery.mjs'
 import { backupIfStale } from './backup.mjs'
@@ -57,6 +57,7 @@ const toolBroker = new FulkrumToolBroker({ execution, workspaceRoot })
 // The shadow repository that makes every write recoverable (ADR 0010). It
 // lives beside the database, not in the workspace.
 const checkpoints = createCheckpointStore({ workspaceRoot, dataDir: settings.FULKRUM_DATA_DIR || 'data' })
+const writeCheckpointer = createWriteCheckpointer({ store, checkpoints })
 const pricing = createPricing()
 const modelCaller = createModelCaller({ providerRegistry, allowPrivate: privateProviderUrlsAllowed() })
 
@@ -73,6 +74,7 @@ const orchestrator = createRunOrchestrator({
   ownerId,
   callModel,
   pricing,
+  writeCheckpointer,
 })
 
 const planService = createPlanService({ store, providerRegistry, pricing, workspaceRoot: toolBroker.workspaceRoot, callModel: (provider, model, messages, options) => modelCaller.callModel(provider, model, messages, options), checkBudget: async (runId) => { orchestrator.assertBudget(runId) } })
@@ -87,6 +89,7 @@ const app = createApp({
   pricing,
   execution,
   checkpoints,
+  writeCheckpointer,
   allowedOrigins,
   ownerId,
   serveUi: Boolean(settings.FULKRUM_SERVE_UI),

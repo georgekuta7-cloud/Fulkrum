@@ -54,9 +54,10 @@ and never consults the user's Git state. Concretely:
    the only vocabulary, and it says so.
 5. **A checkpoint is a commit bound to its cause.** The commit message names
    the run, task, and tool call that produced it, and the chain records a
-   `run.checkpoint` event naming the commit. Checkpointing happens after a
-   successful write; if it fails, the run is interrupted with that reason
-   rather than continuing over unrecorded state.
+   `checkpoint.created` event naming the commit (`run.checkpoint` is already
+   the Head's repair/replan/stop decision, and is an audit anchor point).
+   Checkpointing happens after a successful write; if it fails, the run is
+   interrupted with that reason rather than continuing over unrecorded state.
 6. **Restore is an explicit, recorded human action.** It checkpoints the
    current state first, then checks out the named paths from the named commit,
    and records a `checkpoint.restored` event. It is never a chain rewrite, and

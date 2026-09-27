@@ -10,6 +10,7 @@ import { createPlanService } from '../server/planService.mjs'
 import { createPricing } from '../server/pricing.mjs'
 import { FulkrumStore } from '../server/store.mjs'
 import { FulkrumToolBroker } from '../server/toolBroker.mjs'
+import { createWriteCheckpointer } from '../server/checkpoints.mjs'
 
 export async function withTempDirectory(callback) {
   const directory = await mkdtemp(path.join(tmpdir(), 'fulkrum-test-'))
@@ -68,12 +69,16 @@ export async function withServer(callback, { workspaceRoot, callProvider, model,
   const realCaller = realModelCall ? createModelCaller({ providerRegistry }) : null
   const modelCall = model ?? (async () => ({ text: 'stub model output', toolCalls: [], usage: null }))
   const activePricing = pricing ?? createPricing()
+  // A checkpoint store passed by a test gets the same write hook the real
+  // bridge wires, so write paths exercise the real contract.
+  const writeCheckpointer = checkpoints ? createWriteCheckpointer({ store, checkpoints }) : null
   const orchestrator = createRunOrchestrator({
     store,
     providerRegistry,
     toolBroker,
     ownerId: 'test-owner',
     pricing: activePricing,
+    writeCheckpointer,
     callModel: (provider, modelName, messages, options) => modelCall({ provider, model: modelName, messages, options }),
   })
   const planService = createPlanService({
@@ -97,6 +102,7 @@ export async function withServer(callback, { workspaceRoot, callProvider, model,
     version,
     execution,
     checkpoints,
+    writeCheckpointer,
     callProvider: callProvider ?? (realCaller
       ? (provider, modelName, messages, instructions) => realCaller.callModel(provider, modelName, messages, { tools: [], instructions: instructions ?? 'test instructions' })
       : async () => ({ text: 'stub reply', usage: null })),

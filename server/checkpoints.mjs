@@ -181,5 +181,68 @@ export function createCheckpointStore({ workspaceRoot, dataDir, execFileImpl = e
     }
   }
 
-  return { run, available, ensure, status, workspaceRoot: root, dataDir: path.resolve(dataDir), gitDir, indexFile }
+  const checkpoint = async ({ paths = [], message = 'checkpoint', runId = null, taskId = null, toolCallId = null }) => {
+    await ensure()
+    const relative = paths
+      .map((entry) => path.relative(root, path.resolve(root, entry)).split(path.sep).join('/'))
+      .filter((entry) => entry && !entry.startsWith('..') && !path.isAbsolute(entry))
+    if (!relative.length) return { commit: null, unchanged: true, files: 0 }
+    // A write into an excluded path (dist output, node_modules) is legitimate
+    // and simply not checkpointed — `git add` would refuse it outright, which
+    // must not fail the run.
+    let ignored = []
+    try {
+      ignored = (await run(['check-ignore', '--', ...relative])).stdout.split('\n').map((line) => line.trim()).filter(Boolean)
+    } catch (error) {
+      // Exit 1 means "nothing ignored"; anything else is a real failure.
+      if (error?.code !== 1) throw error
+    }
+    const tracked = relative.filter((entry) => !ignored.includes(entry))
+    if (!tracked.length) return { commit: null, unchanged: true, files: 0, ignored }
+    await run(['add', '--all', '--', ...tracked])
+    const subject = [message, runId ? `run ${runId}` : null, taskId ? `task ${taskId}` : null, toolCallId ? `call ${toolCallId}` : null].filter(Boolean).join(' \u00b7 ')
+    try {
+      await run(['commit', '--quiet', '--no-verify', '-m', subject])
+    } catch (error) {
+      const detail = [error?.stdout, error?.stderr, error instanceof Error ? error.message : ''].map((part) => String(part ?? '')).join('\n')
+      // An unchanged write stages nothing; that is a fact, not a failure.
+      if (/nothing to commit|nothing added to commit|no changes added to commit/i.test(detail)) return { commit: null, unchanged: true, files: tracked.length, message: subject, ignored }
+      throw error
+    }
+    const commit = (await run(['rev-parse', 'HEAD'])).stdout.trim()
+    return { commit, unchanged: false, files: tracked.length, message: subject }
+  }
+
+  return { run, available, ensure, checkpoint, status, workspaceRoot: root, dataDir: path.resolve(dataDir), gitDir, indexFile }
+}
+
+/**
+ * The bridge between a write and its checkpoint, shared by both execution
+ * paths (the worker loop and the direct tools API). ADR 0010: host Git is a
+ * hard requirement for write runs, and a write that cannot be checkpointed
+ * interrupts the run instead of continuing over unrecorded state.
+ */
+export function createWriteCheckpointer({ store, checkpoints }) {
+  if (!checkpoints) return null
+  const assertReady = async () => {
+    const ready = await checkpoints.available()
+    if (!ready.ok) throw new Error(ready.reason)
+  }
+  const afterWrite = async ({ runId, taskId = null, agentId = null, toolCallId, path: writtenPath }) => {
+    let result
+    try {
+      result = await checkpoints.checkpoint({ paths: [writtenPath], message: `write ${writtenPath}`, runId, taskId, toolCallId })
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? error.message : 'the checkpoint failed'
+      const reason = `The write to ${writtenPath} could not be checkpointed: ${detail}`
+      store.updateRun(runId, { status: 'interrupted', interruptedFrom: 'executing' })
+      store.markRunInterrupted(runId, reason)
+      throw new Error(reason)
+    }
+    if (result.commit) {
+      store.appendEvent({ runId, type: 'checkpoint.created', agentId: agentId ?? 'head', payload: { toolCallId, commit: result.commit, path: writtenPath } })
+    }
+    return result
+  }
+  return { assertReady, afterWrite }
 }

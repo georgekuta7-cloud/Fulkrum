@@ -6,6 +6,15 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **Writes are checkpointed, and a write with no undo is refused.** Every
+  approved `workspace.write` — the worker loop and the direct tools API alike
+  — becomes a shadow-Git commit bound to its run, task, and call and recorded
+  as a `checkpoint.created` event; the commit holds the exact bytes on disk,
+  line endings included. Host Git is a hard requirement: without it the write
+  is refused before it happens, and the run is untouched. If a checkpoint
+  fails, the run is interrupted with that reason instead of continuing over
+  unrecorded state. Excluded paths (dist output, node_modules) stay
+  legitimate and are simply not checkpointed.
 - **The checkpoint store exists and is honest about itself.** Per ADR 0010,
   a private shadow Git repository now lives under the data directory with its
   own persistent index: the workspace is never written to, host Git

@@ -160,7 +160,7 @@ const controlTransitions = {
  * instead of rejecting the server's callback promise, which Node would treat as
  * an unhandled rejection and use to terminate the process, orphaning every run.
  */
-export function createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, planService, pricing, execution = null, checkpoints = null, allowedOrigins = new Set(), ownerId = 'local', serveUi = false, distDir = 'dist', breaker = null, version = '0.0.0' }) {
+export function createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, planService, pricing, execution = null, checkpoints = null, writeCheckpointer = null, allowedOrigins = new Set(), ownerId = 'local', serveUi = false, distDir = 'dist', breaker = null, version = '0.0.0' }) {
   const distRoot = serveUi ? path.resolve(distDir) : null
   const uiIndex = distRoot ? path.join(distRoot, 'index.html') : null
 
@@ -354,6 +354,8 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
     store.updateToolCall(toolCall.id, { status: 'running', attempt: toolCall.attempt + 1 })
     store.appendEvent({ runId, type: 'tool.started', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, name: toolCall.name, approved } })
     try {
+      // ADR 0010: a write with no undo available is refused before it happens.
+      if (toolCall.name === 'workspace.write') await writeCheckpointer?.assertReady()
       const output = await toolBroker.execute(toolCall.name, input, resolved, { runId })
       const safeOutput = toolBroker.redact(output)
       store.updateToolCall(toolCall.id, { status: 'completed', output: safeOutput })
@@ -363,6 +365,9 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         // to the pre-write snapshot. Direct writes get them too, so the
         // timeline is uniform no matter who wrote.
         store.appendEvent({ runId, type: 'run.snapshot', agentId: toolCall.agentId ?? 'head', payload: { toolCallId: toolCall.id, path: safeOutput.path, previousSha256: safeOutput.previousSha256 } })
+      }
+      if (toolCall.name === 'workspace.write' && writeCheckpointer) {
+        await writeCheckpointer.afterWrite({ runId, agentId: toolCall.agentId, toolCallId: toolCall.id, path: safeOutput.path })
       }
       const injectionAttempts = findInjectionAttempts(safeOutput)
       if (injectionAttempts.length) {
