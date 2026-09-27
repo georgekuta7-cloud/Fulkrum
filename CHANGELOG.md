@@ -5,6 +5,13 @@ All notable changes to Fulkrum are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- **A worker's card says what it last actually did.** The chat's worker strip
+  and the control room's live list showed a state chip and a task title, so
+  a worker mid-task looked the same whether it had run three tools or none.
+  Both now carry the newest tool call per role — `last: workspace.write ·
+  running` — read straight from the call log, not from a timer.
+
 ### Fixed
 - **A failed load is no longer dressed as an empty workspace.** Learnings,
   playbooks, schedules, goals, blueprints, marketplace, arsenal, and run

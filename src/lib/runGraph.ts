@@ -39,6 +39,20 @@ export function resolveRouteDisplay(routing: Record<string, string>, providers: 
   return model ? `${provider.label} · ${model}` : `${provider.label} · ${provider.model}`
 }
 
+/**
+ * The newest tool call per role, for the activity lines: a worker's "last
+ * seen doing" comes from the calls it actually made, not from a timer.
+ */
+export function latestToolCallByRole<T extends { agentId: string | null; createdAt: number }>(toolCalls: T[]): Map<string, T> {
+  const latest = new Map<string, T>()
+  for (const call of toolCalls) {
+    const role = call.agentId ?? 'head'
+    const current = latest.get(role)
+    if (!current || call.createdAt >= current.createdAt) latest.set(role, call)
+  }
+  return latest
+}
+
 export type GraphEdge = {
   id: string
   from: string
@@ -46,7 +60,6 @@ export type GraphEdge = {
   label: string
   tone: 'flow' | 'wait' | 'plain'
 }
-
 export type GraphModel = { nodes: GraphNode[]; edges: GraphEdge[] }
 
 const ROLE_LABEL: Record<string, string> = { research: 'Scout', builder: 'Forge', head: 'Head AI', architect: 'Architect', editor: 'Editor', debug: 'Debugger', reviewer: 'Reviewer' }

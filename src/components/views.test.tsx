@@ -269,6 +269,13 @@ describe('control room', () => {
     expect(screen.getByText('1/1')).toBeInTheDocument()
   })
 
+  it('names the live worker\u2019s last tool call', () => {
+    render(<ControlView bridge={roomBridge({ toolCalls: [
+      { id: 'c1', agentId: 'builder', name: 'workspace.write', status: 'running', createdAt: 2 },
+    ] as any })} onOpenChat={vi.fn()} />)
+    expect(screen.getByText(/last workspace\.write \(running\)/)).toBeInTheDocument()
+  })
+
   it('banners a waiting decision toward the chat, and handles no run', () => {
     const onOpenChat = vi.fn()
     render(<ControlView bridge={roomBridge({

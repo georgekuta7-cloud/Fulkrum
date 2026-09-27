@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildGraph, resolveRouteDisplay, taskLayers } from './runGraph'
+import { buildGraph, latestToolCallByRole, resolveRouteDisplay, taskLayers } from './runGraph'
 import type { Plan, Run, Task, ToolCall } from '../api/types'
 
 const run = (status: string): Run => ({
@@ -33,6 +33,25 @@ describe('taskLayers', () => {
   it('orders tasks by dependency depth', () => {
     expect(taskLayers([{ dependsOn: [] }, { dependsOn: [0] }, { dependsOn: [1] }, { dependsOn: [0] }])).toEqual([0, 1, 2, 1])
     expect(taskLayers([])).toEqual([])
+  })
+})
+
+describe('latestToolCallByRole', () => {
+  it('keeps the newest call per role and files unattributed calls under the head', () => {
+    const latest = latestToolCallByRole([
+      { agentId: 'research', name: 'workspace.read', createdAt: 1 },
+      { agentId: 'research', name: 'workspace.write', createdAt: 3 },
+      { agentId: 'builder', name: 'shell.exec', createdAt: 2 },
+      { agentId: null, name: 'run.ask', createdAt: 4 },
+    ])
+    expect(latest.get('research')?.name).toBe('workspace.write')
+    expect(latest.get('builder')?.name).toBe('shell.exec')
+    expect(latest.get('head')?.name).toBe('run.ask')
+    expect(latest.size).toBe(3)
+  })
+
+  it('is empty without calls', () => {
+    expect(latestToolCallByRole([]).size).toBe(0)
   })
 })
 

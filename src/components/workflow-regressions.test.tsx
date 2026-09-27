@@ -9,7 +9,7 @@ function fixture(overrides: Partial<Bridge> = {}): Bridge {
     projectId: 'p1', projects: [{ id: 'p1', name: 'Fixture' }], projectSettings: {}, projectLoading: false,
     runId: 'r1', runLoading: false, run: { id: 'r1', projectId: 'p1', status: 'planning', budgetUsd: null },
     providers: [{ id: 'fixture', label: 'Fixture', model: 'fixture', configured: true }], status: null,
-    messages: [], tasks: [], verdicts: [], claims: [], events: [], byTask: [], runGrants: [], plan: null, approval: null, streaming: null,
+    messages: [], tasks: [], toolCalls: [], verdicts: [], claims: [], events: [], byTask: [], runGrants: [], plan: null, approval: null, streaming: null,
     spend: { costUsd: 0, calls: 0, unpricedCalls: 0 }, estimate: null,
     control: vi.fn().mockResolvedValue(null), createRun: vi.fn(), chat: vi.fn().mockResolvedValue(true),
     draftPlan: vi.fn().mockResolvedValue(true), approveCall: vi.fn().mockResolvedValue(true),
@@ -88,6 +88,17 @@ describe('conversation decisions', () => {
     })} />)
     expect(screen.getByText(/cost not estimable yet/)).toBeInTheDocument()
     expect(screen.getByText(/no priced calls in this database yet/)).toBeInTheDocument()
+  })
+
+  it('shows each worker its last tool call', () => {
+    render(<ChatView bridge={fixture({
+      tasks: [{ id: 't1', agentId: 'research', title: 'Read files', status: 'running' } as any],
+      toolCalls: [
+        { id: 'c1', agentId: 'research', name: 'workspace.read', status: 'completed', createdAt: 1 },
+        { id: 'c2', agentId: 'research', name: 'workspace.write', status: 'running', createdAt: 2 },
+      ] as any,
+    })} />)
+    expect(screen.getByText(/last: workspace\.write · running/)).toBeInTheDocument()
   })
 
   it('shows the estimate recorded at approval, not a later recalculation', () => {

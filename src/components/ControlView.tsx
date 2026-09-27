@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { Bridge } from '../hooks/useBridge'
-import { buildGraph, roleLabel, type GraphNode } from '../lib/runGraph'
+import { buildGraph, latestToolCallByRole, roleLabel, type GraphNode } from '../lib/runGraph'
 import { Button, EmptyState, Panel } from './primitives'
 import { Icon, type IconName } from './Icon'
 
@@ -115,6 +115,7 @@ export function ControlView({ bridge, onOpenChat }: { bridge: Bridge; onOpenChat
   const claims = bridge.claims ?? []
   const proven = claims.filter((c: any) => c.verdict === 'PASS').length
   const routing = ((bridge.projectSettings ?? {}).routing ?? {}) as Record<string, string>
+  const lastByRole = latestToolCallByRole(bridge.toolCalls ?? [])
 
   if (!bridge.run) {
     return <EmptyState icon="account_tree" title="No run open" body="The control room shows the run's dispatch: cast roles, live workers, handoffs, and what is waiting on you." action={<Button variant="primary" onClick={onOpenChat}>Go to chat</Button>} />
@@ -141,18 +142,21 @@ export function ControlView({ bridge, onOpenChat }: { bridge: Bridge; onOpenChat
         </div>
         <div className="xl:col-span-4 flex flex-col gap-4">
           <Panel title="Live workers" action={<span className="font-mono text-label-sm text-outline">{running.length} active</span>}>
-            {running.length ? running.map((task: any) => (
-              <div key={task.id} className="p-2.5 rounded-lg bg-surface-container flex flex-col gap-1">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-body-md text-on-surface font-medium">{roleLabel(task.agentId)}</span>
-                  <span className="font-mono text-label-sm text-primary flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" aria-hidden="true" /> working
-                  </span>
+            {running.length ? running.map((task: any) => {
+              const last = lastByRole.get(task.agentId)
+              return (
+                <div key={task.id} className="p-2.5 rounded-lg bg-surface-container flex flex-col gap-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-body-md text-on-surface font-medium">{roleLabel(task.agentId)}</span>
+                    <span className="font-mono text-label-sm text-primary flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" aria-hidden="true" /> working
+                    </span>
+                  </div>
+                  <p className="text-body-sm text-on-surface-variant truncate">{task.title}</p>
+                  <span className="font-mono text-label-sm text-outline truncate">{routing[task.agentId] ?? 'not cast'}{task.stepCount ? ` · step ${task.stepCount}` : ''}{last ? ` · last ${last.name} (${last.status})` : ''}</span>
                 </div>
-                <p className="text-body-sm text-on-surface-variant truncate">{task.title}</p>
-                <span className="font-mono text-label-sm text-outline">{routing[task.agentId] ?? 'not cast'}{task.stepCount ? ` · step ${task.stepCount}` : ''}</span>
-              </div>
-            )) : <p className="text-body-sm text-outline">Nothing running. Workers appear when a task starts.</p>}
+              )
+            }) : <p className="text-body-sm text-outline">Nothing running. Workers appear when a task starts.</p>}
           </Panel>
           <Panel title="Spend by role" action={<span className="font-mono text-label-sm text-secondary">${bridge.spend.costUsd.toFixed(4)}</span>}>
             {roleSpend.length ? roleSpend.map(([agent, cost]) => (

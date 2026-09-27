@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { Bridge } from '../hooks/useBridge'
 import type { ReasoningLevel } from '../api/types'
-import { resolveRouteDisplay, roleLabel } from '../lib/runGraph'
+import { latestToolCallByRole, resolveRouteDisplay, roleLabel } from '../lib/runGraph'
 import { canChatInRun } from '../lib/runState'
 import { ApprovalCard } from './ApprovalCard'
 import { Icon } from './Icon'
@@ -18,6 +18,7 @@ function WorkerStrip({ bridge }: { bridge: Bridge }) {
   const routing = (bridge.projectSettings?.routing ?? {}) as Record<string, string>
   const costs = new Map<string, number>()
   for (const entry of bridge.byTask ?? []) costs.set(entry.agentId ?? 'head', (costs.get(entry.agentId ?? 'head') ?? 0) + entry.costUsd)
+  const lastByRole = latestToolCallByRole(bridge.toolCalls ?? [])
   const visible = WORKER_ROLES.filter((role) => routing[role]?.trim() || bridge.tasks.some((task) => task.agentId === role))
   if (!visible.length) return null
   return <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2" aria-label="Workers">
@@ -25,11 +26,13 @@ function WorkerStrip({ bridge }: { bridge: Bridge }) {
       const tasks = bridge.tasks.filter((task) => task.agentId === role)
       const active = tasks.find((task) => task.status === 'running')
       const waiting = bridge.approval?.toolCall.agentId === role
+      const last = lastByRole.get(role)
       const state = waiting ? 'waiting' : active ? (bridge.run?.status === 'paused' ? 'paused' : 'working') : bridge.streaming?.role === role ? 'working' : tasks.at(-1)?.status === 'completed' ? 'done' : tasks.at(-1)?.status === 'failed' ? 'failed' : 'idle'
       return <div key={role} className="p-2 rounded-lg border border-outline-variant/40 bg-surface-container min-w-0 space-y-1">
         <div className="flex items-center justify-between gap-2"><span className="text-label-md font-semibold">{roleLabel(role)}</span><Chip tone={state === 'failed' ? 'bad' : waiting || state === 'done' ? 'ok' : state === 'working' ? 'busy' : 'idle'}>{state}</Chip></div>
         <p className="text-body-sm text-on-surface-variant truncate" title={active?.title}>{active?.title ?? (waiting ? 'parked on approval' : 'no active task')}</p>
         <p className="font-mono text-label-sm text-outline truncate" title={resolveRouteDisplay(routing, bridge.providers, role) ?? undefined}>{resolveRouteDisplay(routing, bridge.providers, role) ?? 'default provider'}{costs.get(role) ? ` · $${costs.get(role)!.toFixed(4)}` : ''}</p>
+        {last ? <p className="font-mono text-label-sm text-outline truncate" title={`${last.name} · ${last.status}`}>last: {last.name} · {last.status}</p> : null}
       </div>
     })}
   </div>
