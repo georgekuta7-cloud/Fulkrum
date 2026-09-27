@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Bridge } from '../hooks/useBridge'
-import { Button, Chip, EmptyState, Panel } from './primitives'
+import { Button, Chip, EmptyState, Panel, ResourceError } from './primitives'
 
 /**
  * What the run wrote: every artifact with its diff and a revert path, the
@@ -179,7 +179,11 @@ export function FilesView({ bridge }: { bridge: Bridge }) {
       <Panel title="Artifacts" action={<span className="font-mono text-label-sm text-outline">{(bridge.artifacts ?? []).length} file(s)</span>}>
         {(bridge.artifacts ?? []).length ? (bridge.artifacts ?? []).map((a: any) => (
           <ArtifactCard key={a.toolCallId ?? a.path} bridge={bridge} artifact={a} />
-        )) : <p className="text-body-sm text-outline">This run has not written any files.</p>}
+        )) : bridge.resourceErrors.artifacts ? (
+          <ResourceError label="Artifacts" message={bridge.resourceErrors.artifacts} onRetry={() => void bridge.retryResource('artifacts')} />
+        ) : (
+          <p className="text-body-sm text-outline">This run has not written any files.</p>
+        )}
       </Panel>
       <Panel title="Time travel">
         <TimeTravel bridge={bridge} />

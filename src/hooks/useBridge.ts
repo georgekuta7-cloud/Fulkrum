@@ -66,6 +66,10 @@ export function useBridge() {
   // False until the first load finishes, so an empty project list reads as
   // "nothing here yet" rather than flashing on every boot.
   const [booted, setBooted] = useState(false)
+  // A failed project/run resource is not an empty one: views read this to say
+  // what broke and offer a retry instead of "nothing here yet". Aborted loads
+  // (a newer selection replaced them) are not failures and never land here.
+  const [resourceErrors, setResourceErrors] = useState<Record<string, string>>({})
   // Text arriving for the call in flight: cleared when the stream says it landed.
   const [streaming, setStreaming] = useState<{ role: string; text: string } | null>(null)
   const [approval, setApproval] = useState<Approval | null>(null)
@@ -84,6 +88,18 @@ export function useBridge() {
     const message = caught instanceof ApiError ? caught.message : caught instanceof Error ? caught.message : fallback
     setError(message)
     return message
+  }, [])
+  const noteResourceError = useCallback((key: string, caught: unknown) => {
+    const message = caught instanceof ApiError ? caught.message : caught instanceof Error && caught.message ? caught.message : 'The request failed.'
+    setResourceErrors((current) => (current[key] === message ? current : { ...current, [key]: message }))
+  }, [])
+  const clearResourceError = useCallback((key: string) => {
+    setResourceErrors((current) => {
+      if (!(key in current)) return current
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
   }, [])
   const workspace = useWorkspaceBridge(report, setNotice)
   const { loadProviders, loadStatus, loadGrants, loadConfig, loadSettings } = workspace
@@ -160,13 +176,20 @@ export function useBridge() {
   const loadArtifacts = useCallback(async (id: string) => {
     const selection = runScope.capture(id)
     if (!selection.isCurrent()) return null
-    const payload = await api.get<{ artifacts: Artifact[]; grants: RunGrant[] }>(`/api/runs/${encodeURIComponent(id)}/artifacts`, { signal: selection.signal }).catch(() => null)
-    if (payload && selection.isCurrent()) {
+    let payload: { artifacts: Artifact[]; grants: RunGrant[] }
+    try {
+      payload = await api.get<{ artifacts: Artifact[]; grants: RunGrant[] }>(`/api/runs/${encodeURIComponent(id)}/artifacts`, { signal: selection.signal })
+    } catch (caught) {
+      if (selection.isCurrent()) noteResourceError('artifacts', caught)
+      return null
+    }
+    if (selection.isCurrent()) {
       setArtifacts(payload.artifacts ?? [])
       setRunGrants(payload.grants ?? [])
+      clearResourceError('artifacts')
     }
     return payload
-  }, [runScope])
+  }, [clearResourceError, noteResourceError, runScope])
 
   const loadClaims = useCallback(async (id: string) => {
     const selection = runScope.capture(id)
@@ -189,54 +212,101 @@ export function useBridge() {
     if (!selection.isCurrent()) return []
     if (!forProject) {
       setLearnings([])
+      clearResourceError('learnings')
       return []
     }
-    const payload = await api.get<{ learnings: Array<{ id: string; projectId: string; fact: string; sourceRunId: string | null; createdAt: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/learnings`, { signal: selection.signal }).catch(() => null)
-    if (payload && selection.isCurrent()) setLearnings(payload.learnings ?? [])
-    return payload?.learnings ?? []
-  }, [projectScope])
+    let payload: { learnings: Array<{ id: string; projectId: string; fact: string; sourceRunId: string | null; createdAt: number }> }
+    try {
+      payload = await api.get<{ learnings: Array<{ id: string; projectId: string; fact: string; sourceRunId: string | null; createdAt: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/learnings`, { signal: selection.signal })
+    } catch (caught) {
+      if (selection.isCurrent()) noteResourceError('learnings', caught)
+      return []
+    }
+    if (selection.isCurrent()) {
+      setLearnings(payload.learnings ?? [])
+      clearResourceError('learnings')
+    }
+    return payload.learnings ?? []
+  }, [clearResourceError, noteResourceError, projectScope])
 
   const loadPlaybooksFor = useCallback(async (forProject: string | null) => {
     const selection = projectScope.capture(forProject)
     if (!selection.isCurrent()) return []
     if (!forProject) {
       setPlaybooks([])
+      clearResourceError('playbooks')
       return []
     }
-    const payload = await api.get<{ playbooks: Array<{ id: string; projectId: string; name: string; contentHash: string; budgetUsd: number | null; approvedAt: number | null; createdAt: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/playbooks`, { signal: selection.signal }).catch(() => null)
-    if (payload && selection.isCurrent()) setPlaybooks(payload.playbooks ?? [])
-    return payload?.playbooks ?? []
-  }, [projectScope])
+    let payload: { playbooks: Array<{ id: string; projectId: string; name: string; contentHash: string; budgetUsd: number | null; approvedAt: number | null; createdAt: number }> }
+    try {
+      payload = await api.get<{ playbooks: Array<{ id: string; projectId: string; name: string; contentHash: string; budgetUsd: number | null; approvedAt: number | null; createdAt: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/playbooks`, { signal: selection.signal })
+    } catch (caught) {
+      if (selection.isCurrent()) noteResourceError('playbooks', caught)
+      return []
+    }
+    if (selection.isCurrent()) {
+      setPlaybooks(payload.playbooks ?? [])
+      clearResourceError('playbooks')
+    }
+    return payload.playbooks ?? []
+  }, [clearResourceError, noteResourceError, projectScope])
 
   const loadSchedulesFor = useCallback(async (forProject: string | null) => {
     const selection = projectScope.capture(forProject)
     if (!selection.isCurrent()) return []
     if (!forProject) {
       setSchedules([])
+      clearResourceError('schedules')
       return []
     }
-    const payload = await api.get<{ schedules: Array<{ id: string; projectId: string; playbookId: string; everyMinutes: number; budgetUsd: number | null; enabled: boolean; nextFireAt: number; lastRunId: string | null; createdAt: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/schedules`, { signal: selection.signal }).catch(() => null)
-    if (payload && selection.isCurrent()) setSchedules(payload.schedules ?? [])
-    return payload?.schedules ?? []
-  }, [projectScope])
+    let payload: { schedules: Array<{ id: string; projectId: string; playbookId: string; everyMinutes: number; budgetUsd: number | null; enabled: boolean; nextFireAt: number; lastRunId: string | null; createdAt: number }> }
+    try {
+      payload = await api.get<{ schedules: Array<{ id: string; projectId: string; playbookId: string; everyMinutes: number; budgetUsd: number | null; enabled: boolean; nextFireAt: number; lastRunId: string | null; createdAt: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/schedules`, { signal: selection.signal })
+    } catch (caught) {
+      if (selection.isCurrent()) noteResourceError('schedules', caught)
+      return []
+    }
+    if (selection.isCurrent()) {
+      setSchedules(payload.schedules ?? [])
+      clearResourceError('schedules')
+    }
+    return payload.schedules ?? []
+  }, [clearResourceError, noteResourceError, projectScope])
 
   const loadBlueprintsFor = useCallback(async () => {
-    const payload = await api.get<{ blueprints: Array<{ name: string; version: string; description: string; source: string }> }>('/api/blueprints').catch(() => null)
-    if (payload) setBlueprints(payload.blueprints ?? [])
-    return payload?.blueprints ?? []
-  }, [])
+    let payload: { blueprints: Array<{ name: string; version: string; description: string; source: string }> }
+    try {
+      payload = await api.get<{ blueprints: Array<{ name: string; version: string; description: string; source: string }> }>('/api/blueprints')
+    } catch (caught) {
+      noteResourceError('blueprints', caught)
+      return []
+    }
+    setBlueprints(payload.blueprints ?? [])
+    clearResourceError('blueprints')
+    return payload.blueprints ?? []
+  }, [clearResourceError, noteResourceError])
 
   const loadGoalsFor = useCallback(async (forProject: string | null) => {
     const selection = projectScope.capture(forProject)
     if (!selection.isCurrent()) return []
     if (!forProject) {
       setGoals([])
+      clearResourceError('goals')
       return []
     }
-    const payload = await api.get<{ goals: Array<{ id: string; projectId: string; name: string; objective: string; acceptance: string; budgetUsd: number | null; status: string; createdAt: number; spendUsd?: number; runCount?: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/goals`, { signal: selection.signal }).catch(() => null)
-    if (payload && selection.isCurrent()) setGoals(payload.goals ?? [])
-    return payload?.goals ?? []
-  }, [projectScope])
+    let payload: { goals: Array<{ id: string; projectId: string; name: string; objective: string; acceptance: string; budgetUsd: number | null; status: string; createdAt: number; spendUsd?: number; runCount?: number }> }
+    try {
+      payload = await api.get<{ goals: Array<{ id: string; projectId: string; name: string; objective: string; acceptance: string; budgetUsd: number | null; status: string; createdAt: number; spendUsd?: number; runCount?: number }> }>(`/api/projects/${encodeURIComponent(forProject)}/goals`, { signal: selection.signal })
+    } catch (caught) {
+      if (selection.isCurrent()) noteResourceError('goals', caught)
+      return []
+    }
+    if (selection.isCurrent()) {
+      setGoals(payload.goals ?? [])
+      clearResourceError('goals')
+    }
+    return payload.goals ?? []
+  }, [clearResourceError, noteResourceError, projectScope])
 
   // ---------------------------------------------------------------- stream
 
@@ -809,11 +879,26 @@ export function useBridge() {
     ...workspace,
     projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, verdicts, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit,
     learnings, playbooks, schedules, goals, blueprints, timeline, error, notice, streaming, approval, booted, projectSettings,
+    // Workspace resources (marketplace, arsenal) and project/run resources
+    // (learnings, playbooks, …) report failures the same way, so a panel only
+    // has to know its own key.
+    resourceErrors: { ...workspace.resourceErrors, ...resourceErrors },
+    retryResource: async (key: string) => {
+      if (key === 'learnings') return loadLearnings(projectId)
+      if (key === 'playbooks') return loadPlaybooksFor(projectId)
+      if (key === 'schedules') return loadSchedulesFor(projectId)
+      if (key === 'goals') return loadGoalsFor(projectId)
+      if (key === 'blueprints') return loadBlueprintsFor()
+      if (key === 'artifacts' && runId) return loadArtifacts(runId)
+      if (key === 'marketplace') return workspace.loadMarketplaceState()
+      if (key === 'arsenal') return workspace.loadArsenalState()
+      return null
+    },
     setError, setNotice, setApproval,
     openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor,
     ...actions,
     approveWithKeyboard: (scope: 'once' | 'run' | 'always') => actions.approveCall(scope),
-  }), [workspace, projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, verdicts, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit, learnings, playbooks, schedules, goals, blueprints, timeline, error, notice, streaming, approval, booted, projectSettings, actions, openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor])
+  }), [workspace, projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, verdicts, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit, learnings, playbooks, schedules, goals, blueprints, timeline, error, notice, streaming, approval, booted, projectSettings, resourceErrors, actions, openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor, loadArtifacts])
   return bridge
 }
 

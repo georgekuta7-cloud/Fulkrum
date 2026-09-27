@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Bridge } from '../hooks/useBridge'
-import { Button, Chip, EmptyState, Panel, inputClass } from './primitives'
+import { Button, Chip, EmptyState, Panel, ResourceError, inputClass } from './primitives'
 
 /**
  * The store and the arsenal, side by side the way a package manager shows
@@ -104,6 +104,8 @@ export function StoreView({ bridge }: { bridge: Bridge }) {
                 )
               })}
             </ul>
+          ) : bridge.resourceErrors.marketplace ? (
+            <ResourceError label="The marketplace" message={bridge.resourceErrors.marketplace} onRetry={() => void bridge.retryResource('marketplace')} />
           ) : (
             <EmptyState icon="store" title="Nothing here matches" body="Import a skill below, or browse a public registry — imports land here for review before anything installs." />
           )}
@@ -168,7 +170,11 @@ export function StoreView({ bridge }: { bridge: Bridge }) {
             </div>
           ))}
           {!(bridge.arsenal?.skills ?? []).length && !(bridge.arsenal?.plugins ?? []).length ? (
-            <p className="text-body-sm text-outline">Nothing installed yet. Installing a staged skill lands it here.</p>
+            bridge.resourceErrors.arsenal ? (
+              <ResourceError label="The arsenal" message={bridge.resourceErrors.arsenal} onRetry={() => void bridge.retryResource('arsenal')} />
+            ) : (
+              <p className="text-body-sm text-outline">Nothing installed yet. Installing a staged skill lands it here.</p>
+            )
           ) : null}
         </Panel>
       </div>

@@ -6,6 +6,12 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **A failed load is no longer dressed as an empty workspace.** Learnings,
+  playbooks, schedules, goals, blueprints, marketplace, arsenal, and run
+  artifacts all swallowed their fetch failures, so a bridge that was down or
+  answering errors read as "nothing here yet" — and the empty state blamed
+  the user's data. Each panel now says what failed and offers a Retry; the
+  aborted loads a superseded selection produces stay silent, as designed.
 - **Answering a parked question is all-or-nothing.** The gate consumed the
   waiter, flipped the call to completed, and appended its event as three
   separate writes: a store failure between them left the worker parked on a

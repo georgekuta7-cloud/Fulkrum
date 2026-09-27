@@ -44,6 +44,21 @@ export function Panel({ title, action, children }: { title: string; action?: Rea
   )
 }
 
+/**
+ * A resource that failed to load, said plainly, with the retry beside it —
+ * the alternative is an empty state that blames the user's data for the
+ * network's problem.
+ */
+export function ResourceError({ label, message, onRetry }: { label: string; message: string | null; onRetry: () => void }) {
+  if (!message) return null
+  return (
+    <p role="alert" className="text-body-sm text-error flex items-center gap-2 flex-wrap">
+      <span className="min-w-0 break-words">{label} could not be loaded: {message}</span>
+      <Button className="!px-2.5 !py-1 text-label-sm" onClick={onRetry}>Retry</Button>
+    </p>
+  )
+}
+
 export function EmptyState({ icon, title, body, action }: { icon: IconName; title: string; body: string; action?: ReactNode }) {
   return (
     <div className="flex items-center justify-center h-full">

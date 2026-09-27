@@ -56,6 +56,10 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
     booted: true,
     appSettings: [],
     projectSettings: {},
+    resourceErrors: {},
+    retryResource: vi.fn(),
+    loadMarketplaceState: vi.fn().mockResolvedValue(null),
+    loadArsenalState: vi.fn().mockResolvedValue(null),
     setError: vi.fn(),
     setNotice: vi.fn(),
     setApproval: vi.fn(),
@@ -470,6 +474,52 @@ describe('settings', () => {
     expect(deleteLearning).toHaveBeenCalledWith('l1')
     fireEvent.click(screen.getByRole('button', { name: 'Verify chain' }))
     expect(verifyAudit).toHaveBeenCalled()
+  })
+})
+
+describe('resource errors', () => {
+  it('says a failed automations load instead of blaming the project', () => {
+    const retryResource = vi.fn()
+    render(<AutomationsView bridge={makeBridge({
+      playbooks: [], schedules: [], goals: [], blueprints: [],
+      loadPlaybooksFor: vi.fn(), loadSchedulesFor: vi.fn(), loadGoalsFor: vi.fn(), loadBlueprintsFor: vi.fn(),
+      resourceErrors: { playbooks: 'The bridge is not answering.' }, retryResource,
+    })} />)
+    expect(screen.getByText(/Playbooks could not be loaded/)).toBeInTheDocument()
+    expect(screen.queryByText(/No playbooks/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(retryResource).toHaveBeenCalledWith('playbooks')
+  })
+
+  it('says a failed marketplace load instead of the empty store', () => {
+    const retryResource = vi.fn()
+    render(<StoreView bridge={makeBridge({ resourceErrors: { marketplace: 'The bridge is not answering.' }, retryResource })} />)
+    expect(screen.getByText(/The marketplace could not be loaded/)).toBeInTheDocument()
+    expect(screen.queryByText('Nothing here matches')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(retryResource).toHaveBeenCalledWith('marketplace')
+  })
+
+  it('says a failed artifacts load instead of an empty run', () => {
+    const retryResource = vi.fn()
+    render(<FilesView bridge={makeBridge({ resourceErrors: { artifacts: 'The bridge is not answering.' }, retryResource })} />)
+    expect(screen.getByText(/Artifacts could not be loaded/)).toBeInTheDocument()
+    expect(screen.queryByText(/has not written any files/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(retryResource).toHaveBeenCalledWith('artifacts')
+  })
+
+  it('says a failed learnings load in settings', () => {
+    const retryResource = vi.fn()
+    render(<SettingsView bridge={makeBridge({
+      status: null, learnings: [], resourceErrors: { learnings: 'The bridge is not answering.' }, retryResource,
+      loadProviders: vi.fn().mockResolvedValue([]), loadStatus: vi.fn().mockResolvedValue(null), loadSettings: vi.fn().mockResolvedValue([]), loadUsage: vi.fn().mockResolvedValue(null), loadLearnings: vi.fn().mockResolvedValue([]), loadGrants: vi.fn().mockResolvedValue(null),
+    })} />)
+    fireEvent.click(screen.getByRole('button', { name: /Learnings/ }))
+    expect(screen.getByText(/Learnings could not be loaded/)).toBeInTheDocument()
+    expect(screen.queryByText(/Nothing learned yet/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(retryResource).toHaveBeenCalledWith('learnings')
   })
 })
 

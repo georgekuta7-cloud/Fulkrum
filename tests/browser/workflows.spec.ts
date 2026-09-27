@@ -209,3 +209,26 @@ test('provider forms persist edits, retain rejected input, and remove keys only 
   const removed = (await (await request.get('/api/providers')).json()).providers.find((p: { id: string }) => p.id === provider.id)
   expect(removed).toMatchObject({ model: 'model-three', hasKey: false })
 })
+
+test('a failed resource load says so and retries instead of showing an empty state', async ({ page, request, expectedFailedRequests }) => {
+  await createProject(request, 'Error state fixture')
+  expectedFailedRequests.push('/playbooks')
+  // Fails until the retry: the project open and the view mount both ask, and
+  // the empty state must not win just because the second ask happened to run.
+  let failing = true
+  await page.route('**/api/projects/*/playbooks', async (route) => {
+    if (failing) {
+      await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'The bridge is not answering.' }) })
+      return
+    }
+    await route.continue()
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Automations', exact: true }).click()
+  await expect(page.getByText(/Playbooks could not be loaded: The bridge is not answering\./)).toBeVisible()
+  await expect(page.getByText(/No playbooks\./)).toHaveCount(0)
+  failing = false
+  await page.getByRole('button', { name: 'Retry', exact: true }).click()
+  await expect(page.getByText(/No playbooks\./)).toBeVisible()
+  await expect(page.getByText(/could not be loaded/)).toHaveCount(0)
+})

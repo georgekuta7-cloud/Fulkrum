@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Bridge } from '../hooks/useBridge'
-import { Button, Chip, EmptyState, Panel, inputClass, selectClass } from './primitives'
+import { Button, Chip, EmptyState, Panel, ResourceError, inputClass, selectClass } from './primitives'
 
 /**
  * Everything that acts without a hand on the mouse: playbooks (approved plans
@@ -70,7 +70,11 @@ export function AutomationsView({ bridge }: { bridge: Bridge }) {
               <Button className="!px-2.5 !py-1 text-label-sm" onClick={() => void bridge.deletePlaybook(pb.id)}>delete</Button>
             </div>
           </div>
-        )) : <p className="text-body-sm text-outline">No playbooks. Save one from a run whose plan is approved, and re-running it inherits that approval.</p>}
+        )) : bridge.resourceErrors.playbooks ? (
+          <ResourceError label="Playbooks" message={bridge.resourceErrors.playbooks} onRetry={() => void bridge.retryResource('playbooks')} />
+        ) : (
+          <p className="text-body-sm text-outline">No playbooks. Save one from a run whose plan is approved, and re-running it inherits that approval.</p>
+        )}
         {plan?.plan.status === 'approved' ? (
           <form
             className="flex gap-2"
@@ -104,7 +108,11 @@ export function AutomationsView({ bridge }: { bridge: Bridge }) {
               </div>
             </div>
           )
-        }) : <p className="text-body-sm text-outline">Nothing scheduled.</p>}
+        }) : bridge.resourceErrors.schedules ? (
+          <ResourceError label="Schedules" message={bridge.resourceErrors.schedules} onRetry={() => void bridge.retryResource('schedules')} />
+        ) : (
+          <p className="text-body-sm text-outline">Nothing scheduled.</p>
+        )}
         {playbooks.length ? (
           <form
             className="flex gap-2 flex-wrap"
@@ -138,7 +146,11 @@ export function AutomationsView({ bridge }: { bridge: Bridge }) {
             </div>
             <Button className="!px-2.5 !py-1 text-label-sm flex-shrink-0" onClick={() => void bridge.deleteGoal(goal.id)}>delete</Button>
           </div>
-        )) : <p className="text-body-sm text-outline">No goals. A goal groups runs under one objective and one shared budget — refused at the door once spent.</p>}
+        )) : bridge.resourceErrors.goals ? (
+          <ResourceError label="Goals" message={bridge.resourceErrors.goals} onRetry={() => void bridge.retryResource('goals')} />
+        ) : (
+          <p className="text-body-sm text-outline">No goals. A goal groups runs under one objective and one shared budget — refused at the door once spent.</p>
+        )}
         <form
           className="flex flex-col gap-2"
           onSubmit={(e) => {
@@ -178,7 +190,11 @@ export function AutomationsView({ bridge }: { bridge: Bridge }) {
               preview
             </Button>
           </div>
-        )) : <p className="text-body-sm text-outline">No blueprints filed. Builtins ship with the app; point FULKRUM_BLUEPRINTS_DIR at a team folder for more.</p>}
+        )) : bridge.resourceErrors.blueprints ? (
+          <ResourceError label="Blueprints" message={bridge.resourceErrors.blueprints} onRetry={() => void bridge.retryResource('blueprints')} />
+        ) : (
+          <p className="text-body-sm text-outline">No blueprints filed. Builtins ship with the app; point FULKRUM_BLUEPRINTS_DIR at a team folder for more.</p>
+        )}
         {preview ? (
           <div className="p-3 rounded-lg border border-primary/40 bg-surface-container flex flex-col gap-2">
             <p className="text-body-md text-on-surface"><strong>{preview.name}</strong> would change:</p>

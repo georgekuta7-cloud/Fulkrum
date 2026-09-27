@@ -19,6 +19,22 @@ export function useWorkspaceBridge(report: Reporter, notify: (message: string | 
   const [configReport, setConfigReport] = useState<ConfigReport | null>(null)
   const [appSettings, setAppSettings] = useState<AppSetting[]>([])
   const [usage, setUsage] = useState<Usage | null>(null)
+  // A failed load is not an empty workspace: panels read this to say what
+  // broke and offer a retry instead of the "nothing here yet" line.
+  const [resourceErrors, setResourceErrors] = useState<Record<string, string>>({})
+
+  const noteResourceError = useCallback((key: string, caught: unknown) => {
+    const message = caught instanceof Error && caught.message ? caught.message : 'The request failed.'
+    setResourceErrors((current) => (current[key] === message ? current : { ...current, [key]: message }))
+  }, [])
+  const clearResourceError = useCallback((key: string) => {
+    setResourceErrors((current) => {
+      if (!(key in current)) return current
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
+  }, [])
 
   const loadProviders = useCallback(async () => {
     const payload = await api.get<{ providers: Provider[] }>('/api/providers')
@@ -36,15 +52,29 @@ export function useWorkspaceBridge(report: Reporter, notify: (message: string | 
     return payload
   }, [])
   const loadMarketplaceState = useCallback(async () => {
-    const payload = await api.get<MarketplaceState>('/api/marketplace').catch(() => null)
-    if (payload) setMarketplace(payload)
+    let payload: MarketplaceState
+    try {
+      payload = await api.get<MarketplaceState>('/api/marketplace')
+    } catch (caught) {
+      noteResourceError('marketplace', caught)
+      return null
+    }
+    setMarketplace(payload)
+    clearResourceError('marketplace')
     return payload
-  }, [])
+  }, [clearResourceError, noteResourceError])
   const loadArsenalState = useCallback(async () => {
-    const payload = await api.get<ArsenalState>('/api/arsenal').catch(() => null)
-    if (payload) setArsenal(payload)
+    let payload: ArsenalState
+    try {
+      payload = await api.get<ArsenalState>('/api/arsenal')
+    } catch (caught) {
+      noteResourceError('arsenal', caught)
+      return null
+    }
+    setArsenal(payload)
+    clearResourceError('arsenal')
     return payload
-  }, [])
+  }, [clearResourceError, noteResourceError])
   const loadConfig = useCallback(async () => {
     const payload = await api.get<ConfigReport>('/api/config').catch(() => null)
     setConfigReport(payload)
@@ -151,8 +181,8 @@ export function useWorkspaceBridge(report: Reporter, notify: (message: string | 
   }), [loadArsenalState, loadConfig, loadGrants, loadMarketplaceState, loadProviders, loadStatus, notify, perform])
 
   return useMemo(() => ({
-    providers, status, grants, marketplace, arsenal, registry, configReport, appSettings, usage,
+    providers, status, grants, marketplace, arsenal, registry, configReport, appSettings, usage, resourceErrors,
     loadProviders, loadStatus, loadGrants, loadMarketplaceState, loadArsenalState, loadConfig, loadSettings, loadUsage,
     ...actions,
-  }), [providers, status, grants, marketplace, arsenal, registry, configReport, appSettings, usage, loadProviders, loadStatus, loadGrants, loadMarketplaceState, loadArsenalState, loadConfig, loadSettings, loadUsage, actions])
+  }), [providers, status, grants, marketplace, arsenal, registry, configReport, appSettings, usage, resourceErrors, loadProviders, loadStatus, loadGrants, loadMarketplaceState, loadArsenalState, loadConfig, loadSettings, loadUsage, actions])
 }

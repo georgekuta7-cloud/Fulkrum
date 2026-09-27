@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Bridge } from '../hooks/useBridge'
 import { roleLabel } from '../lib/runGraph'
-import { Button, Chip, Panel, inputClass, selectClass } from './primitives'
+import { Button, Chip, Panel, ResourceError, inputClass, selectClass } from './primitives'
 import { ProviderCard } from './ProviderCard'
 import { Icon, type IconName } from './Icon'
 
@@ -244,7 +244,11 @@ export function SettingsView({ bridge }: { bridge: Bridge }) {
                   </div>
                   <Button variant="danger" className="!px-2.5 !py-1 text-label-sm flex-shrink-0" onClick={() => void bridge.deleteLearning(learning.id)}>forget</Button>
                 </div>
-              )) : <p className="text-body-sm text-outline">Nothing learned yet. Reviewed runs that produce evidence teach one to three facts each.</p>}
+              )) : bridge.resourceErrors.learnings ? (
+                <ResourceError label="Learnings" message={bridge.resourceErrors.learnings} onRetry={() => void bridge.retryResource('learnings')} />
+              ) : (
+                <p className="text-body-sm text-outline">Nothing learned yet. Reviewed runs that produce evidence teach one to three facts each.</p>
+              )}
             </Panel>
           ) : null}
 
