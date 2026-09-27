@@ -90,8 +90,20 @@ describe('conversation decisions', () => {
     expect(screen.getByText(/no priced calls in this database yet/)).toBeInTheDocument()
   })
 
-  it('shows each worker its last tool call', () => {
-    render(<ChatView bridge={fixture({
+  it('says a live-folder checkpoint was taken, and when it failed', () => {
+    const baseline = { eventId: 'e1', runId: 'r1', sequence: 1, type: 'checkpoint.baseline', agentId: 'head', payload: { commit: 'abcdef1234567890', files: 12, reused: false }, createdAt: 1 }
+    const { unmount } = render(<ChatView bridge={fixture({ events: [baseline] })} />)
+    expect(screen.getByText(/A checkpoint of covered files was taken/)).toBeInTheDocument()
+    expect(screen.getByText(/node_modules, \.git, data/)).toBeInTheDocument()
+    unmount()
+
+    const failed = { eventId: 'e2', runId: 'r1', sequence: 2, type: 'checkpoint.failed', agentId: 'head', payload: { source: 'baseline', reason: 'Host Git is not available' }, createdAt: 1 }
+    render(<ChatView bridge={fixture({ events: [failed] })} />)
+    expect(screen.getByRole('alert')).toHaveTextContent(/did not start/)
+    expect(screen.getByRole('alert')).toHaveTextContent(/Host Git is not available/)
+  })
+
+  it('shows each worker its last tool call', () => {    render(<ChatView bridge={fixture({
       tasks: [{ id: 't1', agentId: 'research', title: 'Read files', status: 'running' } as any],
       toolCalls: [
         { id: 'c1', agentId: 'research', name: 'workspace.read', status: 'completed', createdAt: 1 },

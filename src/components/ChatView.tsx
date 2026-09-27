@@ -38,6 +38,21 @@ function WorkerStrip({ bridge }: { bridge: Bridge }) {
   </div>
 }
 
+function CheckpointNotice({ bridge }: { bridge: Bridge }) {
+  const baseline = [...bridge.events].reverse().find((event) => event.type === 'checkpoint.baseline')
+  const failed = !baseline && [...bridge.events].reverse().find((event) => event.type === 'checkpoint.failed' && event.payload?.source === 'baseline')
+  if (failed) {
+    return <p role="alert" className="text-label-sm text-error">This run did not start: the live-folder checkpoint could not be taken ({String(failed.payload?.reason ?? 'unknown reason')}).</p>
+  }
+  if (!baseline) return null
+  return (
+    <p className="text-label-sm text-outline">
+      This run changes your live folder. A checkpoint of covered files was taken {time(baseline.createdAt)} (commit {String(baseline.payload?.commit ?? '').slice(0, 8)});
+      ignored paths — node_modules, .git, data — are not protected.
+    </p>
+  )
+}
+
 function PipelineStrip({ bridge }: { bridge: Bridge }) {
   const tasks = bridge.tasks
   if (!tasks.length) return null
@@ -101,6 +116,7 @@ export function ChatView({ bridge, onOpenSettings }: { bridge: Bridge; onOpenSet
     <div className="w-full max-w-4xl mx-auto px-3 sm:px-4 py-4 pb-48 flex flex-col gap-4 min-w-0">
       {!providersReady ? <div className="flex items-start gap-3 p-4 rounded-lg bg-error-container/20 border border-error/40" role="alert"><Icon name="key_off" className="text-error text-xl" /><div className="space-y-2 min-w-0"><p className="text-body-md">No provider has a key, so nothing can answer yet. Configure a provider in Settings.</p>{onOpenSettings ? <Button onClick={onOpenSettings}>Open provider settings</Button> : null}</div></div> : null}
       <RunRecovery key={run?.id} bridge={bridge} />
+      <CheckpointNotice bridge={bridge} />
       <WorkerStrip bridge={bridge} />
       <PipelineStrip bridge={bridge} />
       {messages.length === 0 && !plan ? <p className="text-body-md text-on-surface-variant py-4">Give the Head AI a direction: what to build, fix, or investigate. Draft and inspect its plan before approving execution.</p> : null}

@@ -1172,6 +1172,22 @@ Rules:
     // it. In-flight work finishes, but no new task may start on a run this
     // process no longer owns — the row's owner is the only authority.
     const leaseStillOurs = () => store.getRun(runId)?.ownerId === ownerId
+    // ADR 0010 / P1.1: a write-capable run does not start without a verified
+    // checkpoint of the live folder taken first. Without host Git there is no
+    // undo, so the run stops before any work and says why.
+    if (writeCheckpointer) {
+      try {
+        await writeCheckpointer.assertReady()
+        const baseline = await writeCheckpointer.baseline({ runId })
+        store.appendEvent({ runId, type: 'checkpoint.baseline', agentId: 'head', payload: { commit: baseline.commit, files: baseline.files, reused: baseline.reused, at: Date.now() } })
+      } catch (error) {
+        const detail = error instanceof Error && error.message ? error.message : 'the baseline checkpoint failed'
+        store.appendEvent({ runId, type: 'checkpoint.failed', agentId: 'head', payload: { source: 'baseline', reason: detail } })
+        store.updateRun(runId, { status: 'interrupted', interruptedFrom: 'executing' })
+        store.markRunInterrupted(runId, `The run did not start: its live-folder checkpoint could not be taken. ${detail}`)
+        return
+      }
+    }
     // Casting is not plan content, but "what ran" still includes who played
     // whom: every execution records its effective routing, so a resumed or
     // re-routed run never leaves the casting to guesswork.

@@ -112,6 +112,94 @@ test('ensure is idempotent', async () => {
   })
 })
 
+test('a baseline checkpoint covers the covered tree, honors .gitignore, and gets one ref per run', async () => {
+  await withTempDirectory(async (workspace) => {
+    const dataDir = path.join(workspace, 'data')
+    await writeFile(path.join(workspace, '.gitignore'), 'ignored-by-git/\n')
+    await mkdir(path.join(workspace, 'ignored-by-git'), { recursive: true })
+    await writeFile(path.join(workspace, 'ignored-by-git', 'x.js'), 'x\n')
+    await writeFile(path.join(workspace, 'src.txt'), 'hello\n')
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir })
+    const first = await checkpoints.baseline({ runId: 'run-abc' })
+    assert.ok(first.commit, 'the baseline is a commit')
+    assert.equal(first.reused, false)
+    assert.equal(first.files >= 1, true)
+    const tree = await checkpoints.run(['ls-tree', '--name-only', '-r', 'HEAD'])
+    assert.ok(tree.stdout.includes('src.txt'))
+    assert.equal(tree.stdout.includes('ignored-by-git'), false, 'the workspace .gitignore is honored')
+    const ref = await checkpoints.run(['rev-parse', 'refs/runs/run-abc'])
+    assert.equal(ref.stdout.trim(), first.commit, 'one private ref per run')
+
+    const second = await checkpoints.baseline({ runId: 'run-abc' })
+    assert.equal(second.reused, true, 'a resumed run keeps its original baseline')
+    assert.equal(second.commit, first.commit)
+  })
+})
+
+test('approving a plan takes a baseline checkpoint before any work', async () => {
+  const definition = { objective: 'Baseline.', tasks: [{ role: 'research', title: 'Look', instructions: 'Report.', dependsOn: [] }] }
+  const model = async ({ options }) => {
+    if (String(options?.instructions ?? '').includes('You plan work')) return { text: JSON.stringify(definition), toolCalls: [], usage: null }
+    return { text: 'Summary.', toolCalls: [], usage: null }
+  }
+  await withTempDirectory(async (workspace) => {
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir: path.join(workspace, 'data') })
+    await withServer(async ({ request, store, providerRegistry }) => {
+      providerRegistry.addCustom({ label: 'Baseline fixture', baseUrl: 'https://example.invalid/v1', model: 'fixture-model', apiKey: 'fixture-key' })
+      const project = await request('POST', '/api/projects', { name: 'baseline fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id })
+      const runId = run.payload.run.id
+      await request('POST', '/api/chat', { runId, message: 'Do the thing.', history: [] })
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      const approved = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+      assert.equal(approved.status, 200, JSON.stringify(approved.payload))
+
+      const deadline = Date.now() + 10_000
+      let baseline = null
+      while (Date.now() < deadline && !baseline) {
+        baseline = store.listEvents(runId).find((event) => event.type === 'checkpoint.baseline')
+        if (!baseline) await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      assert.ok(baseline, `the run starts with a baseline on the chain: ${JSON.stringify(store.listEvents(runId).map((event) => [event.type, event.payload?.reason ?? event.payload?.error ?? '']))}`)
+      assert.ok(baseline.payload.commit)
+      const ref = await checkpoints.run(['rev-parse', `refs/runs/${runId}`])
+      assert.equal(ref.stdout.trim(), baseline.payload.commit)
+    }, { workspaceRoot: workspace, checkpoints, model })
+  })
+})
+
+test('a run does not start when the baseline cannot be taken', async () => {
+  const definition = { objective: 'No git.', tasks: [{ role: 'research', title: 'Look', instructions: 'Report.', dependsOn: [] }] }
+  const model = async ({ options }) => {
+    if (String(options?.instructions ?? '').includes('You plan work')) return { text: JSON.stringify(definition), toolCalls: [], usage: null }
+    return { text: 'Summary.', toolCalls: [], usage: null }
+  }
+  const execFileImpl = async () => { throw Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' }) }
+  await withTempDirectory(async (workspace) => {
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir: path.join(workspace, 'data'), execFileImpl })
+    await withServer(async ({ request, store, providerRegistry }) => {
+      providerRegistry.addCustom({ label: 'No git fixture', baseUrl: 'https://example.invalid/v1', model: 'fixture-model', apiKey: 'fixture-key' })
+      const project = await request('POST', '/api/projects', { name: 'no git baseline fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id })
+      const runId = run.payload.run.id
+      await request('POST', '/api/chat', { runId, message: 'Do the thing.', history: [] })
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+
+      const deadline = Date.now() + 10_000
+      while (Date.now() < deadline && ['planning', 'executing'].includes(store.getRun(runId).status)) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      const stopped = store.getRun(runId)
+      assert.equal(stopped.status, 'interrupted', 'the run never started')
+      assert.match(String(stopped.interruptionReason), /checkpoint/)
+      assert.match(String(stopped.interruptionReason), /Git/)
+      assert.equal(store.listEvents(runId).some((event) => event.type === 'task.started'), false, 'no task started')
+      assert.ok(store.listEvents(runId).find((event) => event.type === 'checkpoint.failed'), 'the refusal is on the chain')
+    }, { workspaceRoot: workspace, checkpoints, model })
+  })
+})
+
 test('the status endpoint reports the checkpoint store honestly', async () => {
   await withTempDirectory(async (workspace) => {
     const dataDir = path.join(workspace, 'data')

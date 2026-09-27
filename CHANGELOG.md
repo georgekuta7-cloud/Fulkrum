@@ -16,6 +16,15 @@ All notable changes to Fulkrum are documented here. This project follows
   distinctly; the worker strip says `unproven`, not `done`.
 
 ### Added
+- **A write-capable run starts with a baseline checkpoint, or it does not
+  start.** Per P1.1, approving a plan now snapshots the covered live folder
+  first, records `checkpoint.baseline` with the commit and file count, and
+  keeps one private ref per run (`refs/runs/<id>`) so a resumed run keeps its
+  original baseline across restarts. The workspace `.gitignore` is honored
+  read-only alongside `.fulkrumignore`, refreshed before every baseline. If
+  host Git is missing or the snapshot fails, the run is interrupted with the
+  reason on the chain and no task starts. The chat says where and when the
+  checkpoint was taken, and that ignored paths are not protected.
 - **Checkpoints are visible and restorable from the Files view.** A
   Checkpoints panel lists the workspace's recent commits — hash, what they
   captured, when — and restores the paths a checkpoint touched back to its

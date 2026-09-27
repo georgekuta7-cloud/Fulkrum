@@ -49,15 +49,22 @@ and never consults the user's Git state. Concretely:
    workspace's `.fulkrumignore` rules, the skipped directories
    (`.git`, `node_modules`, `dist`, `coverage`, `.cache`), the sensitive-file
    patterns, and the data directory are excluded through the shadow
-   repository's own `info/exclude`. No `.gitignore` is written into the
-   workspace and none is consulted; the shadow repository's exclude file is
-   the only vocabulary, and it says so.
+   repository's own `info/exclude`. The workspace's `.gitignore` is honored
+   read-only — its lines join the same exclude file, refreshed before every
+   baseline — and no `.gitignore` is ever written or created by Fulkrum. The
+   exclude file is the only vocabulary the shadow repository uses.
 5. **A checkpoint is a commit bound to its cause.** The commit message names
    the run, task, and tool call that produced it, and the chain records a
    `checkpoint.created` event naming the commit (`run.checkpoint` is already
    the Head's repair/replan/stop decision, and is an audit anchor point).
    Checkpointing happens after a successful write; if it fails, the run is
    interrupted with that reason rather than continuing over unrecorded state.
+   A write-capable run **starts** with a baseline checkpoint — a full
+   snapshot of covered content — recorded as `checkpoint.baseline` and kept
+   under one private ref per run (`refs/runs/<id>`), so a resumed run keeps
+   its original baseline across restarts. A run whose baseline cannot be
+   taken does not start: it is interrupted with the reason on the chain
+   (`checkpoint.failed`).
 6. **Restore is an explicit, recorded human action.** It checkpoints the
    current state first, then checks out the named paths from the named commit,
    and records a `checkpoint.restored` event. It is never a chain rewrite, and
