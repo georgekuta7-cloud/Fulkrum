@@ -436,6 +436,97 @@ test('declining a question releases the worker with the reason', async () => {
   }
 })
 
+test('a failed answer write leaves the question open for a retry', async () => {
+  const previousKey = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-answer-atomic'
+  const askPlan = JSON.stringify({
+    objective: 'Ask one question.',
+    tasks: [{ role: 'builder', title: 'Ask first', instructions: 'Ask before doing anything.', dependsOn: [] }],
+  })
+  const model = async ({ messages, options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) return { text: askPlan, toolCalls: [], usage: null }
+    if (instructions.includes('Forge')) {
+      if (!messages.some((message) => message.role === 'tool')) {
+        return { text: 'Blocked.', toolCalls: [{ id: 'q0', name: 'run.ask', arguments: { question: 'Which color?' } }], usage: null }
+      }
+      return { text: 'Continuing.', toolCalls: [], usage: null }
+    }
+    return { text: 'Scout summary.', toolCalls: [], usage: null }
+  }
+
+  try {
+    await withServer(async ({ request, store, orchestrator }) => {
+      const runId = await startRun(request)
+      const pending = await waitFor(store, () => store.listToolCalls(runId).find((call) => call.status === 'approval_required'))
+      assert.ok(pending, 'the question should be waiting')
+
+      // The store fails mid-answer: the writes must roll back together, the
+      // waiter must survive, and a retry must work.
+      const original = store.appendEvent.bind(store)
+      store.appendEvent = () => { throw new Error('disk full') }
+      const failed = await request('POST', `/api/runs/${runId}/tools/${pending.id}/answer`, { answer: 'blue' })
+      store.appendEvent = original
+      assert.equal(failed.status, 500, `a store failure surfaces as a server error, got ${failed.status}`)
+
+      assert.equal(store.getToolCall(pending.id).status, 'approval_required', 'the status flip rolled back with the failed event')
+      assert.equal(orchestrator.approvalWaiters.has(pending.id), true, 'the waiter was not consumed')
+      assert.equal(store.listEvents(runId).some((event) => event.type === 'tool.completed' && event.payload.toolCallId === pending.id), false, 'no half-written audit')
+
+      const answered = await request('POST', `/api/runs/${runId}/tools/${pending.id}/answer`, { answer: 'blue' })
+      assert.equal(answered.status, 200, JSON.stringify(answered.payload))
+      assert.equal(answered.payload.toolCall.status, 'completed')
+      const finished = await waitFor(store, () => (store.getRun(runId).status === 'review' ? true : null))
+      assert.ok(finished, `the retry resumes the worker, saw ${store.getRun(runId).status}`)
+    }, { model })
+  } finally {
+    if (previousKey === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousKey
+  }
+})
+
+test('abandoning waiters releases workers even when the store is failing', async () => {
+  const previousKey = process.env.XAI_API_KEY
+  process.env.XAI_API_KEY = 'sk-test-key-for-abandon-atomic'
+  const askPlan = JSON.stringify({
+    objective: 'Ask one question.',
+    tasks: [{ role: 'builder', title: 'Ask first', instructions: 'Ask before doing anything.', dependsOn: [] }],
+  })
+  const model = async ({ messages, options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) return { text: askPlan, toolCalls: [], usage: null }
+    if (instructions.includes('Forge')) {
+      if (!messages.some((message) => message.role === 'tool')) {
+        return { text: 'Blocked.', toolCalls: [{ id: 'q0', name: 'run.ask', arguments: { question: 'Which color?' } }], usage: null }
+      }
+      return { text: 'Deciding alone, then.', toolCalls: [], usage: null }
+    }
+    return { text: 'Scout summary.', toolCalls: [], usage: null }
+  }
+
+  try {
+    await withServer(async ({ request, store, orchestrator }) => {
+      const runId = await startRun(request)
+      const pending = await waitFor(store, () => store.listToolCalls(runId).find((call) => call.status === 'approval_required'))
+      assert.ok(pending, 'the question should be waiting')
+
+      const original = store.appendEvent.bind(store)
+      store.appendEvent = () => { throw new Error('store closing') }
+      const abandoned = orchestrator.abandonWaiters('The run ended.', runId)
+      store.appendEvent = original
+
+      assert.deepEqual(abandoned, [pending.id])
+      assert.equal(orchestrator.approvalWaiters.size, 0, 'the worker is released no matter what the store did')
+      assert.equal(store.getToolCall(pending.id).status, 'approval_required', 'the rolled-back pair leaves no claim the event never backed')
+      const finished = await waitFor(store, () => (store.getRun(runId).status === 'review' ? true : null))
+      assert.ok(finished, `the worker finishes on its own after abandonment, saw ${store.getRun(runId).status}`)
+    }, { model })
+  } finally {
+    if (previousKey === undefined) delete process.env.XAI_API_KEY
+    else process.env.XAI_API_KEY = previousKey
+  }
+})
+
 test('approving with edits runs the edited arguments as a new call', async () => {
   await withServer(async ({ request, store, directory }) => {
     const project = await request('POST', '/api/projects', { name: 'edit fixture' })

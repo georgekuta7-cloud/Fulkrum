@@ -6,6 +6,13 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **Answering a parked question is all-or-nothing.** The gate consumed the
+  waiter, flipped the call to completed, and appended its event as three
+  separate writes: a store failure between them left the worker parked on a
+  promise nobody held, with a status no event explained. The writes now ride
+  one transaction and the waiter is only consumed after commit, so a failure
+  leaves the question open for a retry; abandonment rolls its pair back the
+  same way while still releasing every worker.
 - **Approving a run with no spending limit is a decision, not a default.**
   A draft plan on a run with no budget could be approved with one click and
   no warning, and the run would spend until something else stopped it. The
