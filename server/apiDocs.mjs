@@ -87,6 +87,8 @@ export const endpoints = [
   { method: 'GET', path: '/api/workspace/tree', summary: 'The workspace as the tools see it: ?path=, ?depth=', tags: ['runs'], errors: [400] },
   { method: 'GET', path: '/api/workspace/history', summary: 'Every tool call that touched one file: ?path=', tags: ['runs'], errors: [400] },
   { method: 'GET', path: '/api/status', summary: 'Version, storage, backups, anchors, engine, provider health', tags: ['system'] },
+  { method: 'GET', path: '/api/checkpoints', summary: 'Recent workspace checkpoints, newest first: ?limit=', tags: ['system'] },
+  { method: 'POST', path: '/api/runs/{runId}/checkpoints/restore', summary: 'Restore the paths a checkpoint touched, as a recorded human action', tags: ['runs'], errors: [400, 404, 409, 503] },
   { method: 'POST', path: '/api/maintenance/verify', summary: 'Walk every audit chain, and record the result', tags: ['system'] },
   { method: 'POST', path: '/api/maintenance/backup', summary: 'Take a copy of the database, and record it', tags: ['system'] },
   { method: 'POST', path: '/api/maintenance/sandbox-check', summary: 'Run a fixed command through the jail and record whether the boundary answers', tags: ['system'] },

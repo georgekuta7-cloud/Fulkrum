@@ -6,6 +6,14 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **Checkpoints are visible and restorable from the Files view.** A
+  Checkpoints panel lists the workspace's recent commits — hash, what they
+  captured, when — and restores the paths a checkpoint touched back to its
+  bytes. A restore is a recorded human action: it checkpoints the current
+  state first, commits the restored state so history never rewinds, refuses
+  while the run is executing, and lands on the chain as `checkpoint.restored`.
+  The sandbox panel reports the store's count and size beside the workspace
+  root, so the cost of undo is visible where the rest of the boundary is.
 - **Writes are checkpointed, and a write with no undo is refused.** Every
   approved `workspace.write` — the worker loop and the direct tools API alike
   — becomes a shadow-Git commit bound to its run, task, and call and recorded

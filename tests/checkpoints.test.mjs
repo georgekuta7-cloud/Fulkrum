@@ -268,3 +268,71 @@ test('without host Git, a write is refused before it happens', async () => {
     }, { workspaceRoot: workspace, checkpoints })
   })
 })
+
+test('a restore brings back the bytes a checkpoint captured and records itself', async () => {
+  await withTempDirectory(async (workspace) => {
+    const dataDir = path.join(workspace, 'data')
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir })
+    await writeFile(path.join(workspace, 'note.txt'), 'first\n')
+    const first = await checkpoints.checkpoint({ paths: ['note.txt'], message: 'write note.txt' })
+    await writeFile(path.join(workspace, 'note.txt'), 'second\n')
+    await checkpoints.checkpoint({ paths: ['note.txt'], message: 'write note.txt' })
+    const restored = await checkpoints.restore({ commit: first.commit })
+    assert.equal(restored.from, first.commit)
+    assert.deepEqual(restored.paths, ['note.txt'])
+    assert.equal(await readFile(path.join(workspace, 'note.txt'), 'utf8'), 'first\n', 'the disk holds the captured bytes')
+    assert.ok(restored.commit, 'the restore is itself a checkpoint')
+    const entries = await checkpoints.list()
+    assert.equal(entries[0].commit, restored.commit)
+    assert.match(entries[0].subject, /restore/)
+  })
+})
+
+test('a restore of an unknown commit is refused, and history never rewinds', async () => {
+  await withTempDirectory(async (workspace) => {
+    const dataDir = path.join(workspace, 'data')
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir })
+    await writeFile(path.join(workspace, 'note.txt'), 'first\n')
+    const first = await checkpoints.checkpoint({ paths: ['note.txt'] })
+    await assert.rejects(() => checkpoints.restore({ commit: 'deadbeef' }))
+    assert.equal((await checkpoints.list())[0].commit, first.commit, 'the failed restore wrote no checkpoint')
+  })
+})
+
+test('the restore endpoint rewinds a write and says so on the chain', async () => {
+  await withTempDirectory(async (workspace) => {
+    const dataDir = path.join(workspace, 'data')
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir })
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'restore fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'selective' })
+      const runId = run.payload.run.id
+      const write = async (content) => {
+        const requested = await request('POST', `/api/runs/${runId}/tools`, { name: 'workspace.write', agentId: 'builder', input: { path: 'note.txt', content } })
+        const approved = await request('POST', `/api/runs/${runId}/tools/${requested.payload.toolCall.id}/approve`, { fingerprint: requested.payload.toolCall.fingerprint })
+        assert.equal(approved.status, 200, JSON.stringify(approved.payload))
+      }
+      await write('first\n')
+      await write('second\n')
+      const first = store.listEvents(runId).filter((event) => event.type === 'checkpoint.created')[0]
+      assert.ok(first, 'both writes are checkpointed')
+
+      const restored = await request('POST', `/api/runs/${runId}/checkpoints/restore`, { commit: first.payload.commit })
+      assert.equal(restored.status, 200, JSON.stringify(restored.payload))
+      assert.equal(await readFile(path.join(workspace, 'note.txt'), 'utf8'), 'first\n')
+      const recorded = store.listEvents(runId).find((event) => event.type === 'checkpoint.restored')
+      assert.equal(recorded.payload.from, first.payload.commit)
+      assert.deepEqual(recorded.payload.paths, ['note.txt'])
+
+      store.updateRun(runId, { status: 'executing' })
+      const refused = await request('POST', `/api/runs/${runId}/checkpoints/restore`, { commit: first.payload.commit })
+      assert.equal(refused.status, 409, 'a running run is not restored under its workers')
+      store.updateRun(runId, { status: 'planning' })
+
+      const malformed = await request('POST', `/api/runs/${runId}/checkpoints/restore`, { commit: '--all' })
+      assert.equal(malformed.status, 400, 'a commit argument is validated as a hash, never trusted as text')
+      const unknown = await request('POST', `/api/runs/${runId}/checkpoints/restore`, { commit: 'deadbeef' })
+      assert.equal(unknown.status, 409)
+    }, { workspaceRoot: workspace, checkpoints })
+  })
+})

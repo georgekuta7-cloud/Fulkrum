@@ -171,6 +171,10 @@ function WorkspaceTree({ bridge }: { bridge: Bridge }) {
 }
 
 export function FilesView({ bridge }: { bridge: Bridge }) {
+  const { loadCheckpoints } = bridge
+  useEffect(() => {
+    void loadCheckpoints()
+  }, [loadCheckpoints])
   if (!bridge.run) {
     return <EmptyState icon="difference" title="No run open" body="Files belong to runs. Open one from the chat to see what it wrote." />
   }
@@ -183,6 +187,28 @@ export function FilesView({ bridge }: { bridge: Bridge }) {
           <ResourceError label="Artifacts" message={bridge.resourceErrors.artifacts} onRetry={() => void bridge.retryResource('artifacts')} />
         ) : (
           <p className="text-body-sm text-outline">This run has not written any files.</p>
+        )}
+      </Panel>
+      <Panel title="Checkpoints" action={<span className="text-label-md text-outline">every approved write, undoable</span>}>
+        {bridge.checkpoints.length ? bridge.checkpoints.map((entry) => (
+          <div key={entry.commit} className="flex items-center justify-between gap-2 p-2 rounded-lg bg-surface-container">
+            <div className="min-w-0">
+              <p className="font-mono text-label-sm text-on-surface truncate" title={entry.subject}>{entry.commit.slice(0, 8)} · {entry.subject || 'checkpoint'}</p>
+              <p className="text-label-sm text-outline">{new Date(entry.at).toLocaleString()}</p>
+            </div>
+            <Button
+              className="!px-2.5 !py-1 text-label-sm flex-shrink-0"
+              disabled={bridge.run?.status === 'executing'}
+              title={bridge.run?.status === 'executing' ? 'Pause or cancel the run before restoring under its workers.' : `Restore the files this checkpoint touched`}
+              onClick={() => void bridge.restoreCheckpoint(entry.commit)}
+            >
+              restore
+            </Button>
+          </div>
+        )) : bridge.resourceErrors.checkpoints ? (
+          <ResourceError label="Checkpoints" message={bridge.resourceErrors.checkpoints} onRetry={() => void bridge.retryResource('checkpoints')} />
+        ) : (
+          <p className="text-body-sm text-outline">No checkpoints yet. Every approved write commits one.</p>
         )}
       </Panel>
       <Panel title="Time travel">

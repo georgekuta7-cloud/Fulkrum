@@ -59,6 +59,9 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
     resourceErrors: {},
     retryResource: vi.fn(),
     sandboxCheck: vi.fn(),
+    checkpoints: [],
+    loadCheckpoints: vi.fn().mockResolvedValue([]),
+    restoreCheckpoint: vi.fn().mockResolvedValue(true),
     loadMarketplaceState: vi.fn().mockResolvedValue(null),
     loadArsenalState: vi.fn().mockResolvedValue(null),
     setError: vi.fn(),
@@ -320,6 +323,26 @@ describe('files', () => {
     render(<FilesView bridge={makeBridge({ run: null, runId: null })} />)
     expect(screen.getByText('No run open')).toBeInTheDocument()
   })
+
+  it('lists checkpoints and restores one', () => {
+    const restoreCheckpoint = vi.fn().mockResolvedValue(true)
+    render(<FilesView bridge={makeBridge({
+      run: { id: 'run-1', projectId: 'p1', status: 'review', budgetUsd: 10 } as Bridge['run'],
+      checkpoints: [{ commit: 'abcdef1234567890', at: 1, subject: 'write note.txt \u00b7 run r1' }],
+      restoreCheckpoint,
+    })} />)
+    expect(screen.getByText(/abcdef12/)).toBeInTheDocument()
+    expect(screen.getByText(/write note\.txt/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'restore' }))
+    expect(restoreCheckpoint).toHaveBeenCalledWith('abcdef1234567890')
+  })
+
+  it('refuses to restore while the run is executing', () => {
+    render(<FilesView bridge={makeBridge({
+      checkpoints: [{ commit: 'abcdef1234567890', at: 1, subject: 'write note.txt' }],
+    })} />)
+    expect(screen.getByRole('button', { name: 'restore' })).toBeDisabled()
+  })
 })
 
 describe('store', () => {
@@ -493,10 +516,12 @@ describe('settings', () => {
         ...(base.status as any),
         workspaceRoot: 'D:\\projects\\fulkrum',
         execution: { available: true, label: 'Docker', version: '29.8.0', image: 'fulkrum-runner:local', imagePinned: false },
+        checkpoints: { available: true, initialized: true, checkpoints: 3, bytes: 12 * 1024 },
       },
     })} />)
     fireEvent.click(screen.getByRole('button', { name: /Sandbox/ }))
     expect(screen.getByText('D:\\projects\\fulkrum')).toBeInTheDocument()
+    expect(screen.getByText('3 · 12 KB')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Check sandbox' }))
     expect(await screen.findByText(/Runner answered v24\.13\.0/)).toBeInTheDocument()
     expect(sandboxCheck).toHaveBeenCalled()

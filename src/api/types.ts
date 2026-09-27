@@ -204,6 +204,7 @@ export type Status = {
   lastBackup: { ok: boolean; summary: string; createdAt: number } | null
   maintenance: Array<{ kind: string; ok: boolean; summary: string; createdAt: number }>
   execution: { available: boolean; label?: string; version?: string; image?: string; imageDigest?: string | null; imagePinned?: boolean; reason?: string; hint?: string; running?: Array<{ runId: string; container: string }> }
+  checkpoints?: { available: boolean; initialized: boolean; checkpoints: number; bytes: number; reason?: string | null }
   providers: Array<{ id: string; label: string; configured: boolean; keySource: string | null; breaker: { failures: number; openUntil: number; open: boolean } | null }>
   retention: { toolOutputDays: number | null; source: string | null }
 }

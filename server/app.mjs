@@ -582,6 +582,51 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         return
       }
 
+      if (request.method === 'GET' && requestUrl.pathname === '/api/checkpoints') {
+        if (!checkpoints) {
+          sendJson(response, 200, { available: false, checkpoints: [] })
+          return
+        }
+        sendJson(response, 200, { available: true, checkpoints: await checkpoints.list({ limit: Number(requestUrl.searchParams.get('limit') ?? 50) }) })
+        return
+      }
+
+      const checkpointRestoreMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/checkpoints\/restore$/)
+      if (request.method === 'POST' && checkpointRestoreMatch) {
+        const runId = safeDecode(checkpointRestoreMatch[1])
+        const run = store.getRun(runId)
+        if (!run) {
+          sendJson(response, 404, { error: 'Run not found.' })
+          return
+        }
+        if (!checkpoints) {
+          sendJson(response, 503, { error: 'No checkpoint store is configured.' })
+          return
+        }
+        const body = await readJson(request)
+        const commit = typeof body.commit === 'string' ? body.commit.trim() : ''
+        // The commit is passed to git as an argument, so it is validated as a
+        // hash, never trusted as text.
+        if (!/^[0-9a-f]{7,64}$/i.test(commit)) {
+          sendJson(response, 400, { error: 'A checkpoint commit hash is required.' })
+          return
+        }
+        const paths = Array.isArray(body.paths) ? body.paths.filter((entry) => typeof entry === 'string' && entry.length <= 500).slice(0, 200) : null
+        if (run.status === 'executing') {
+          sendJson(response, 409, { error: 'The run is executing: pause or cancel it before restoring files under its workers.' })
+          return
+        }
+        try {
+          // Inside the write lock: a restore cannot interleave with a write.
+          const restored = await toolBroker.withWriteLock(() => checkpoints.restore({ commit, paths, runId }))
+          store.appendEvent({ runId, type: 'checkpoint.restored', agentId: 'head', payload: { from: restored.from, commit: restored.commit, paths: restored.paths } })
+          sendJson(response, 200, { restored })
+        } catch (error) {
+          sendJson(response, 409, { error: error instanceof Error ? error.message : 'The restore failed.' })
+        }
+        return
+      }
+
       if (request.method === 'POST' && requestUrl.pathname === '/api/maintenance/verify') {
         const result = store.verifyEverything()
         const summary = result.ok

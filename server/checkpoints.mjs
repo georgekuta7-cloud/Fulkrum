@@ -153,6 +153,50 @@ export function createCheckpointStore({ workspaceRoot, dataDir, execFileImpl = e
     return { initialized: true, created: true, gitDir, indexFile }
   }
 
+  const changedPaths = async (commit) => {
+    const output = (await run(['show', '--name-only', '--format=', commit])).stdout
+    return output.split('\n').map((line) => line.trim()).filter(Boolean)
+  }
+
+  /** The recent checkpoints, newest first, for the restore surface. */
+  const list = async ({ limit = 50 } = {}) => {
+    const probe = await available()
+    if (!probe.ok || !existsSync(path.join(gitDir, 'HEAD'))) return []
+    const capped = Math.max(1, Math.min(Number(limit) || 50, 200))
+    try {
+      const output = (await run(['log', `--max-count=${capped}`, '--format=%H%x1f%ct%x1f%s'])).stdout
+      const entries = []
+      for (const line of output.split('\n')) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        const [commit, at, subject] = trimmed.split('\x1f')
+        entries.push({ commit, at: Number(at) * 1000, subject: subject ?? '' })
+      }
+      return entries
+    } catch {
+      return []
+    }
+  }
+
+  /**
+   * Restore the paths one checkpoint touched, back to that checkpoint's bytes.
+   * The current state is checkpointed first, so a restore is itself undoable,
+   * and the restored state is committed so history never rewinds (ADR 0010).
+   */
+  const restore = async ({ commit, paths = null, runId = null }) => {
+    await ensure()
+    await run(['cat-file', '-e', `${commit}^{commit}`])
+    const targets = paths?.length ? paths : await changedPaths(commit)
+    const relative = targets
+      .map((entry) => path.relative(root, path.resolve(root, entry)).split(path.sep).join('/'))
+      .filter((entry) => entry && !entry.startsWith('..') && !path.isAbsolute(entry))
+    if (!relative.length) throw new Error('Nothing to restore.')
+    await checkpoint({ paths: relative, message: 'pre-restore' })
+    await run(['checkout', commit, '--', ...relative])
+    const result = await checkpoint({ paths: relative, message: `restore ${String(commit).slice(0, 8)}`, runId })
+    return { from: commit, commit: result.commit, paths: relative, unchanged: result.unchanged }
+  }
+
   const status = async () => {
     const probe = await available()
     const initialized = probe.ok && existsSync(path.join(gitDir, 'HEAD'))
@@ -213,7 +257,7 @@ export function createCheckpointStore({ workspaceRoot, dataDir, execFileImpl = e
     return { commit, unchanged: false, files: tracked.length, message: subject }
   }
 
-  return { run, available, ensure, checkpoint, status, workspaceRoot: root, dataDir: path.resolve(dataDir), gitDir, indexFile }
+  return { run, available, ensure, checkpoint, list, restore, status, workspaceRoot: root, dataDir: path.resolve(dataDir), gitDir, indexFile }
 }
 
 /**

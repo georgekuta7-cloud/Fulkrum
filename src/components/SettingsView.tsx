@@ -189,6 +189,16 @@ export function SettingsView({ bridge }: { bridge: Bridge }) {
                   <span className="text-outline">Workspace</span>
                   <span className="text-on-surface truncate" title={bridge.status?.workspaceRoot ?? undefined}>{bridge.status?.workspaceRoot ?? '—'}</span>
                 </div>
+                <div className="flex justify-between gap-2 font-mono text-body-sm">
+                  <span className="text-outline">Checkpoints</span>
+                  <span className="text-on-surface">
+                    {bridge.status?.checkpoints?.initialized
+                      ? `${bridge.status.checkpoints.checkpoints} · ${Math.max(1, Math.round((bridge.status.checkpoints.bytes ?? 0) / 1024))} KB`
+                      : bridge.status?.checkpoints?.available === false
+                        ? 'host Git unavailable'
+                        : 'none yet'}
+                  </span>
+                </div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <Button
                     disabled={sandbox.state === 'checking' || !engine?.available}

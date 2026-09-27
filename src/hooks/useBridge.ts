@@ -61,6 +61,7 @@ export function useBridge() {
   const [goals, setGoals] = useState<Array<{ id: string; projectId: string; name: string; objective: string; acceptance: string; budgetUsd: number | null; status: string; createdAt: number; spendUsd?: number; runCount?: number }>>([])
   const [blueprints, setBlueprints] = useState<Array<{ name: string; version: string; description: string; source: string }>>([])
   const [timeline, setTimeline] = useState<{ seq: number; files: Array<{ path: string; content: string | null; truncated: boolean; unknown: string | null }>; gaps: string[] } | null>(null)
+  const [checkpoints, setCheckpoints] = useState<Array<{ commit: string; at: number; subject: string }>>([])
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   // False until the first load finishes, so an empty project list reads as
@@ -284,6 +285,21 @@ export function useBridge() {
     setBlueprints(payload.blueprints ?? [])
     clearResourceError('blueprints')
     return payload.blueprints ?? []
+  }, [clearResourceError, noteResourceError])
+
+  // Workspace-global, not project- or run-scoped: one live workspace, one
+  // checkpoint history (ADR 0010).
+  const loadCheckpoints = useCallback(async () => {
+    let payload: { available: boolean; checkpoints: Array<{ commit: string; at: number; subject: string }> }
+    try {
+      payload = await api.get<{ available: boolean; checkpoints: Array<{ commit: string; at: number; subject: string }> }>('/api/checkpoints?limit=50')
+    } catch (caught) {
+      noteResourceError('checkpoints', caught)
+      return []
+    }
+    setCheckpoints(payload.checkpoints ?? [])
+    clearResourceError('checkpoints')
+    return payload.checkpoints ?? []
   }, [clearResourceError, noteResourceError])
 
   const loadGoalsFor = useCallback(async (forProject: string | null) => {
@@ -869,16 +885,30 @@ export function useBridge() {
         return false
       }
     },
+    async restoreCheckpoint(commit: string) {
+      if (!runId) return false
+      const selection = runScope.capture(runId)
+      try {
+        const result = await api.post<{ restored: { from: string; commit: string | null; paths: string[] } }>(`/api/runs/${encodeURIComponent(runId)}/checkpoints/restore`, { commit })
+        if (!selection.isCurrent()) return false
+        setNotice(`Restored ${result.restored.paths.join(', ')} from ${commit.slice(0, 8)}.`)
+        await Promise.all([loadArtifacts(runId), loadCheckpoints(), loadRun(runId)])
+        return true
+      } catch (caught) {
+        if (selection.isCurrent()) report(caught, 'The restore failed.')
+        return false
+      }
+    },
     search: (query: string) => api.get<SearchResults>(`/api/search?q=${encodeURIComponent(query)}`),
     tree,
     fileHistory,
     reloadRuns: () => loadRuns(projectId),
-  }), [approval, canActOnRun, fileHistory, loadArtifacts, loadEstimate, loadGoalsFor, loadGrants, loadLearnings, loadPlaybooksFor, loadProjectSettings, loadProjects, loadRun, loadRuns, loadSchedulesFor, messages, openProject, openRun, projectId, projectLoading, projectScope, projects, projectSettings, report, runId, runScope, timeline, tree])
+  }), [approval, canActOnRun, fileHistory, loadArtifacts, loadCheckpoints, loadEstimate, loadGoalsFor, loadGrants, loadLearnings, loadPlaybooksFor, loadProjectSettings, loadProjects, loadRun, loadRuns, loadSchedulesFor, messages, openProject, openRun, projectId, projectLoading, projectScope, projects, projectSettings, report, runId, runScope, timeline, tree])
 
   const bridge = useMemo(() => ({
     ...workspace,
     projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, verdicts, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit,
-    learnings, playbooks, schedules, goals, blueprints, timeline, error, notice, streaming, approval, booted, projectSettings,
+    learnings, playbooks, schedules, goals, blueprints, timeline, checkpoints, error, notice, streaming, approval, booted, projectSettings,
     // Workspace resources (marketplace, arsenal) and project/run resources
     // (learnings, playbooks, …) report failures the same way, so a panel only
     // has to know its own key.
@@ -890,15 +920,16 @@ export function useBridge() {
       if (key === 'goals') return loadGoalsFor(projectId)
       if (key === 'blueprints') return loadBlueprintsFor()
       if (key === 'artifacts' && runId) return loadArtifacts(runId)
+      if (key === 'checkpoints') return loadCheckpoints()
       if (key === 'marketplace') return workspace.loadMarketplaceState()
       if (key === 'arsenal') return workspace.loadArsenalState()
       return null
     },
     setError, setNotice, setApproval,
-    openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor,
+    openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor, loadCheckpoints,
     ...actions,
     approveWithKeyboard: (scope: 'once' | 'run' | 'always') => actions.approveCall(scope),
-  }), [workspace, projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, verdicts, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit, learnings, playbooks, schedules, goals, blueprints, timeline, error, notice, streaming, approval, booted, projectSettings, resourceErrors, actions, openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor, loadArtifacts])
+  }), [workspace, projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, verdicts, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit, learnings, playbooks, schedules, goals, blueprints, timeline, checkpoints, error, notice, streaming, approval, booted, projectSettings, resourceErrors, actions, openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor, loadArtifacts, loadCheckpoints])
   return bridge
 }
 
