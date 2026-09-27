@@ -549,6 +549,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         const retention = settingReport().find((entry) => entry.name === 'FULKRUM_TOOL_OUTPUT_RETENTION_DAYS')
         sendJson(response, 200, {
           version,
+          workspaceRoot: toolBroker.workspaceRoot,
           schemaVersion: store.stats().schemaVersion,
           storage: store.storageSize(),
           database: { path: store.filePath, ...store.stats() },
@@ -586,6 +587,28 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         const copy = store.backup()
         const record = store.recordMaintenance({ kind: 'backup', ok: true, summary: `copy written to ${copy.path}`, payload: { path: copy.path, anchorPath: copy.anchorPath, rotated: copy.removed } })
         sendJson(response, 200, { copy, record })
+        return
+      }
+
+      if (request.method === 'POST' && requestUrl.pathname === '/api/maintenance/sandbox-check') {
+        // The first-run question: does the boundary actually work on this
+        // machine? A fixed argv through the same runtime every command uses —
+        // nothing user-supplied, nothing a shell can reinterpret.
+        if (!execution) {
+          const record = store.recordMaintenance({ kind: 'sandbox-check', ok: false, summary: 'No execution runtime is configured.', payload: {} })
+          sendJson(response, 200, { ok: false, error: 'No execution runtime is configured.', hint: 'Set FULKRUM_EXECUTION=container and restart the bridge to jail commands.', record })
+          return
+        }
+        try {
+          const result = await execution.run(['node', '--version'], { timeoutMs: 30_000 })
+          const versionOutput = result.stdout.trim()
+          const record = store.recordMaintenance({ kind: 'sandbox-check', ok: true, summary: `runner answered: ${versionOutput || 'no output'}`, payload: { container: result.container, stdout: versionOutput, stderr: result.stderr.trim() } })
+          sendJson(response, 200, { ok: true, version: versionOutput, container: result.container, record })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'The sandbox check failed.'
+          const record = store.recordMaintenance({ kind: 'sandbox-check', ok: false, summary: message, payload: {} })
+          sendJson(response, 200, { ok: false, error: message, record })
+        }
         return
       }
 

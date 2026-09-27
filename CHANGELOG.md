@@ -6,6 +6,11 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **The sandbox panel answers the first-run question.** The status endpoint
+  now names the workspace root, and a Check sandbox button runs a fixed
+  `node --version` through the same jail every command uses and records the
+  answer — so "does the boundary work on this machine?" is a thing the UI
+  can prove, not a thing the user infers from an error later.
 - **A worker's card says what it last actually did.** The chat's worker strip
   and the control room's live list showed a state chip and a task title, so
   a worker mid-task looked the same whether it had run three tools or none.

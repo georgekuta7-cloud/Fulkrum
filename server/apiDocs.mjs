@@ -89,6 +89,7 @@ export const endpoints = [
   { method: 'GET', path: '/api/status', summary: 'Version, storage, backups, anchors, engine, provider health', tags: ['system'] },
   { method: 'POST', path: '/api/maintenance/verify', summary: 'Walk every audit chain, and record the result', tags: ['system'] },
   { method: 'POST', path: '/api/maintenance/backup', summary: 'Take a copy of the database, and record it', tags: ['system'] },
+  { method: 'POST', path: '/api/maintenance/sandbox-check', summary: 'Run a fixed command through the jail and record whether the boundary answers', tags: ['system'] },
   { method: 'POST', path: '/api/runs/{runId}/fork', summary: 'Re-run a plan as a new run, awaiting approval again', tags: ['runs'], errors: [404, 409] },
   { method: 'GET', path: '/api/runs/{runId}', summary: 'Everything about a run: messages, tasks, tool calls, events, audit. ?light=1 returns live rows, status maps, and counts; &since=seq adds rows created since that event', tags: ['runs'], errors: [404] },
   { method: 'GET', path: '/api/runs/{runId}/events', summary: 'Every recorded event, in order', tags: ['runs'], errors: [404] },

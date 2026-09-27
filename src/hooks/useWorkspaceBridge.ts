@@ -158,6 +158,9 @@ export function useWorkspaceBridge(report: Reporter, notify: (message: string | 
       notify(result.record.ok ? 'Audit chain intact.' : 'Audit verification found a problem — see the status panel.')
       return result
     }),
+    // A diagnostic, not an action: the result (ok or not) belongs inline on
+    // the panel, so failures are not routed to the global error banner.
+    sandboxCheck: () => api.post<{ ok: boolean; version?: string; container?: string; error?: string; hint?: string }>('/api/maintenance/sandbox-check'),
     saveSetting: (name: string, value: unknown) => perform('The setting could not be saved.', async () => {
       const updated = await api.patch<{ setting: AppSetting; settings: AppSetting[] }>('/api/settings', { name, value })
       setAppSettings(updated.settings)

@@ -195,6 +195,7 @@ export type StandingGrant = {
 
 export type Status = {
   version: string
+  workspaceRoot?: string
   schemaVersion: number
   storage: { databaseBytes: number | null; walBytes: number | null; totalBytes: number }
   backups: { count: number; newestAgeMs: number | null; newestPath: string | null }

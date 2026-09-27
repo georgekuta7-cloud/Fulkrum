@@ -95,6 +95,7 @@ export async function withServer(callback, { workspaceRoot, callProvider, model,
     serveUi,
     distDir,
     version,
+    execution,
     callProvider: callProvider ?? (realCaller
       ? (provider, modelName, messages, instructions) => realCaller.callModel(provider, modelName, messages, { tools: [], instructions: instructions ?? 'test instructions' })
       : async () => ({ text: 'stub reply', usage: null })),

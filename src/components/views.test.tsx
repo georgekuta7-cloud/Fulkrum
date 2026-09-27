@@ -58,6 +58,7 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
     projectSettings: {},
     resourceErrors: {},
     retryResource: vi.fn(),
+    sandboxCheck: vi.fn(),
     loadMarketplaceState: vi.fn().mockResolvedValue(null),
     loadArsenalState: vi.fn().mockResolvedValue(null),
     setError: vi.fn(),
@@ -481,6 +482,24 @@ describe('settings', () => {
     expect(deleteLearning).toHaveBeenCalledWith('l1')
     fireEvent.click(screen.getByRole('button', { name: 'Verify chain' }))
     expect(verifyAudit).toHaveBeenCalled()
+  })
+
+  it('names the workspace and checks the sandbox boundary from the readiness panel', async () => {
+    const sandboxCheck = vi.fn().mockResolvedValue({ ok: true, version: 'v24.13.0', container: 'fulkrum-stub' })
+    const base = settingsBridge()
+    render(<SettingsView bridge={settingsBridge({
+      sandboxCheck,
+      status: {
+        ...(base.status as any),
+        workspaceRoot: 'D:\\projects\\fulkrum',
+        execution: { available: true, label: 'Docker', version: '29.8.0', image: 'fulkrum-runner:local', imagePinned: false },
+      },
+    })} />)
+    fireEvent.click(screen.getByRole('button', { name: /Sandbox/ }))
+    expect(screen.getByText('D:\\projects\\fulkrum')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Check sandbox' }))
+    expect(await screen.findByText(/Runner answered v24\.13\.0/)).toBeInTheDocument()
+    expect(sandboxCheck).toHaveBeenCalled()
   })
 })
 

@@ -510,6 +510,7 @@ test('the status reports what is installed, and remembers what was checked', asy
       const status = await request('GET', '/api/status')
       assert.equal(status.status, 200)
       assert.equal(typeof status.payload.version, 'string')
+      assert.equal(status.payload.workspaceRoot, directory, 'the readiness panel needs to name the workspace it is guarding')
       assert.equal(status.payload.schemaVersion >= 10, true)
       assert.equal(status.payload.storage.databaseBytes > 0, true)
       assert.match(status.payload.anchor.file, /audit-heads/)
@@ -542,6 +543,30 @@ test('the status reports what is installed, and remembers what was checked', asy
       assert.equal(store.lastMaintenance('verify').ok, false)
     }, { workspaceRoot: directory })
   })
+})
+
+test('the sandbox check runs one fixed command through the jail and records the answer', async () => {
+  // Without an engine: a diagnosis, not an error — the panel shows why.
+  await withServer(async ({ request, store }) => {
+    const unavailable = await request('POST', '/api/maintenance/sandbox-check')
+    assert.equal(unavailable.status, 200)
+    assert.equal(unavailable.payload.ok, false)
+    assert.match(String(unavailable.payload.error), /No execution runtime/)
+    assert.equal(store.lastMaintenance('sandbox-check').ok, false, 'the failed check is remembered too')
+  })
+
+  // With a stub engine: the argv is exactly the fixed probe, and the answer
+  // is recorded.
+  const seen = []
+  const execution = { run: async (argv) => { seen.push(argv); return { stdout: 'v24.13.0\n', stderr: '', container: 'fulkrum-stub' } } }
+  await withServer(async ({ request, store }) => {
+    const checked = await request('POST', '/api/maintenance/sandbox-check')
+    assert.equal(checked.status, 200)
+    assert.equal(checked.payload.ok, true)
+    assert.equal(checked.payload.version, 'v24.13.0')
+    assert.deepEqual(seen, [['node', '--version']], 'nothing user-supplied, nothing a shell can reinterpret')
+    assert.match(store.lastMaintenance('sandbox-check').summary, /v24\.13\.0/)
+  }, { execution })
 })
 
 test('the audit endpoint reports chain integrity, including unverifiable history', async () => {
@@ -628,6 +653,7 @@ test('the documented routes are the routes the server serves', async () => {
       { method: 'GET', template: '/api/status' },
       { method: 'POST', template: '/api/maintenance/verify' },
       { method: 'POST', template: '/api/maintenance/backup' },
+      { method: 'POST', template: '/api/maintenance/sandbox-check' },
       { method: 'GET', template: '/api/runs/{runId}' },
       { method: 'GET', template: '/api/runs/{runId}/events' },
       { method: 'GET', template: '/api/runs/{runId}/audit' },

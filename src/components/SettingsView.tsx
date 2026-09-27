@@ -36,6 +36,7 @@ export function SettingsView({ bridge }: { bridge: Bridge }) {
   const [addError, setAddError] = useState('')
   const [busy, setBusy] = useState('')
   const [grantDraft, setGrantDraft] = useState({ toolName: 'workspace.write', scopeKind: 'path' as 'path' | 'host', scopeValue: '' })
+  const [sandbox, setSandbox] = useState<{ state: 'idle' | 'checking'; result: { ok: boolean; version?: string; container?: string; error?: string; hint?: string } | null }>({ state: 'idle', result: null })
 
   const { loadProviders, loadStatus, loadSettings, loadUsage, loadLearnings, loadGrants, verifyAudit, backupNow, setError } = bridge
   useEffect(() => {
@@ -183,6 +184,33 @@ export function SettingsView({ bridge }: { bridge: Bridge }) {
                   <p className="text-body-sm text-outline">Without an engine, command execution reports <code className="font-mono">commands: disabled</code> — reads and planning still work.</p>
                 </div>
               )}
+              <div className="bg-surface-container p-3 rounded-lg flex flex-col gap-2">
+                <div className="flex justify-between gap-2 font-mono text-body-sm">
+                  <span className="text-outline">Workspace</span>
+                  <span className="text-on-surface truncate" title={bridge.status?.workspaceRoot ?? undefined}>{bridge.status?.workspaceRoot ?? '—'}</span>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Button
+                    disabled={sandbox.state === 'checking' || !engine?.available}
+                    onClick={async () => {
+                      setSandbox({ state: 'checking', result: null })
+                      try {
+                        setSandbox({ state: 'idle', result: await bridge.sandboxCheck() })
+                      } catch (caught) {
+                        setSandbox({ state: 'idle', result: { ok: false, error: caught instanceof Error ? caught.message : 'The sandbox check failed.' } })
+                      }
+                    }}
+                  >
+                    {sandbox.state === 'checking' ? 'Checking…' : 'Check sandbox'}
+                  </Button>
+                  {sandbox.result ? (
+                    <span role="status" className={`text-label-sm min-w-0 break-words ${sandbox.result.ok ? 'text-secondary' : 'text-error'}`}>
+                      {sandbox.result.ok ? `Runner answered ${sandbox.result.version}.` : `${sandbox.result.error}${sandbox.result.hint ? ` ${sandbox.result.hint}` : ''}`}
+                    </span>
+                  ) : null}
+                </div>
+                <p className="text-label-sm text-outline">The check runs <code className="font-mono">node --version</code> through the same jail every command uses — if it answers, the boundary works end to end.</p>
+              </div>
               <p className="text-label-sm text-outline">The boundary is enforced by the runner, not by the UI: these lines describe what the container already does.</p>
             </Panel>
           ) : null}
