@@ -160,7 +160,7 @@ const controlTransitions = {
  * instead of rejecting the server's callback promise, which Node would treat as
  * an unhandled rejection and use to terminate the process, orphaning every run.
  */
-export function createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, planService, pricing, execution = null, allowedOrigins = new Set(), ownerId = 'local', serveUi = false, distDir = 'dist', breaker = null, version = '0.0.0' }) {
+export function createApp({ store, toolBroker, providerRegistry, orchestrator, callProvider, planService, pricing, execution = null, checkpoints = null, allowedOrigins = new Set(), ownerId = 'local', serveUi = false, distDir = 'dist', breaker = null, version = '0.0.0' }) {
   const distRoot = serveUi ? path.resolve(distDir) : null
   const uiIndex = distRoot ? path.join(distRoot, 'index.html') : null
 
@@ -544,6 +544,9 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
 
       if (request.method === 'GET' && requestUrl.pathname === '/api/status') {
         const boundary = execution ? await execution.status() : { available: false, reason: 'No execution runtime is configured.' }
+        const checkpointStatus = checkpoints
+          ? await checkpoints.status()
+          : { available: false, initialized: false, checkpoints: 0, bytes: 0, reason: 'No checkpoint store is configured.' }
         // Read from the same source /api/config reports, so a value set in the
         // environment shows up here without the caller having to pass it in.
         const retention = settingReport().find((entry) => entry.name === 'FULKRUM_TOOL_OUTPUT_RETENTION_DAYS')
@@ -560,6 +563,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           lastBackup: store.lastMaintenance('backup'),
           maintenance: store.listMaintenance({ limit: 10 }),
           execution: { ...boundary, running: execution?.runningNow?.() ?? [] },
+          checkpoints: checkpointStatus,
           providers: providerRegistry.list().map((provider) => ({
             id: provider.id,
             label: provider.label,

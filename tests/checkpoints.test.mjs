@@ -1,103 +1,132 @@
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
-import { withServer, withWorkspace } from './helpers.mjs'
+import { createCheckpointStore } from '../server/checkpoints.mjs'
+import { withServer, withTempDirectory } from './helpers.mjs'
 
-const sha256 = (text) => createHash('sha256').update(text, 'utf8').digest('hex')
+/**
+ * The shadow repository is the undo the live workspace does not otherwise
+ * have. These tests pin the parts a review called load-bearing: it never
+ * touches the user's workspace or Git state, the host's configuration cannot
+ * leak into it, and its vocabulary is the same one the tools obey.
+ */
 
-async function withKey(callback) {
-  const previousKey = process.env.XAI_API_KEY
-  process.env.XAI_API_KEY = 'sk-test-key-for-checkpoints'
-  try {
-    return await callback()
-  } finally {
-    if (previousKey === undefined) delete process.env.XAI_API_KEY
-    else process.env.XAI_API_KEY = previousKey
-  }
-}
-
-test('a modifying write leaves a checkpoint pointing at the superseded bytes, a create does not', async () => {
-  await withWorkspace(async (directory) => {
-    await withServer(async ({ request, store }) => {
-      const project = await request('POST', '/api/projects', { name: 'checkpoint fixture' })
-      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
-      const runId = run.payload.run.id
-
-      const created = await request('POST', `/api/runs/${runId}/tools`, { name: 'workspace.write', agentId: 'builder', input: { path: 'fresh.txt', content: 'v1\n' } })
-      assert.equal(created.status, 200, JSON.stringify(created.payload))
-      assert.equal(store.listEvents(runId).some((event) => event.type === 'run.snapshot'), false, 'a create has no past to restore')
-
-      const modified = await request('POST', `/api/runs/${runId}/tools`, { name: 'workspace.write', agentId: 'builder', input: { path: 'fresh.txt', content: 'v2\n' } })
-      assert.equal(modified.status, 200, JSON.stringify(modified.payload))
-      const checkpoint = store.listEvents(runId).find((event) => event.type === 'run.snapshot')
-      assert.ok(checkpoint, 'the modifying write left a checkpoint')
-      assert.equal(checkpoint.payload.path, 'fresh.txt')
-      assert.equal(checkpoint.payload.previousSha256, sha256('v1\n'), 'the checkpoint commits to the superseded bytes')
-      assert.equal(store.verifyEventChain(runId).ok, true)
-    }, { workspaceRoot: directory })
+test('the shadow repository lives in the data directory, never in the workspace', async () => {
+  await withTempDirectory(async (workspace) => {
+    const dataDir = path.join(workspace, 'data')
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir })
+    const ready = await checkpoints.ensure()
+    assert.equal(ready.initialized, true)
+    assert.equal(existsSync(path.join(workspace, '.git')), false, 'no repository is planted in the user workspace')
+    assert.equal(existsSync(path.join(dataDir, 'checkpoints', 'repo.git')), true, 'the repository lives under the data directory')
+    const inside = await checkpoints.run(['rev-parse', '--is-inside-work-tree'])
+    assert.equal(inside.stdout.trim(), 'true', 'the workspace is the work tree')
   })
 })
 
-test('a checkpoint restores through the same policy path as any write', async () => {
-  await withWorkspace(async (directory) => {
-    await withServer(async ({ request, store }) => {
-      const project = await request('POST', '/api/projects', { name: 'restore fixture' })
-      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
-      const runId = run.payload.run.id
-
-      await request('POST', `/api/runs/${runId}/tools`, { name: 'workspace.write', agentId: 'builder', input: { path: 'README.md', content: 'changed\n' } })
-      const write = store.listToolCalls(runId).find((call) => call.name === 'workspace.write')
-      assert.equal(await readFile(path.join(directory, 'README.md'), 'utf8'), 'changed\n')
-
-      const reverted = await request('POST', `/api/runs/${runId}/artifacts/${write.id}/revert`, {})
-      assert.equal(reverted.status, 200, JSON.stringify(reverted.payload))
-      assert.equal(await readFile(path.join(directory, 'README.md'), 'utf8'), '# Fixture readme\n', 'the checkpoint bytes are back on disk')
-      assert.equal(store.verifyEventChain(runId).ok, true, 'restore is a new link, not a rewrite')
-    }, { workspaceRoot: directory })
-  })
-})
-
-test('worker writes checkpoint too, on the same event', async () => {
-  const planJson = JSON.stringify({
-    objective: 'Prove worker checkpoints.',
-    tasks: [{ role: 'builder', title: 'Write twice', instructions: 'Write README.md twice.', dependsOn: [] }],
-  })
-  const model = async ({ messages, options }) => {
-    const instructions = String(options?.instructions ?? '')
-    if (instructions.includes('You plan work')) return { text: planJson, toolCalls: [], usage: null }
-    if (instructions.includes('verifying a worker task') || instructions.includes('reviewing worker outputs')) {
-      return { text: '```verdict\n{"results": [{"criterion": "done", "status": "PASS", "evidence": []}]}\n```', toolCalls: [], usage: null }
+test('repository config is pinned and the host Git config cannot leak in', async () => {
+  await withTempDirectory(async (workspace) => {
+    const dataDir = path.join(workspace, 'data')
+    const leaky = path.join(workspace, 'leaky.gitconfig')
+    await writeFile(leaky, '[leak]\n\tvalue = yes\n[core]\n\tautocrlf = true\n')
+    const previous = process.env.GIT_CONFIG_GLOBAL
+    process.env.GIT_CONFIG_GLOBAL = leaky
+    try {
+      const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir })
+      await checkpoints.ensure()
+      assert.equal((await checkpoints.run(['config', '--get', 'core.autocrlf'])).stdout.trim(), 'false', 'no line-ending translation')
+      assert.equal((await checkpoints.run(['config', '--get', 'core.fileMode'])).stdout.trim(), 'false', 'no mode-bit surprises')
+      assert.equal((await checkpoints.run(['config', '--get', 'user.name'])).stdout.trim(), 'Fulkrum')
+      await assert.rejects(() => checkpoints.run(['config', '--get', 'leak.value']), 'the host global config is ignored entirely')
+    } finally {
+      if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL
+      else process.env.GIT_CONFIG_GLOBAL = previous
     }
-    const writes = messages.filter((message) => message.role === 'tool').flatMap((message) => message.results ?? []).filter((result) => result.name === 'workspace.write').length
-    if (writes === 0) return { text: 'Writing v1.', toolCalls: [{ id: 'w1', name: 'workspace.write', arguments: { path: 'README.md', content: 'v1\n' } }], usage: null }
-    if (writes === 1) return { text: 'Writing v2.', toolCalls: [{ id: 'w2', name: 'workspace.write', arguments: { path: 'README.md', content: 'v2\n' } }], usage: null }
-    return { text: 'Wrote twice.', toolCalls: [], usage: null }
-  }
+  })
+})
 
-  await withKey(async () => {
-    await withWorkspace(async (directory) => {
-      await withServer(async ({ request, store }) => {
-        const project = await request('POST', '/api/projects', { name: 'worker checkpoint' })
-        const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
-        const runId = run.payload.run.id
-        await request('POST', '/api/chat', { runId, message: 'Prove worker checkpoints.', history: [] })
-        const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
-        await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+test('the exclude vocabulary mirrors what the tools can touch', async () => {
+  await withTempDirectory(async (workspace) => {
+    const dataDir = path.join(workspace, 'data')
+    await writeFile(path.join(workspace, '.fulkrumignore'), '# custom rules\nsecrets-dir/\n*.local\n')
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir })
+    await checkpoints.ensure()
+    const exclude = await readFile(path.join(dataDir, 'checkpoints', 'repo.git', 'info', 'exclude'), 'utf8')
+    for (const pattern of ['.git/', 'node_modules/', 'dist/', 'coverage/', '.cache/']) {
+      assert.match(exclude, new RegExp(`^${pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'), `skipped directory ${pattern}`)
+    }
+    for (const pattern of ['.env*', '.npmrc', '.netrc', '.git-credentials', 'credentials*', 'kubeconfig', 'id_rsa', 'id_ed25519.pub', '*.pem', '*.key', '*.p12', '*.sqlite', '*.db']) {
+      assert.match(exclude, new RegExp(`^${pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'), `sensitive pattern ${pattern}`)
+    }
+    assert.match(exclude, /^data\/$/m, 'the data directory is Fulkrum\u2019s own')
+    assert.match(exclude, /^secrets-dir\/$/m, 'the workspace .fulkrumignore is honored')
+    assert.match(exclude, /^\*\.local$/m, 'including file rules')
+    assert.equal(existsSync(path.join(workspace, '.gitignore')), false, 'the workspace is not written to')
+  })
+})
 
-        const deadline = Date.now() + 12_000
-        while (Date.now() < deadline && !['review', 'failed'].includes(store.getRun(runId).status)) {
-          await new Promise((resolve) => setTimeout(resolve, 100))
-        }
-        assert.equal(store.getRun(runId).status, 'review', `unexpected status ${store.getRun(runId).status}`)
+test('a missing host Git is reported, and initialization refuses', async () => {
+  await withTempDirectory(async (workspace) => {
+    const dataDir = path.join(workspace, 'data')
+    const execFileImpl = async () => {
+      throw Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' })
+    }
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir, execFileImpl })
+    const availability = await checkpoints.available()
+    assert.equal(availability.ok, false)
+    assert.match(availability.reason, /Git/)
+    await assert.rejects(() => checkpoints.ensure(), /Git/)
+    const status = await checkpoints.status()
+    assert.equal(status.available, false)
+    assert.equal(status.initialized, false)
+    assert.equal(status.checkpoints, 0)
+  })
+})
 
-        const checkpoints = store.listEvents(runId).filter((event) => event.type === 'run.snapshot')
-        assert.equal(checkpoints.length, 2, 'both modifying worker writes checkpointed')
-        assert.equal(checkpoints[0].payload.previousSha256, sha256('# Fixture readme\n'), 'the first checkpoint points at the original bytes')
-        assert.equal(checkpoints[1].payload.previousSha256, sha256('v1\n'), 'the second points at the first write')
-        assert.equal(store.verifyEventChain(runId).ok, true)
-      }, { model, workspaceRoot: directory })
-    })
+test('status is honest before any checkpoint exists', async () => {
+  await withTempDirectory(async (workspace) => {
+    const dataDir = path.join(workspace, 'data')
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir })
+    await checkpoints.ensure()
+    const status = await checkpoints.status()
+    assert.equal(status.available, true)
+    assert.equal(status.initialized, true)
+    assert.equal(status.checkpoints, 0, 'an empty repository has no checkpoints')
+    assert.equal(status.latest, null)
+    assert.equal(status.bytes > 0, true, 'the repository directory has a size')
+    assert.equal(status.gitDir, path.join(dataDir, 'checkpoints', 'repo.git'))
+  })
+})
+
+test('ensure is idempotent', async () => {
+  await withTempDirectory(async (workspace) => {
+    const dataDir = path.join(workspace, 'data')
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir })
+    const first = await checkpoints.ensure()
+    const second = await checkpoints.ensure()
+    assert.equal(first.initialized, true)
+    assert.equal(second.initialized, true)
+    assert.equal(second.created, false, 'the second call finds the repository already there')
+  })
+})
+
+test('the status endpoint reports the checkpoint store honestly', async () => {
+  await withTempDirectory(async (workspace) => {
+    const dataDir = path.join(workspace, 'data')
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir })
+    await withServer(async ({ request }) => {
+      const before = await request('GET', '/api/status')
+      assert.equal(before.payload.checkpoints.available, true, 'host Git is present on this machine')
+      assert.equal(before.payload.checkpoints.initialized, false, 'nothing is created until the first write needs it')
+      assert.equal(before.payload.checkpoints.bytes, 0)
+
+      await checkpoints.ensure()
+      const after = await request('GET', '/api/status')
+      assert.equal(after.payload.checkpoints.initialized, true)
+      assert.equal(after.payload.checkpoints.checkpoints, 0, 'an empty repository has no checkpoints yet')
+      assert.equal(after.payload.checkpoints.bytes > 0, true, 'the cost of the store is visible')
+    }, { workspaceRoot: workspace, checkpoints })
   })
 })

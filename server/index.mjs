@@ -12,6 +12,7 @@ import { createModelCaller } from './modelCall.mjs'
 import { createPlanService } from './planService.mjs'
 import { createPricing } from './pricing.mjs'
 import { createExecutionRuntime } from './execution.mjs'
+import { createCheckpointStore } from './checkpoints.mjs'
 import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
 import { reconcileInterruptedRuns } from './recovery.mjs'
 import { backupIfStale } from './backup.mjs'
@@ -51,7 +52,11 @@ const ownerId = `bridge-${randomUUID().slice(0, 8)}`
 const allowedOrigins = new Set(settings.FULKRUM_ALLOWED_ORIGINS)
 const providerRegistry = createProviderRegistry(store)
 const execution = createExecutionRuntime()
-const toolBroker = new FulkrumToolBroker({ execution, workspaceRoot: settings.FULKRUM_WORKSPACE_ROOT || process.cwd() })
+const workspaceRoot = settings.FULKRUM_WORKSPACE_ROOT || process.cwd()
+const toolBroker = new FulkrumToolBroker({ execution, workspaceRoot })
+// The shadow repository that makes every write recoverable (ADR 0010). It
+// lives beside the database, not in the workspace.
+const checkpoints = createCheckpointStore({ workspaceRoot, dataDir: settings.FULKRUM_DATA_DIR || 'data' })
 const pricing = createPricing()
 const modelCaller = createModelCaller({ providerRegistry, allowPrivate: privateProviderUrlsAllowed() })
 
@@ -81,6 +86,7 @@ const app = createApp({
   planService,
   pricing,
   execution,
+  checkpoints,
   allowedOrigins,
   ownerId,
   serveUi: Boolean(settings.FULKRUM_SERVE_UI),

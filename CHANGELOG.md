@@ -6,6 +6,14 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Added
+- **The checkpoint store exists and is honest about itself.** Per ADR 0010,
+  a private shadow Git repository now lives under the data directory with its
+  own persistent index: the workspace is never written to, host Git
+  configuration cannot leak in, hooks and signing are off, and the exclude
+  vocabulary mirrors exactly what the tools can touch (`.fulkrumignore`,
+  skipped directories, sensitive patterns, the data directory). `/api/status`
+  reports whether host Git is available, whether the store exists, how many
+  checkpoints it holds, and its size on disk. Wiring writes to it is next.
 - **The sandbox panel answers the first-run question.** The status endpoint
   now names the workspace root, and a Check sandbox button runs a fixed
   `node --version` through the same jail every command uses and records the

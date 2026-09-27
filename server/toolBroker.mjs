@@ -20,7 +20,7 @@ const MAX_REDIRECTS = 3
 const MAX_IGNORE_RULES = 200
 const MAX_READ_CACHE_ENTRIES = 200
 const MAX_MANIFEST_LIST = 50
-const skippedDirectories = new Set(['.git', 'node_modules', 'dist', 'coverage', '.cache'])
+export const skippedDirectories = new Set(['.git', 'node_modules', 'dist', 'coverage', '.cache'])
 
 // How many workspace files a shell manifest may name. A command's receipt is
 // names, sizes, and mtimes — never contents — so the cap bounds the walk, not
@@ -33,7 +33,7 @@ const manifestFileLimit = () => Math.max(Number(process.env.FULKRUM_SHELL_MANIFE
  * sensitive; this is how a user extends it without editing the code. A trailing
  * slash means "this directory", as it does in a .gitignore.
  */
-async function readIgnoreRules(root) {
+export async function readIgnoreRuleLines(root) {
   try {
     const text = await fs.readFile(path.join(root, '.fulkrumignore'), 'utf8')
     return text
@@ -41,12 +41,16 @@ async function readIgnoreRules(root) {
       .map((line) => line.trim())
       .filter((line) => line && !line.startsWith('#'))
       .slice(0, MAX_IGNORE_RULES)
-      .map((line) => line.replace(/\/+$/, ''))
-      .filter(Boolean)
-      .map((line) => new RegExp(`^${line.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`))
   } catch {
     return []
   }
+}
+
+async function readIgnoreRules(root) {
+  return (await readIgnoreRuleLines(root))
+    .map((line) => line.replace(/\/+$/, ''))
+    .filter(Boolean)
+    .map((line) => new RegExp(`^${line.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`))
 }
 
 function isIgnored(relativePath, rules) {

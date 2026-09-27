@@ -515,6 +515,8 @@ test('the status reports what is installed, and remembers what was checked', asy
       assert.equal(status.payload.storage.databaseBytes > 0, true)
       assert.match(status.payload.anchor.file, /audit-heads/)
       assert.equal(status.payload.execution.available, false, 'no engine is configured in this test')
+      assert.equal(status.payload.checkpoints.available, false, 'no checkpoint store is configured in this test')
+      assert.equal(status.payload.checkpoints.checkpoints, 0)
       assert.equal(status.payload.lastVerify, null, 'nothing has been checked yet')
       assert.equal(status.payload.providers.length >= 7, true)
       assert.equal(status.payload.retention.toolOutputDays, 14)
