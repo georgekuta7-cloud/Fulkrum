@@ -24,6 +24,10 @@ export function buildRunReport({ store, runId }) {
   const artifacts = buildArtifacts(store, runId)
   const grants = store.listApprovalGrants(runId)
   const direction = [...messages].reverse().find((message) => message.role === 'user')?.content ?? plan?.plan.objective ?? ''
+  // The estimate the human approved, from the chain — never recalculated here:
+  // what was promised at the decision is a fact, and newer priced calls must
+  // not rewrite it.
+  const estimateEvent = [...(snapshot.events ?? [])].reverse().find((event) => event.type === 'plan.estimate' && (!plan || event.payload?.planId === plan.plan.id))
 
   return {
     run: {
@@ -45,6 +49,7 @@ export function buildRunReport({ store, runId }) {
     grants: grants.map((grant) => ({ toolName: grant.toolName, grantedAt: grant.grantedAt })),
     artifacts: artifacts.map((artifact) => ({ path: artifact.path, created: artifact.created, bytes: artifact.bytes, added: artifact.diff?.added ?? null, removed: artifact.diff?.removed ?? null, at: artifact.at })),
     spend: { ...trace.spend, budgetUsd: run.budgetUsd, budgetExceededAt: run.budgetExceededAt },
+    approvedEstimate: estimateEvent ? { ...estimateEvent.payload.estimate, recordedAt: estimateEvent.createdAt } : null,
     calls: trace.calls.map((call) => ({ role: call.role, provider: call.provider, model: call.model, status: call.status, inputTokens: call.inputTokens, outputTokens: call.outputTokens, costUsd: call.costUsd, priced: call.priced, latencyMs: call.latencyMs })),
     audit: { ok: audit.ok, eventsChecked: audit.checked, unverifiable: audit.unverifiable, truncated: audit.truncated, brokenAt: audit.brokenAt, checkpointSequence: audit.checkpoint?.sequence ?? null, anchorSequence: audit.anchor?.sequence ?? null, checkpointMissing: audit.checkpointMissing },
     messages: messages.length,
@@ -81,6 +86,11 @@ export function reportToMarkdown(report) {
   lines.push(`- **Mode:** ${report.run.mode} · **Permissions:** ${report.run.permissionMode}`)
   lines.push(`- **Started:** ${stamp(report.run.createdAt)} · **Last change:** ${stamp(report.run.updatedAt)}`)
   lines.push(`- **Spend:** ${money(report.spend.costUsd)} across ${report.spend.calls} call(s)${report.spend.unpricedCalls ? ` (${report.spend.unpricedCalls} unpriced, so this is a lower bound)` : ''}${report.spend.budgetUsd ? ` · ceiling ${money(report.spend.budgetUsd)}` : ''}`)
+  if (report.approvedEstimate) {
+    const estimate = report.approvedEstimate
+    const range = estimate.estimateUsd ? `${money(estimate.estimateUsd.low)}–${money(estimate.estimateUsd.high)}` : 'not estimable'
+    lines.push(`- **Approved estimate:** ~${estimate.expectedCalls} model call(s) · ${range} (${estimate.basis}, recorded ${stamp(estimate.recordedAt)})`)
+  }
   if (report.run.interruptionReason) lines.push(`- **Interrupted:** ${report.run.interruptionReason}`)
   lines.push('')
 

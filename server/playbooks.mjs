@@ -49,6 +49,10 @@ export function instantiatePlaybookRun({ store, orchestrator, projectId, playboo
     store.approvePlan(created.plan.id)
     store.updateRun(run.id, { planId: created.plan.id, planVersion: created.plan.version, status: 'executing', ...(ceiling !== null && ceiling !== undefined ? { budgetUsd: ceiling } : {}) })
     store.appendEvent({ runId: run.id, type: 'plan.approved', agentId: 'head', payload: { planId: created.plan.id, version: created.plan.version, hash: created.plan.contentHash, tasks: created.tasks.length, source: 'playbook', playbookId: playbook.id } })
+    // A playbook approval is still an approval: the estimate shown on the
+    // playbook card is recorded here, on the same transaction, so the run is
+    // accountable to it exactly like a hand-approved plan.
+    store.appendEvent({ runId: run.id, type: 'plan.estimate', agentId: 'head', payload: { planId: created.plan.id, version: created.plan.version, hash: created.plan.contentHash, estimate: store.estimateRunCost(run.id) } })
   })
   orchestrator.start(run.id, { routing })
   return { run: store.getRun(run.id), plan: store.getPlan(created.plan.id) }

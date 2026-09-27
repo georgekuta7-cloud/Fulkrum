@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import type { Estimate } from '../api/types'
 import type { Bridge } from '../hooks/useBridge'
 import { roleLabel, resolveRouteDisplay } from '../lib/runGraph'
 import { canDraftPlan, PLAN_ROLES } from '../lib/runState'
@@ -28,18 +29,32 @@ export function PlanCard({ bridge }: { bridge: Bridge }) {
     </section>
   ) : null
 
+  // The estimate the human approved, from the chain: once it exists it wins
+  // over the live recalculation, because what was promised at the decision is
+  // the number this plan is accountable to.
+  let recordedEstimate: Estimate | null = null
+  for (let index = bridge.events.length - 1; index >= 0; index -= 1) {
+    const event = bridge.events[index]
+    if (event.type === 'plan.estimate' && event.payload?.planId === plan.plan.id) {
+      recordedEstimate = (event.payload.estimate as Estimate | undefined) ?? null
+      break
+    }
+  }
+  const shownEstimate = recordedEstimate ?? bridge.estimate
+
   return (
     <section className="bg-surface-container rounded-lg p-4 space-y-4 min-w-0" aria-label="Execution plan">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <h2 className="text-label-lg font-semibold break-words">Plan: {plan.plan.objective}</h2>
         <Chip tone={plan.plan.status === 'approved' ? 'ok' : 'plan'}>v{plan.plan.version} · {plan.plan.status}</Chip>
       </div>
-      {bridge.estimate ? (
+      {shownEstimate ? (
         <p className="font-mono text-label-sm text-outline">
-          {bridge.estimate.tasks} task(s) · ~{bridge.estimate.expectedCalls} model calls
-          {bridge.estimate.estimateUsd
-            ? ` · est. $${bridge.estimate.estimateUsd.low.toFixed(2)}–$${bridge.estimate.estimateUsd.high.toFixed(2)} (${bridge.estimate.basis})`
-            : ` · cost not estimable yet (${bridge.estimate.basis})`}
+          {shownEstimate.tasks} task(s) · ~{shownEstimate.expectedCalls} model calls
+          {shownEstimate.estimateUsd
+            ? ` · est. $${shownEstimate.estimateUsd.low.toFixed(2)}–$${shownEstimate.estimateUsd.high.toFixed(2)} (${shownEstimate.basis})`
+            : ` · cost not estimable yet (${shownEstimate.basis})`}
+          {recordedEstimate ? ' · recorded at approval' : ''}
         </p>
       ) : null}
       {editing ? (

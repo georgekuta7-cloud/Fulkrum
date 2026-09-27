@@ -6,6 +6,18 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **Completion and verification are no longer one label.** A task whose
+  verdict was UNKNOWN was shown as plainly `completed`, indistinguishable
+  from a proven PASS, so a run could read as successful over work nothing
+  had verified. The snapshot now carries the latest verdict per task and the
+  plan card renders it beside the status: verified, refuted, or unproven.
+- **The estimate approved is the estimate of record.** The number shown when
+  a plan is approved was recomputed live from whatever priced calls existed
+  at viewing time, so the basis behind a past approval could silently drift.
+  Approvals — hand approvals and playbook launches alike — now record the
+  full estimate on the run's chain in the same transaction, the plan card
+  shows that recorded number marked "recorded at approval", and the run
+  report carries it beside actual spend.
 - **A plan says what it will cost before it is approved.** The estimate —
   task count, expected model calls, and a price range with its basis, or an
   honest "cost not estimable yet" when no priced calls exist — was computed

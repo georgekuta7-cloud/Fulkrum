@@ -1687,12 +1687,19 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
             // to explain it. This emits plan.approved as the approval record;
             // the transition below emits it again as the execution-started
             // record (a re-approval from review emits only the latter, since
-            // nothing new was granted). Two events, two facts.
+            // nothing new was granted). Two events, two facts. The estimate
+            // shown at this decision rides the same transaction, so the number
+            // promised at approval is on the chain before the run can spend.
             store.transaction(() => {
               store.approvePlan(plan.plan.id)
               store.updateRun(runId, { planId: plan.plan.id, planVersion: plan.plan.version })
               store.appendEvent({ runId, type: 'plan.approved', agentId: 'head', payload: { planId: plan.plan.id, version: plan.plan.version, hash: plan.plan.contentHash, tasks: plan.tasks.length, source: plan.plan.source } })
+              store.appendEvent({ runId, type: 'plan.estimate', agentId: 'head', payload: { planId: plan.plan.id, version: plan.plan.version, hash: plan.plan.contentHash, estimate: store.estimateRunCost(runId) } })
             })
+          } else {
+            // Re-approval of an already-approved plan still records the estimate
+            // the human saw this time: the decision is new even if the plan is not.
+            store.appendEvent({ runId, type: 'plan.estimate', agentId: 'head', payload: { planId: plan.plan.id, version: plan.plan.version, hash: plan.plan.contentHash, estimate: store.estimateRunCost(runId) } })
           }
           approvalPayload = { planId: plan.plan.id, planVersion: plan.plan.version, planHash: plan.plan.contentHash, taskCount: plan.tasks.length }
         }

@@ -423,3 +423,38 @@ test('a run stops working when another process takes over its lease', async () =
     assert.equal(store.getRun(runId).status, 'executing', 'the stand-down marks nothing — the run belongs to the other process now')
   }, { model })
 })
+
+test('the estimate shown at approval is recorded on the chain and never recalculated', async () => {
+  const definition = { objective: 'Record the estimate.', tasks: [{ role: 'research', title: 'Look', instructions: 'Report what is there.', dependsOn: [] }] }
+  const model = async ({ options }) => {
+    if (String(options?.instructions ?? '').includes('You plan work')) return { text: JSON.stringify(definition), toolCalls: [], usage: null }
+    return { text: 'Summary.', toolCalls: [], usage: null }
+  }
+
+  await withServer(async ({ request, store, providerRegistry }) => {
+    providerRegistry.addCustom({ label: 'Estimate fixture', baseUrl: 'https://example.invalid/v1', model: 'fixture-model', apiKey: 'fixture-key' })
+    const runId = await makeRun(request)
+    await request('POST', '/api/chat', { runId, message: 'Do the thing.', history: [] })
+    const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+    const approved = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+    assert.equal(approved.status, 200, `approve-plan failed: ${JSON.stringify(approved.payload)}`)
+
+    const recorded = store.listEvents(runId).filter((event) => event.type === 'plan.estimate')
+    assert.equal(recorded.length, 1, 'approval records exactly one estimate')
+    assert.equal(recorded[0].payload.planId, drafted.payload.plan.id)
+    assert.equal(recorded[0].payload.hash, drafted.payload.plan.contentHash)
+    assert.match(recorded[0].payload.estimate.basis, /no priced calls/)
+
+    // A later priced call moves the live estimate — and must not touch the
+    // number the human approved.
+    store.recordModelCall({ runId, role: 'head', provider: 'Estimate fixture', model: 'fixture-model', usage: { inputTokens: 100, outputTokens: 50 }, cost: { costUsd: 0.01, priced: true, version: 'test' } })
+    assert.notEqual(store.estimateRunCost(runId).basis, recorded[0].payload.estimate.basis, 'the live estimate moved')
+
+    const report = await request('GET', `/api/runs/${runId}/report`)
+    assert.equal(report.status, 200)
+    assert.equal(report.payload.approvedEstimate.basis, recorded[0].payload.estimate.basis, 'the report carries the approved basis')
+    assert.equal(report.payload.approvedEstimate.expectedCalls, recorded[0].payload.estimate.expectedCalls)
+    assert.equal(report.payload.approvedEstimate.estimateUsd, null, 'no priced calls existed at approval, so the record says so')
+    assert.ok(report.payload.approvedEstimate.recordedAt, 'the record is stamped')
+  }, { model })
+})

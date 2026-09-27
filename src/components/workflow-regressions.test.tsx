@@ -89,4 +89,15 @@ describe('conversation decisions', () => {
     expect(screen.getByText(/cost not estimable yet/)).toBeInTheDocument()
     expect(screen.getByText(/no priced calls in this database yet/)).toBeInTheDocument()
   })
+
+  it('shows the estimate recorded at approval, not a later recalculation', () => {
+    render(<ChatView bridge={fixture({
+      estimate: { runId: 'r1', tasks: 2, expectedCalls: 14, basis: 'from 12 priced call(s) in this database', estimateUsd: { low: 0.02, average: 0.04, high: 0.06 }, perCall: null, ceilingUsd: null },
+      plan: { plan: { id: 'plan1', version: 1, status: 'approved', objective: 'O', contentHash: 'hash', source: 'model' }, tasks: [{ id: 'pt1', orderIndex: 0, role: 'research', title: 'T', instructions: 'I', acceptanceCheck: '', dependsOn: [] }] },
+      events: [{ eventId: 'e1', runId: 'r1', sequence: 1, type: 'plan.estimate', agentId: 'head', payload: { planId: 'plan1', hash: 'hash', estimate: { runId: 'r1', tasks: 2, expectedCalls: 9, basis: 'from 4 priced call(s) in this database', estimateUsd: { low: 0.01, average: 0.02, high: 0.03 }, perCall: null, ceilingUsd: null } }, createdAt: 1 }],
+    })} />)
+    expect(screen.getByText(/~9 model calls/)).toBeInTheDocument()
+    expect(screen.getByText(/recorded at approval/)).toBeInTheDocument()
+    expect(screen.queryByText(/~14 model calls/)).not.toBeInTheDocument()
+  })
 })
