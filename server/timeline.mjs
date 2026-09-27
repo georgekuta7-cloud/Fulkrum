@@ -13,6 +13,12 @@ import path from 'node:path'
  * file changed outside the run afterwards, a path that never went through a
  * write — is a named gap, never invented content.
  *
+ * Shell commands are not writes: their receipts name the files they changed
+ * but never their bytes, so a path only a command touched appears as an
+ * unknown, named by the reason. A path with write history whose disk bytes a
+ * command moved is caught by the hash checks like any outside change, and the
+ * reason says a command was involved when the receipt proves it.
+ *
  * Reads current disk state, so reconstruction reflects the world as it is;
  * the hash checks are what stop a changed world from producing a confident lie.
  */
@@ -46,11 +52,32 @@ export function reconstructAt({ store, workspaceRoot, runId, seq }) {
     .filter((call) => call.name === 'workspace.write' && call.status === 'completed' && completedSeq.has(call.id))
     .sort((a, b) => (completedSeq.get(b.id) ?? 0) - (completedSeq.get(a.id) ?? 0))
 
-  const paths = [...new Set(writes.map((call) => call.resolved?.relative).filter(Boolean))]
+  // What the shell changed, from the receipts: names, never bytes.
+  const shellTouched = new Map()
+  for (const call of store.listToolCalls(runId)) {
+    if (call.name !== 'shell.exec' || call.status !== 'completed' || !completedSeq.has(call.id)) continue
+    const changed = call.output?.changedFiles
+    if (!changed) continue
+    const seq = completedSeq.get(call.id) ?? 0
+    for (const relative of [...(changed.added ?? []), ...(changed.modified ?? []), ...(changed.removed ?? [])]) {
+      if (typeof relative !== 'string' || !relative) continue
+      if (!shellTouched.has(relative) || shellTouched.get(relative) < seq) shellTouched.set(relative, seq)
+    }
+  }
+
+  const writePaths = new Set(writes.map((call) => call.resolved?.relative).filter(Boolean))
+  const paths = [...new Set([...writePaths, ...shellTouched.keys()])]
   const files = []
   const gaps = []
   for (const relative of paths) {
-    const state = reverseTo(workspaceRoot, writes, completedSeq, relative, at)
+    if (!writePaths.has(relative)) {
+      // A path only a shell command touched: its bytes were never captured,
+      // so it is present as an unknown instead of silently omitted.
+      gaps.push(relative)
+      files.push({ path: relative, content: null, truncated: false, unknown: 'changed by a shell command; its content is not recorded' })
+      continue
+    }
+    const state = reverseTo(workspaceRoot, writes, completedSeq, relative, at, shellTouched)
     if (state.unknown) {
       gaps.push(relative)
       files.push({ path: relative, content: null, truncated: false, unknown: state.reason })
@@ -69,10 +96,15 @@ export function reconstructAt({ store, workspaceRoot, runId, seq }) {
   return { seq: at, files, gaps }
 }
 
-function reverseTo(workspaceRoot, writes, completedSeq, relative, at) {
+function reverseTo(workspaceRoot, writes, completedSeq, relative, at, shellTouched = new Map()) {
   const relevant = writes.filter((call) => call.resolved?.relative === relative)
   const newer = relevant.filter((call) => (completedSeq.get(call.id) ?? 0) > at)
   const older = relevant.filter((call) => (completedSeq.get(call.id) ?? 0) <= at)
+  // The reason a hash check failed is worth naming: a command this run ran
+  // after the index is not "outside the run", and the receipt proves it
+  // touched this path. A command older than the index is not blamed for a
+  // mismatch it cannot have caused.
+  const movedReason = (shellTouched.get(relative) ?? -1) > at ? 'changed by a shell command' : 'changed outside the run afterwards'
   // Current bytes are the starting point; the first hash check proves the
   // world did not move under the run before any undoing begins.
   let disk = null
@@ -97,7 +129,7 @@ function reverseTo(workspaceRoot, writes, completedSeq, relative, at) {
     }
     const writtenSha = call.resolved?.contentSha256 ?? null
     if (current !== null && writtenSha && current.sha !== writtenSha) {
-      return { unknown: true, reason: 'changed outside the run afterwards' }
+      return { unknown: true, reason: movedReason }
     }
     if (current === null) {
       // The file is gone now but a modification claims to predate the gap:
@@ -116,7 +148,7 @@ function reverseTo(workspaceRoot, writes, completedSeq, relative, at) {
     // newest older write left, or the world moved afterwards.
     const expected = older[0].resolved?.contentSha256 ?? null
     if (expected && current.sha !== expected) {
-      return { unknown: true, reason: 'changed outside the run afterwards' }
+      return { unknown: true, reason: movedReason }
     }
   }
   return current

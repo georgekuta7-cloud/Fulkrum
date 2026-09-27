@@ -53,6 +53,14 @@ All notable changes to Fulkrum are documented here. This project follows
   running` — read straight from the call log, not from a timer.
 
 ### Fixed
+- **The timeline names what a shell command changed instead of omitting it.**
+  Reconstruction only knew about `workspace.write`, so a file a command
+  created or edited simply did not appear — the scrubber showed a world that
+  never existed. Shell receipts name the files they changed, so those paths
+  now appear as unknowns with the reason stated ("changed by a shell
+  command"), a hash mismatch caused by an in-run command says so instead of
+  blaming "outside the run", and the Files view shows the reason without
+  offering a restore that must fail.
 - **The provider concurrency limit is live, as the settings screen claimed.**
   `FULKRUM_PROVIDER_MAX_CONCURRENCY` was read once when the model caller was
   built, so a value saved in the app never reached the limiter that was

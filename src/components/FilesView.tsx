@@ -89,8 +89,11 @@ function TimeTravel({ bridge }: { bridge: Bridge }) {
       {timeline.gaps?.length ? <p className="text-label-sm text-error">Gaps the records cannot prove: {timeline.gaps.join('; ')}</p> : null}
       {timeline.files.length ? timeline.files.map((file: any) => (
           <div key={file.path} className="flex items-center justify-between gap-2 p-2 rounded-lg bg-surface-container" title={file.path}>
-          <span className="font-mono text-body-sm text-on-surface truncate">{file.path}</span>
-          <Button className="!px-2.5 !py-1 text-label-sm" onClick={() => void bridge.restoreTimelineFile(file.path)}>Restore this version</Button>
+          <div className="min-w-0">
+            <p className="font-mono text-body-sm text-on-surface truncate">{file.path}</p>
+            {file.unknown ? <p className="text-label-sm text-error" title={file.unknown}>unknown: {file.unknown}</p> : null}
+          </div>
+          {file.unknown ? null : <Button className="!px-2.5 !py-1 text-label-sm flex-shrink-0" onClick={() => void bridge.restoreTimelineFile(file.path)}>Restore this version</Button>}
         </div>
       )) : <p className="text-body-sm text-outline">No files written up to event {timeline.seq}.</p>}
     </div>

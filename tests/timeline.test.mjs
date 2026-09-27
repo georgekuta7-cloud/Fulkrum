@@ -62,6 +62,51 @@ test('a timeline reconstructs every version, and names what it cannot prove', as
   })
 })
 
+test('a file only a shell command changed is a named gap, not an omission', async () => {
+  await withWorkspace(async (directory) => {
+    // Commands that write files the write tool never touches, and one that
+    // edits a file the write tool did touch.
+    const execution = { run: async (argv) => {
+      if (argv.includes('generated')) {
+        await writeFile(path.join(directory, 'generated.txt'), 'made by a command\n', 'utf8')
+        return { stdout: 'ok\n', stderr: '', container: 'stub' }
+      }
+      await writeFile(path.join(directory, 'written.txt'), 'shell edit\n', 'utf8')
+      return { stdout: 'ok\n', stderr: '', container: 'stub' }
+    } }
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'shell timeline fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
+      const runId = run.payload.run.id
+
+      const shell = await request('POST', `/api/runs/${runId}/tools`, { name: 'shell.exec', agentId: 'builder', input: { command: 'make', args: ['generated'] } })
+      assert.equal(shell.status, 200, JSON.stringify(shell.payload))
+      const call = store.listToolCalls(runId).find((item) => item.name === 'shell.exec')
+      assert.ok(call.output.changedFiles.added.includes('generated.txt'), 'the receipt names the file')
+
+      const timeline = (await request('GET', `/api/runs/${runId}/timeline/999999`)).payload
+      const file = timeline.files.find((entry) => entry.path === 'generated.txt')
+      assert.ok(file, 'the shell-touched file is in the timeline, not silently omitted')
+      assert.equal(file.content, null, 'its content was never captured')
+      assert.match(String(file.unknown), /shell command/)
+      assert.deepEqual(timeline.gaps, ['generated.txt'], 'and it is a named gap')
+
+      // A written file the shell later edited: the index before the edit is a
+      // gap whose reason names the command, not a vague "outside the run".
+      await write(request, runId, 'written.txt', 'written by tool\n')
+      const seqWritten = completedSeq(store, runId, await toolCallIdFor(store, runId, 'written.txt'))
+      const edit = await request('POST', `/api/runs/${runId}/tools`, { name: 'shell.exec', agentId: 'builder', input: { command: 'edit', args: ['written.txt'] } })
+      assert.equal(edit.status, 200, JSON.stringify(edit.payload))
+      const before = (await request('GET', `/api/runs/${runId}/timeline/${seqWritten}`)).payload
+      const edited = before.files.find((entry) => entry.path === 'written.txt')
+      assert.equal(edited.content, null)
+      assert.equal(edited.unknown, 'changed by a shell command', 'the command is named, not hand-waved')
+      assert.ok(before.gaps.includes('written.txt'))
+      assert.equal(store.verifyEventChain(runId).ok, true)
+    }, { workspaceRoot: directory, execution })
+  })
+})
+
 test('a restore the policy parks is recorded as failed, never as done', async () => {
   await withWorkspace(async (directory) => {
     await withServer(async ({ request, store }) => {

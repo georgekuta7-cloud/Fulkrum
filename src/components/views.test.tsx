@@ -317,6 +317,16 @@ describe('files', () => {
     expect(screen.getByText('event 2/2')).toBeInTheDocument()
   })
 
+  it('names what the timeline cannot prove instead of offering a restore', () => {
+    render(<FilesView bridge={makeBridge({
+      events: [{ sequence: 1 }] as any,
+      timeline: { seq: 1, files: [{ path: 'generated.txt', content: null, truncated: false, unknown: 'changed by a shell command; its content is not recorded' }], gaps: ['generated.txt'] },
+      loadTimeline: vi.fn(), clearTimeline: vi.fn(), restoreTimelineFile: vi.fn(),
+    })} />)
+    expect(screen.getByText(/changed by a shell command/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Restore this version' })).not.toBeInTheDocument()
+  })
+
   it('says plainly when nothing was written and when no run is open', () => {
     render(<FilesView bridge={makeBridge()} />)
     expect(screen.getByText(/has not written any files/)).toBeInTheDocument()
