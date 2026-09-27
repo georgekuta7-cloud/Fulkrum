@@ -458,3 +458,26 @@ test('the estimate shown at approval is recorded on the chain and never recalcul
     assert.ok(report.payload.approvedEstimate.recordedAt, 'the record is stamped')
   }, { model })
 })
+
+test('an approval records whether the human acknowledged an unlimited run', async () => {
+  const definition = { objective: 'Acknowledge.', tasks: [{ role: 'research', title: 'Look', instructions: 'Report what is there.', dependsOn: [] }] }
+  const model = async ({ options }) => {
+    if (String(options?.instructions ?? '').includes('You plan work')) return { text: JSON.stringify(definition), toolCalls: [], usage: null }
+    return { text: 'Summary.', toolCalls: [], usage: null }
+  }
+
+  await withServer(async ({ request, store, providerRegistry }) => {
+    providerRegistry.addCustom({ label: 'Ack fixture', baseUrl: 'https://example.invalid/v1', model: 'fixture-model', apiKey: 'fixture-key' })
+    const approve = async (extra) => {
+      const runId = await makeRun(request)
+      await request('POST', '/api/chat', { runId, message: 'Do the thing.', history: [] })
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      const result = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {}, ...extra })
+      assert.equal(result.status, 200, JSON.stringify(result.payload))
+      return store.listEvents(runId).find((event) => event.type === 'plan.approved')
+    }
+
+    assert.equal((await approve({})).payload.unlimitedAcknowledged, false, 'absence is recorded as not acknowledged')
+    assert.equal((await approve({ unlimitedAcknowledged: true })).payload.unlimitedAcknowledged, true, 'an explicit acknowledgment is recorded')
+  }, { model })
+})

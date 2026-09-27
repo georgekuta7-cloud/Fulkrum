@@ -100,4 +100,26 @@ describe('conversation decisions', () => {
     expect(screen.getByText(/recorded at approval/)).toBeInTheDocument()
     expect(screen.queryByText(/~14 model calls/)).not.toBeInTheDocument()
   })
+
+  const draftPlan = { plan: { id: 'plan1', version: 1, status: 'draft', objective: 'O', contentHash: 'hash', source: 'model' }, tasks: [{ id: 'pt1', orderIndex: 0, role: 'research', title: 'T', instructions: 'I', acceptanceCheck: '', dependsOn: [] }] }
+
+  it('requires an explicit acknowledgment before approving a run with no spending limit', async () => {
+    const control = vi.fn().mockResolvedValue({ id: 'r1' })
+    render(<ChatView bridge={fixture({ control, plan: draftPlan })} />)
+    const approve = screen.getByRole('button', { name: 'Approve & Run' })
+    expect(approve).toBeDisabled()
+    expect(screen.getByText(/no spending limit/)).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText(/Approve without a limit/))
+    expect(approve).toBeEnabled()
+    fireEvent.click(approve)
+    await waitFor(() => expect(control).toHaveBeenCalledWith('approve-plan', { planId: 'plan1', planHash: 'hash', unlimitedAcknowledged: true }))
+  })
+
+  it('approves a budgeted run without the acknowledgment', async () => {
+    const control = vi.fn().mockResolvedValue({ id: 'r1' })
+    render(<ChatView bridge={fixture({ control, run: { id: 'r1', projectId: 'p1', status: 'planning', budgetUsd: 5 } as Bridge['run'], plan: draftPlan })} />)
+    expect(screen.queryByText(/no spending limit/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Approve & Run' }))
+    await waitFor(() => expect(control).toHaveBeenCalledWith('approve-plan', { planId: 'plan1', planHash: 'hash' }))
+  })
 })

@@ -1693,7 +1693,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
             store.transaction(() => {
               store.approvePlan(plan.plan.id)
               store.updateRun(runId, { planId: plan.plan.id, planVersion: plan.plan.version })
-              store.appendEvent({ runId, type: 'plan.approved', agentId: 'head', payload: { planId: plan.plan.id, version: plan.plan.version, hash: plan.plan.contentHash, tasks: plan.tasks.length, source: plan.plan.source } })
+              store.appendEvent({ runId, type: 'plan.approved', agentId: 'head', payload: { planId: plan.plan.id, version: plan.plan.version, hash: plan.plan.contentHash, tasks: plan.tasks.length, source: plan.plan.source, unlimitedAcknowledged: body.unlimitedAcknowledged === true } })
               store.appendEvent({ runId, type: 'plan.estimate', agentId: 'head', payload: { planId: plan.plan.id, version: plan.plan.version, hash: plan.plan.contentHash, estimate: store.estimateRunCost(runId) } })
             })
           } else {

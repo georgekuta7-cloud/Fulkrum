@@ -6,6 +6,12 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Fixed
+- **Approving a run with no spending limit is a decision, not a default.**
+  A draft plan on a run with no budget could be approved with one click and
+  no warning, and the run would spend until something else stopped it. The
+  plan card now says so plainly, offers to set a limit first (through the
+  existing budget control), and will not approve until the human ticks the
+  acknowledgment — which is recorded on the approval event, either way.
 - **Completion and verification are no longer one label.** A task whose
   verdict was UNKNOWN was shown as plainly `completed`, indistinguishable
   from a proven PASS, so a run could read as successful over work nothing

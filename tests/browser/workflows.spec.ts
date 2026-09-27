@@ -69,6 +69,8 @@ test('a first plan can be drafted, inspected, approved, and found again in run h
   await page.getByRole('button', { name: 'Send (Ctrl+Enter)' }).click()
   await page.getByRole('button', { name: 'Draft plan', exact: true }).click()
   await expect(page.getByText('Report the inspected files.', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Approve & Run', exact: true })).toBeDisabled()
+  await page.getByLabel(/Approve without a limit/).check()
   await page.getByRole('button', { name: 'Approve & Run', exact: true }).click()
   await expect.poll(async () => (await (await request.get(`/api/runs/${run.id}`)).json()).run.status).toBe('review')
   await page.locator('header button[aria-haspopup]').click()

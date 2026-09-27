@@ -10,6 +10,8 @@ export function PlanCard({ bridge }: { bridge: Bridge }) {
   const [busy, setBusy] = useState(false)
   const [editing, setEditing] = useState(false)
   const [error, setError] = useState('')
+  const [unlimitedAcknowledged, setUnlimitedAcknowledged] = useState(false)
+  const [limit, setLimit] = useState('')
   const [objective, setObjective] = useState(plan?.plan.objective ?? '')
   const [tasks, setTasks] = useState(() => (plan?.tasks ?? []).map((task) => ({ ...task, dependencies: task.dependsOn.map((dep) => dep + 1).join(', ') })))
   const plannable = !!run && canDraftPlan(run.status)
@@ -41,6 +43,10 @@ export function PlanCard({ bridge }: { bridge: Bridge }) {
     }
   }
   const shownEstimate = recordedEstimate ?? bridge.estimate
+  // A draft with no ceiling: approving it spends without a stop. The human
+  // says so out loud, or sets a limit first — the approval is recorded either
+  // way, and the event carries which one it was.
+  const unlimited = !!run && run.budgetUsd === null
 
   return (
     <section className="bg-surface-container rounded-lg p-4 space-y-4 min-w-0" aria-label="Execution plan">
@@ -115,9 +121,24 @@ export function PlanCard({ bridge }: { bridge: Bridge }) {
           })}
         </ol>
       )}
+      {!editing && plannable && plan.plan.status === 'draft' && unlimited ? (
+        <div role="note" className="p-3 rounded-lg bg-surface-container-lowest space-y-3">
+          <p className="text-body-sm">This run has no spending limit. Model calls keep going until the plan finishes, and only you can stop a runaway.</p>
+          <div className="flex items-end gap-2 flex-wrap">
+            <label className="flex flex-col gap-1 text-label-md">Set a limit ($)
+              <input className={inputClass} type="number" min="0" step="0.01" value={limit} onChange={(event) => setLimit(event.target.value)} />
+            </label>
+            <Button disabled={busy || !(Number(limit) > 0)} onClick={() => void perform(async () => { if (await bridge.control('set-budget', { budgetUsd: Number(limit) })) setLimit('') })}>Set limit</Button>
+          </div>
+          <label className="flex items-center gap-2 text-body-sm">
+            <input type="checkbox" checked={unlimitedAcknowledged} onChange={(event) => setUnlimitedAcknowledged(event.target.checked)} />
+            Approve without a limit — I understand the run can keep spending.
+          </label>
+        </div>
+      ) : null}
       {!editing && plannable ? (
         <div className="flex gap-2 flex-wrap">
-          {plan.plan.status === 'draft' ? <Button variant="primary" disabled={busy || !providersReady} onClick={() => void perform(() => bridge.control('approve-plan', { planId: plan.plan.id, planHash: plan.plan.contentHash }))}>Approve & Run</Button> : null}
+          {plan.plan.status === 'draft' ? <Button variant="primary" disabled={busy || !providersReady || (unlimited && !unlimitedAcknowledged)} onClick={() => void perform(() => bridge.control('approve-plan', { planId: plan.plan.id, planHash: plan.plan.contentHash, ...(unlimited ? { unlimitedAcknowledged: true } : {}) }))}>Approve & Run</Button> : null}
           <Button disabled={busy} onClick={() => {
             setObjective(plan.plan.objective)
             setTasks(plan.tasks.map((task) => ({ ...task, dependencies: task.dependsOn.map((dep) => dep + 1).join(', ') })))
