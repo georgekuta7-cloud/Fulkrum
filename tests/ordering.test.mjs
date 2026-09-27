@@ -71,6 +71,9 @@ test('newest-first lists stay newest-first when timestamps tie', async () => {
       store.recordTaskVerdict({ runId: firstRun.id, taskId: verdictTaskId, overall: 'PASS', results: [] })
       const secondVerdict = store.recordTaskVerdict({ runId: firstRun.id, taskId: verdictTaskId, overall: 'FAIL', results: [] })
       assert.equal(store.getTaskVerdict(verdictTaskId).id, secondVerdict.id, 'the latest verdict')
+      const runVerdicts = store.listRunVerdicts(firstRun.id)
+      assert.deepEqual(runVerdicts.map((row) => row.id), [secondVerdict.id], 'one latest verdict per task, even after a re-verification')
+      assert.equal(runVerdicts[0].overall, 'FAIL')
 
       const firstGrant = store.createStandingGrant({ toolName: 'workspace.read', scopeKind: 'path', scopeValue: 'a', label: 'first' })
       const secondGrant = store.createStandingGrant({ toolName: 'workspace.read', scopeKind: 'path', scopeValue: 'b', label: 'second' })

@@ -74,10 +74,22 @@ export function PlanCard({ bridge }: { bridge: Bridge }) {
       ) : (
         <ol className="space-y-3">
           {plan.tasks.map((task, index) => {
-            const status = bridge.tasks.find((entry) => entry.planTaskId === task.id)?.status ?? 'queued'
+            const live = bridge.tasks.find((entry) => entry.planTaskId === task.id)
+            const status = live?.status ?? 'queued'
+            const verdict = live ? bridge.verdicts.find((entry) => entry.taskId === live.id) : undefined
             return (
               <li key={task.id} className="space-y-1 p-3 bg-surface-container-lowest rounded-lg">
-                <div className="flex justify-between items-start gap-2"><h3 className="text-body-md font-medium">{index + 1}. {task.title}</h3><Chip tone={status === 'completed' ? 'ok' : status === 'failed' ? 'bad' : 'idle'}>{status}</Chip></div>
+                <div className="flex justify-between items-start gap-2">
+                  <h3 className="text-body-md font-medium">{index + 1}. {task.title}</h3>
+                  <span className="flex items-center gap-1.5 flex-wrap justify-end">
+                    <Chip tone={status === 'completed' ? 'ok' : status === 'failed' ? 'bad' : 'idle'}>{status}</Chip>
+                    {verdict ? (
+                      <Chip tone={verdict.overall === 'PASS' ? 'ok' : verdict.overall === 'FAIL' ? 'bad' : 'busy'}>
+                        {verdict.overall === 'PASS' ? 'verified' : verdict.overall === 'FAIL' ? 'refuted' : 'unproven'}
+                      </Chip>
+                    ) : null}
+                  </span>
+                </div>
                 <p className="text-label-sm text-primary">{roleLabel(task.role)} · {resolveRouteDisplay(routing, bridge.providers, task.role) ?? 'default provider'}</p>
                 <p className="text-body-sm whitespace-pre-wrap break-words">{task.instructions}</p>
                 <p className="text-label-sm text-outline">Acceptance</p>

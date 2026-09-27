@@ -24,6 +24,7 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
     runId: 'run-1',
     run: { id: 'run-1', status: 'executing', budgetUsd: 10 },
     tasks: [],
+    verdicts: [],
     messages: [],
     toolCalls: [],
     events: [],

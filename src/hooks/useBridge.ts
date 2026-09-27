@@ -3,7 +3,7 @@ import { ApiError, api, openRunStream } from '../api/client'
 import { roleLabel } from '../lib/runGraph'
 import { createRequestScope } from './requestScope'
 import { useWorkspaceBridge } from './useWorkspaceBridge'
-import type { AgentId, ApprovalDetails, Artifact, Claim, Estimate, FileHistoryEntry, Message, Plan, Project, ReasoningLevel, Run, RunEvent, RunGrant, RunSnapshot, SearchResults, Spend, Task, TaskSpend, ToolCall, TreeNode, WritePreview } from '../api/types'
+import type { AgentId, ApprovalDetails, Artifact, Claim, Estimate, FileHistoryEntry, Message, Plan, Project, ReasoningLevel, Run, RunEvent, RunGrant, RunSnapshot, SearchResults, Spend, Task, TaskSpend, TaskVerdict, ToolCall, TreeNode, WritePreview } from '../api/types'
 
 /**
  * Everything the interface reads, and the actions it takes, in one place.
@@ -43,6 +43,7 @@ export function useBridge() {
   const [runId, setRunId] = useState<string | null>(null)
   const [run, setRun] = useState<Run | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
+  const [verdicts, setVerdicts] = useState<TaskVerdict[]>([])
   const [messages, setMessages] = useState<Message[]>([])
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([])
   const [events, setEvents] = useState<RunEvent[]>([])
@@ -119,6 +120,7 @@ export function useBridge() {
     const nextCalls = snapshot.light ? upsertRows(rowsRef.current.calls, snapshot.toolCalls ?? [], snapshot.toolCallStatuses) : snapshot.toolCalls ?? []
     rowsRef.current = { tasks: nextTasks, calls: nextCalls }
     setTasks(nextTasks)
+    setVerdicts(snapshot.verdicts ?? [])
     setToolCalls(nextCalls)
     setApproval((current) => {
       const pending = nextCalls.filter((call) => call.status === 'approval_required')
@@ -323,6 +325,7 @@ export function useBridge() {
     setRun(null)
     setRunLoading(false)
     setTasks([])
+    setVerdicts([])
     setMessages([])
     setToolCalls([])
     setEvents([])
@@ -804,13 +807,13 @@ export function useBridge() {
 
   const bridge = useMemo(() => ({
     ...workspace,
-    projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit,
+    projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, verdicts, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit,
     learnings, playbooks, schedules, goals, blueprints, timeline, error, notice, streaming, approval, booted, projectSettings,
     setError, setNotice, setApproval,
     openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor,
     ...actions,
     approveWithKeyboard: (scope: 'once' | 'run' | 'always') => actions.approveCall(scope),
-  }), [workspace, projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit, learnings, playbooks, schedules, goals, blueprints, timeline, error, notice, streaming, approval, booted, projectSettings, actions, openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor])
+  }), [workspace, projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, verdicts, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit, learnings, playbooks, schedules, goals, blueprints, timeline, error, notice, streaming, approval, booted, projectSettings, actions, openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor])
   return bridge
 }
 

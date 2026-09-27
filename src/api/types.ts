@@ -78,6 +78,16 @@ export type Task = {
   stepCount?: number
 }
 
+export type TaskVerdict = {
+  id: string
+  runId: string
+  taskId: string
+  overall: 'PASS' | 'FAIL' | 'UNKNOWN'
+  results: Array<{ criterion: string; status: 'PASS' | 'FAIL' | 'UNKNOWN'; evidence: string[] }>
+  checkedBy: string | null
+  createdAt: number
+}
+
 export type PlanTask = {
   id: string
   orderIndex: number
@@ -142,6 +152,7 @@ export type RunSnapshot = {
   toolCalls: ToolCall[]
   events: RunEvent[]
   messages: Message[]
+  verdicts?: TaskVerdict[]
   audit?: { ok: boolean; checked: number; unverified?: number }
   light?: boolean
   taskStatuses?: Array<{ id: string; status: string }>

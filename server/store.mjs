@@ -1083,6 +1083,18 @@ export class FulkrumStore {
     return this.database.prepare('SELECT * FROM task_verdicts WHERE task_id = ? ORDER BY created_at ASC, rowid ASC').all(taskId).map(verdictFromRow)
   }
 
+  /**
+   * The latest verdict per task in a run, for the snapshot: a re-verification
+   * replaces what the run's tasks are judged by, and ties on the same
+   * millisecond fall to the newer insertion.
+   */
+  listRunVerdicts(runId) {
+    return this.database.prepare(`SELECT * FROM (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY created_at DESC, rowid DESC) AS verdict_rank, rowid AS insertion_order
+        FROM task_verdicts WHERE run_id = ?
+      ) WHERE verdict_rank = 1 ORDER BY created_at ASC, insertion_order ASC`).all(runId).map(verdictFromRow)
+  }
+
   recordLearning({ projectId, fact, sourceRunId = null, id = `learning-${randomUUID()}` }) {
     const text = typeof fact === 'string' ? fact.trim().slice(0, 500) : ''
     if (!text) throw new Error('A learning needs a non-empty fact.')
@@ -1208,12 +1220,13 @@ export class FulkrumStore {
         toolCalls,
         events: [],
         light: true,
+        verdicts: this.listRunVerdicts(runId),
         taskStatuses: statuses('run_tasks'),
         toolCallStatuses: statuses('tool_calls'),
         counts: { messages: count('messages'), tasks: count('run_tasks'), toolCalls: count('tool_calls'), events: count('run_events') },
       }
     }
-    return { run, messages: this.listMessages(runId), tasks: this.listTasks(runId), toolCalls: this.listToolCalls(runId), events: this.listEvents(runId) }
+    return { run, messages: this.listMessages(runId), tasks: this.listTasks(runId), toolCalls: this.listToolCalls(runId), events: this.listEvents(runId), verdicts: this.listRunVerdicts(runId) }
   }
 
   recordModelCall({ runId = null, taskId = null, spanId = null, role = null, provider, model, status = 'ok', usage = null, cost = null, latencyMs = null, id = `call-${randomUUID()}` }) {

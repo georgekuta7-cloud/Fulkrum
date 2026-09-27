@@ -9,7 +9,7 @@ function fixture(overrides: Partial<Bridge> = {}): Bridge {
     projectId: 'p1', projects: [{ id: 'p1', name: 'Fixture' }], projectSettings: {}, projectLoading: false,
     runId: 'r1', runLoading: false, run: { id: 'r1', projectId: 'p1', status: 'planning', budgetUsd: null },
     providers: [{ id: 'fixture', label: 'Fixture', model: 'fixture', configured: true }], status: null,
-    messages: [], tasks: [], claims: [], events: [], byTask: [], runGrants: [], plan: null, approval: null, streaming: null,
+    messages: [], tasks: [], verdicts: [], claims: [], events: [], byTask: [], runGrants: [], plan: null, approval: null, streaming: null,
     spend: { costUsd: 0, calls: 0, unpricedCalls: 0 }, estimate: null,
     control: vi.fn().mockResolvedValue(null), createRun: vi.fn(), chat: vi.fn().mockResolvedValue(true),
     draftPlan: vi.fn().mockResolvedValue(true), approveCall: vi.fn().mockResolvedValue(true),
@@ -59,6 +59,26 @@ describe('conversation decisions', () => {
     fireEvent.change(screen.getByLabelText('Task 1 acceptance'), { target: { value: 'Include file and line references.' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save plan' }))
     await waitFor(() => expect(editPlan).toHaveBeenCalledWith('Inspect the workspace.', [expect.objectContaining({ acceptanceCheck: 'Include file and line references.', instructions: 'Read the source.', role: 'research', dependsOn: [] })]))
+  })
+
+  it('separates worker completion from the verification verdict', () => {
+    const plan = { plan: { id: 'plan1', version: 1, status: 'approved', objective: 'O', contentHash: 'h', source: 'model' }, tasks: [{ id: 'pt1', orderIndex: 0, role: 'research', title: 'Read files', instructions: 'I', acceptanceCheck: '', dependsOn: [] }] }
+    const tasks = [{ id: 't1', agentId: 'research', title: 'Read files', status: 'completed', planTaskId: 'pt1' }]
+    const { unmount } = render(<ChatView bridge={fixture({
+      tasks,
+      plan,
+      verdicts: [{ id: 'v1', runId: 'r1', taskId: 't1', overall: 'UNKNOWN', results: [], checkedBy: null, createdAt: 1 }],
+    })} />)
+    expect(screen.getByText('unproven')).toBeInTheDocument()
+    expect(screen.queryByText('verified')).not.toBeInTheDocument()
+    unmount()
+
+    render(<ChatView bridge={fixture({
+      tasks,
+      plan,
+      verdicts: [{ id: 'v2', runId: 'r1', taskId: 't1', overall: 'PASS', results: [], checkedBy: null, createdAt: 1 }],
+    })} />)
+    expect(screen.getByText('verified')).toBeInTheDocument()
   })
 
   it('says when a plan cannot be priced instead of guessing', () => {
