@@ -1068,6 +1068,36 @@ Rules:
           // checkpoint decides repair, replan, or stop.
           return { task: store.getTask(task.id), result: `Verification failed: ${reasons}`, failed: true }
         }
+
+        if (overall === 'UNKNOWN') {
+          // Deliberate (ADR 0011): work done, proof absent is its own outcome.
+          // The task is not completed, dependents may still run on it — with
+          // the handoff saying the ground is unproven — and the review counts
+          // it as unproven rather than folding it into success. The event
+          // carries the same completion facts as task.completed; only the
+          // claim of proof is missing.
+          store.updateTask(task.id, { status: 'unproven', result: cleanResult, stepCount: outcome.steps })
+          store.appendEvent({
+            runId,
+            type: 'task.unproven',
+            agentId: task.agentId,
+            payload: {
+              taskId: task.id,
+              title: task.title,
+              summary: cleanResult,
+              steps: outcome.steps,
+              tools: outcome.usedTools,
+              provider: outcome.provider ?? provider.id,
+              model: outcome.model ?? providerRegistry.model(provider, route),
+              budgetExhausted: Boolean(outcome.budgetExhausted),
+              structured,
+              evidence: evidenceIds,
+              verification,
+            },
+          })
+          store.endSpan(span.id, { status: 'ok', attributes: { 'fulkrum.verdict': 'UNKNOWN' } })
+          return { task: store.getTask(task.id), result: cleanResult, unproven: true }
+        }
       }
 
       store.updateTask(task.id, { status: 'completed', result: cleanResult, stepCount: outcome.steps })
@@ -1166,7 +1196,7 @@ Rules:
       const goal = store.listMessages(runId).filter((message) => message.role === 'user').at(-1)?.content ?? plan.plan.objective
       const runTasks = store.materializeRunTasks({ runId, plan })
       const existing = store.listTasks(runId)
-      const resumed = existing.some((task) => ['completed', 'interrupted', 'failed', 'skipped'].includes(task.status))
+      const resumed = existing.some((task) => ['completed', 'unproven', 'interrupted', 'failed', 'skipped'].includes(task.status))
 
       store.appendEvent({ runId, type: 'run.plan.loaded', agentId: 'head', payload: { planId: plan.plan.id, version: plan.plan.version, source: plan.plan.source, tasks: plan.tasks.length, resumed } })
 
@@ -1239,9 +1269,14 @@ Rules:
 
           for (const dependency of planTask.dependsOn) {
             const from = plan.tasks[dependency]
-            const fromTask = from ? taskByPlanTaskId.get(from.id) : null
-            if (!from || !fromTask) continue
-            store.appendEvent({ runId, type: 'worker.handoff', agentId: from.role, payload: { from: from.role, to: planTask.role, summary: digestForTask(fromTask, resultsByPlanTask.get(dependency)), planTaskId: planTask.id, fromCache: fromTask.status === 'completed' } })
+            const cached = from ? taskByPlanTaskId.get(from.id) : null
+            if (!from || !cached) continue
+            // The map holds the row from when the dependency started; read the
+            // current one so the handoff reflects how it actually ended —
+            // completed, unproven, or failed.
+            const fromTask = store.getTask(cached.id) ?? cached
+            taskByPlanTaskId.set(from.id, fromTask)
+            store.appendEvent({ runId, type: 'worker.handoff', agentId: from.role, payload: { from: from.role, to: planTask.role, summary: digestForTask(fromTask, resultsByPlanTask.get(dependency)), planTaskId: planTask.id, fromCache: fromTask.status === 'completed', unproven: fromTask.status === 'unproven' } })
           }
 
           // A failed prerequisite stops its dependents explicitly: they are
@@ -1316,7 +1351,7 @@ Rules:
           const packet = [
             `Objective:\n${plan.plan.objective}`,
             `Failed (${failed.length}):\n${failed.map((task) => `- ${task.title} (${task.agentId}, attempt ${task.attempt ?? 1}): ${task.result ?? ''}${verdictLine(task)}`).join('\n')}`,
-            `Skipped: ${tasks.filter((entry) => entry.status === 'skipped').length} · Completed: ${tasks.filter((entry) => entry.status === 'completed').length} of ${tasks.length}`,
+            `Skipped: ${tasks.filter((entry) => entry.status === 'skipped').length} · Unproven: ${tasks.filter((entry) => entry.status === 'unproven').length} · Completed: ${tasks.filter((entry) => entry.status === 'completed').length} of ${tasks.length}`,
             `Spend so far: $${store.spendForRun(runId).costUsd.toFixed(4)} · attempts allowed per task: ${taskMaxAttempts()}`,
           ].join('\n\n')
           const answer = await runReadOnlyPass({
@@ -1482,9 +1517,20 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
         }
       }
       const runClaims = store.listRunClaims(runId)
+      // Task-level tallies, distinct from the criterion tallies above: what
+      // became of each task the plan promised. Unproven is its own column
+      // (ADR 0011) — never folded into proven.
+      const taskTallies = { proven: 0, unproven: 0, failed: 0, skipped: 0 }
+      for (const task of store.listTasks(runId)) {
+        if (task.status === 'completed') taskTallies.proven += 1
+        else if (task.status === 'unproven') taskTallies.unproven += 1
+        else if (task.status === 'failed') taskTallies.failed += 1
+        else if (task.status === 'skipped') taskTallies.skipped += 1
+      }
       const proof = {
         predicted,
         verdicts: verdictTallies,
+        tasks: taskTallies,
         claims: {
           total: runClaims.length,
           proven: runClaims.filter((claim) => claim.verdict === 'PASS').length,

@@ -17,6 +17,7 @@ const NODE_TONE: Record<string, string> = {
   working: 'border-primary text-on-surface bg-surface-container',
   waiting: 'border-secondary text-on-surface bg-surface-container ring-2 ring-secondary/40',
   done: 'border-tertiary text-on-surface bg-surface-container-low',
+  unproven: 'border-secondary border-dashed text-on-surface bg-surface-container-low',
   failed: 'border-error text-on-surface bg-surface-container',
   blocked: 'border-outline-variant text-on-surface-variant opacity-50',
 }

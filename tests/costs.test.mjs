@@ -208,7 +208,7 @@ test('a run stops when its budget is reached instead of overspending', async () 
       const resumeDeadline = Date.now() + 10_000
       while (Date.now() < resumeDeadline && store.getRun(runId).status === 'executing') await new Promise((resolve) => setTimeout(resolve, 100))
       assert.equal(store.getRun(runId).status, 'review', `unexpected status ${store.getRun(runId).status}`)
-      assert.equal(store.listTasks(runId).every((task) => task.status === 'completed'), true)
+      assert.equal(store.listTasks(runId).every((task) => ['completed', 'unproven'].includes(task.status)), true, 'every task finished; the stub\u2019s uncited verdicts leave them unproven')
     }, { model, pricing })
   } finally {
     if (previousKey === undefined) delete process.env.XAI_API_KEY
@@ -384,7 +384,10 @@ test('the daily ceiling counts calls in flight across runs, not just recorded sp
       const exceeded = store.listEvents(runId).find((event) => event.type === 'run.budget.exceeded')
       assert.equal(exceeded?.payload?.scope, 'day', 'the stop names the daily ceiling')
       const statuses = store.listTasks(runId).map((task) => task.status).sort()
-      assert.deepEqual(statuses, ['blocked', 'completed'], 'one reader finished, the other saw the first in flight')
+      // The finished reader's verdict is UNKNOWN (the stub returns no verdict
+      // block), so the honest status is unproven (ADR 0011) — the point here
+      // is the other reader was blocked by the daily ceiling, not its verdict.
+      assert.deepEqual(statuses, ['blocked', 'unproven'], 'one reader finished, the other saw the first in flight')
     }, { model, pricing })
   } finally {
     if (previousKey === undefined) delete process.env.XAI_API_KEY

@@ -81,6 +81,13 @@ describe('buildGraph', () => {
     expect(edges.find((edge) => edge.from === 'task-2' && edge.to === 'head')?.tone).toBe('wait')
   })
 
+  it('gives an unproven task its own state, distinct from done', () => {
+    const unproven = [{ ...tasks[0], status: 'unproven' }, tasks[1]]
+    const { nodes } = buildGraph({ run: run('review'), plan: plan(), tasks: unproven, toolCalls: noCalls, byTask: [] })
+    expect(nodes.find((node) => node.id === 'task-1')?.state).toBe('unproven')
+    expect(nodes.find((node) => node.id === 'task-2')?.state).toBe('working')
+  })
+
   it('puts dependent tasks in deeper layers and spreads siblings', () => {
     const { nodes } = buildGraph({ run: run('executing'), plan: plan(), tasks, toolCalls: noCalls, byTask: [] })
     const scout = nodes.find((node) => node.id === 'task-1')

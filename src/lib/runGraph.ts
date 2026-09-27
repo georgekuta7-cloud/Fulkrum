@@ -7,7 +7,7 @@ import type { Plan, Run, Task, ToolCall } from '../api/types'
  * are percentages of the canvas; the SVG layer stretches to match.
  */
 
-export type GraphNodeState = 'idle' | 'working' | 'waiting' | 'done' | 'failed' | 'blocked'
+export type GraphNodeState = 'idle' | 'working' | 'waiting' | 'done' | 'unproven' | 'failed' | 'blocked'
 
 export type GraphNode = {
   id: string
@@ -79,6 +79,7 @@ function taskState(task: Task | undefined, waitingAgent: string | null): GraphNo
   if (!task) return 'idle'
   if (waitingAgent && task.agentId === waitingAgent && task.status === 'running') return 'waiting'
   if (task.status === 'completed') return 'done'
+  if (task.status === 'unproven') return 'unproven'
   if (task.status === 'failed') return 'failed'
   if (task.status === 'blocked' || task.status === 'skipped' || task.status === 'cancelled') return 'blocked'
   if (task.status === 'running') return 'working'

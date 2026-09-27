@@ -5,6 +5,16 @@ All notable changes to Fulkrum are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+- **An unproven task is no longer marked completed.** A task whose verdict
+  was UNKNOWN fell through to the same completion path as a PASS, so a run
+  could read as finished while nothing had been proven. Per ADR 0011, such a
+  task is now `unproven`: the chain records `task.unproven`, dependents still
+  run with a handoff that says the ground is unproven, the review counts
+  proven/unproven/failed/skipped separately, and a resumed run re-runs
+  unproven tasks instead of keeping them as done. The control room draws them
+  distinctly; the worker strip says `unproven`, not `done`.
+
 ### Added
 - **Checkpoints are visible and restorable from the Files view.** A
   Checkpoints panel lists the workspace's recent commits — hash, what they

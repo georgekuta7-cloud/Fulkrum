@@ -90,22 +90,66 @@ test('a PASS that cites recorded evidence judges the claims it cites', async () 
   })
 })
 
-test('a PASS that cites nothing recorded degrades to UNKNOWN instead of passing', async () => {
+test('a PASS that cites nothing recorded degrades to UNKNOWN, and the task is unproven', async () => {
   await withKey(async () => {
     await withWorkspace(async (directory) => {
       await withServer(async ({ request, store }) => {
         const runId = await runToReview(request, store)
-        assert.equal(store.getRun(runId).status, 'review', 'an UNKNOWN verdict still completes the task')
+        assert.equal(store.getRun(runId).status, 'review', 'the run still reaches its review')
 
         const task = store.listTasks(runId)[0]
+        assert.equal(task.status, 'unproven', 'work done, proof absent is its own outcome')
         const verdict = store.getTaskVerdict(task.id)
         assert.equal(verdict.overall, 'UNKNOWN')
         assert.match(verdict.results[0].criterion, /no cited evidence/, 'the degradation names its reason')
 
+        assert.ok(store.listEvents(runId).find((event) => event.type === 'task.unproven'), 'the record says unproven')
+        assert.equal(store.listEvents(runId).some((event) => event.type === 'task.completed'), false, 'and never claims completion')
+
         const claims = store.listRunClaims(runId)
         assert.equal(claims.length, 1)
         assert.equal(claims[0].verdict, null, 'an uncited verdict judges nothing')
+
+        const review = store.listEvents(runId).find((event) => event.type === 'run.review.ready')
+        assert.equal(review.payload.proof.tasks.unproven, 1, 'the review counts it unproven')
+        assert.equal(review.payload.proof.tasks.proven, 0)
       }, { model: modelWithVerifier(false), workspaceRoot: directory })
+    })
+  })
+})
+
+test('a dependent of an unproven task still runs, and its handoff says the ground is unproven', async () => {
+  const twoTaskPlan = JSON.stringify({
+    objective: 'Prove the ground.',
+    tasks: [
+      { role: 'research', title: 'Map the flow', instructions: 'Report the flow.', acceptanceCheck: 'The flow is mapped.', dependsOn: [] },
+      { role: 'builder', title: 'Build on it', instructions: 'Build on the map.', acceptanceCheck: 'It is built.', dependsOn: [0] },
+    ],
+  })
+  const model = async ({ messages, options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) return { text: twoTaskPlan, toolCalls: [], usage: null }
+    if (instructions.includes('verifying a worker task')) return { text: verdictFor('PASS', []), toolCalls: [], usage: null }
+    if (instructions.includes('reviewing worker outputs')) return { text: '```verdict\n{"results": [{"criterion": "done", "status": "PASS", "evidence": []}]}\n```', toolCalls: [], usage: null }
+    if (messages.some((message) => message.role === 'tool')) return { text: 'Built it.', toolCalls: [], usage: null }
+    return { text: `Mapped it.\n${evidenceBlock}`, toolCalls: [], usage: null }
+  }
+  await withKey(async () => {
+    await withWorkspace(async (directory) => {
+      await withServer(async ({ request, store }) => {
+        const runId = await runToReview(request, store)
+        assert.equal(store.getRun(runId).status, 'review')
+        const tasks = store.listTasks(runId)
+        assert.equal(tasks.length, 2)
+        assert.equal(tasks[0].status, 'unproven')
+        assert.equal(tasks[1].status, 'unproven', 'the dependent ran — and is judged on its own evidence')
+        assert.ok(tasks[1].result, 'the dependent produced a result')
+
+        const handoff = store.listEvents(runId).find((event) => event.type === 'worker.handoff')
+        assert.ok(handoff, 'the dependent got its handoff')
+        assert.equal(handoff.payload.unproven, true, 'the handoff says the ground is unproven')
+        assert.equal(handoff.payload.fromCache, false)
+      }, { model, workspaceRoot: directory })
     })
   })
 })
