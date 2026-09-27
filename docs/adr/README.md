@@ -14,3 +14,4 @@ on purpose: the point is to record why, not to restate the code.
 | [0007](0007-chain-records-hashes.md) | The audit chain records hashes of tool results |
 | [0008](0008-loopback-without-authentication.md) | The local API is loopback-only and unauthenticated |
 | [0009](0009-provable-work.md) | Work must be provable: claims, cited verdicts, approvals at both ends |
+| [0010](0010-checkpointed-live-workspace.md) | The live workspace is checkpointed by a private shadow Git |
