@@ -1915,6 +1915,19 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
               store.updateRun(runId, { planId: plan.plan.id, planVersion: plan.plan.version })
               store.appendEvent({ runId, type: 'plan.approved', agentId: 'head', payload: { planId: plan.plan.id, version: plan.plan.version, hash: plan.plan.contentHash, tasks: plan.tasks.length, source: plan.plan.source, unlimitedAcknowledged: body.unlimitedAcknowledged === true } })
               store.appendEvent({ runId, type: 'plan.estimate', agentId: 'head', payload: { planId: plan.plan.id, version: plan.plan.version, hash: plan.plan.contentHash, estimate: store.estimateRunCost(runId) } })
+              // Predicted outcomes (P2.4): the approved checks become outcome
+              // IDs bound to the plan hash, so verification reports against
+              // what was approved rather than whatever a worker later claims.
+              store.appendEvent({
+                runId,
+                type: 'plan.outcomes',
+                agentId: 'head',
+                payload: {
+                  planId: plan.plan.id,
+                  hash: plan.plan.contentHash,
+                  outcomes: plan.tasks.map((task, index) => ({ id: `outcome-${plan.plan.id}-${index}`, taskIndex: index, type: task.check?.type ?? 'legacy', text: task.acceptanceCheck || task.title })),
+                },
+              })
             })
           } else {
             // Re-approval of an already-approved plan still records the estimate

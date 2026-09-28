@@ -30,6 +30,14 @@ All notable changes to Fulkrum are documented here. This project follows
   proven (PASS or waived) separately from unproven.
 
 ### Added
+- **The score is the approved outcomes, not the worker's claims.** Per P2.4,
+  approving a plan records its checks as predicted outcome IDs bound to the
+  plan hash (`plan.outcomes`); every verdict reports against its outcome, and
+  the review carries an honest score — proven / unproven / failed / waiting —
+  with each outcome's provenance ("executed check", "file assertion", "model
+  judgment"). The chat shows it above the claims section: worker claims are
+  additional evidence, never the denominator, so one trivial claim cannot
+  turn three unproven outcomes into 100%.
 - **Approved checks run, and their receipts are the proof.** Per P2.3, a
   command check runs in the container after the worker pass — the plan's
   approval covered it — and lands as a `check.receipt` with exit code,

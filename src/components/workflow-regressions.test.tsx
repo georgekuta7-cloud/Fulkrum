@@ -117,6 +117,22 @@ describe('conversation decisions', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/Host Git is not available/)
   })
 
+  it('shows the approved outcomes with their provenance, not a claims score', () => {
+    const review = {
+      eventId: 'e1', runId: 'r1', sequence: 9, type: 'run.review.ready', agentId: 'head', createdAt: 1,
+      payload: { proof: { outcomes: { tallies: { total: 3, proven: 1, unknown: 2, failed: 0, pending: 0 }, items: [
+        { id: 'o1', taskIndex: 0, type: 'command', text: 'Tests pass.', status: 'PASS', provenance: 'executed check' },
+        { id: 'o2', taskIndex: 1, type: 'human', text: 'The flow is mapped.', status: 'UNKNOWN', provenance: 'model judgment' },
+        { id: 'o3', taskIndex: 2, type: 'human', text: 'The report cites files.', status: 'UNKNOWN', provenance: null },
+      ] } } },
+    }
+    render(<ChatView bridge={fixture({ events: [review] })} />)
+    expect(screen.getByText('1 proven · 2 unproven')).toBeInTheDocument()
+    expect(screen.getByText('executed check')).toBeInTheDocument()
+    expect(screen.getByText('model judgment')).toBeInTheDocument()
+    expect(screen.getByText(/never the score/)).toBeInTheDocument()
+  })
+
   it('shows each worker its last tool call', () => {    render(<ChatView bridge={fixture({
       tasks: [{ id: 't1', agentId: 'research', title: 'Read files', status: 'running' } as any],
       toolCalls: [

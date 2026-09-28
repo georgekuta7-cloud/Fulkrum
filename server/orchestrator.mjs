@@ -1113,8 +1113,11 @@ Rules:
 
         const overall = summarizeVerdict(results)
         const stored = store.recordTaskVerdict({ runId, taskId: task.id, overall, results, checkedBy })
-        store.appendEvent({ runId, type: 'task.verified', agentId: 'head', payload: { taskId: task.id, title: task.title, overall, verdictId: stored?.id ?? null, results } })
-        verification = { overall, verdictId: stored?.id ?? null }
+        // The verdict reports against the approved outcome it was predicted
+        // to satisfy (P2.4): the plan's own check, not the worker's claims.
+        const outcomeId = `outcome-${store.getRun(runId)?.planId ?? 'plan'}-${planTask.orderIndex}`
+        store.appendEvent({ runId, type: 'task.verified', agentId: 'head', payload: { taskId: task.id, title: task.title, outcomeId, overall, verdictId: stored?.id ?? null, results } })
+        verification = { overall, verdictId: stored?.id ?? null, outcomeId }
         // Cited results judge the claims they cite: a claim whose evidence
         // was judged takes that verdict. Results without citations judge
         // nothing, which is exactly what the degradation above guarantees.
@@ -1656,10 +1659,34 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
         else if (task.status === 'failed') taskTallies.failed += 1
         else if (task.status === 'skipped') taskTallies.skipped += 1
       }
+      // The honest score (P2.4): approved outcomes, each with the provenance
+      // of its verdict. Worker claims are additional evidence below, never
+      // the denominator — one trivial claim cannot inflate the fraction.
+      const tasksByPlanTask = new Map(store.listTasks(runId).map((task) => [task.planTaskId, task]))
+      const outcomes = (plan.tasks ?? []).map((planTask, index) => {
+        const task = tasksByPlanTask.get(planTask.id) ?? null
+        const verdict = task ? store.getTaskVerdict(task.id) : null
+        const type = planTask.check?.type ?? 'legacy'
+        const provenance = verdict?.checkedBy === 'deterministic'
+          ? (type === 'command' ? 'executed check' : type === 'file' ? 'file assertion' : 'deterministic')
+          : verdict?.checkedBy ? 'model judgment' : null
+        return {
+          id: `outcome-${plan.plan.id}-${index}`,
+          taskIndex: index,
+          type,
+          text: planTask.acceptanceCheck || planTask.title,
+          taskId: task?.id ?? null,
+          verdictId: verdict?.id ?? null,
+          status: verdict?.overall ?? (task && ['queued', 'running'].includes(task.status) ? 'PENDING' : 'UNKNOWN'),
+          provenance,
+        }
+      })
+      const outcomeTallies = { total: outcomes.length, proven: outcomes.filter((entry) => entry.status === 'PASS').length, unknown: outcomes.filter((entry) => entry.status === 'UNKNOWN').length, failed: outcomes.filter((entry) => entry.status === 'FAIL').length, pending: outcomes.filter((entry) => entry.status === 'PENDING').length }
       const proof = {
         predicted,
         verdicts: verdictTallies,
         tasks: taskTallies,
+        outcomes: { tallies: outcomeTallies, items: outcomes },
         claims: {
           total: runClaims.length,
           proven: runClaims.filter((claim) => claim.verdict === 'PASS').length,

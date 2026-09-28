@@ -114,6 +114,14 @@ test('a PASS that cites nothing recorded degrades to UNKNOWN, and the task is un
         const review = store.listEvents(runId).find((event) => event.type === 'run.review.ready')
         assert.equal(review.payload.proof.tasks.unproven, 1, 'the review counts it unproven')
         assert.equal(review.payload.proof.tasks.proven, 0)
+        // The honest score (P2.4): approved outcomes, not worker claims. The
+        // claim exists, and the outcome still reads unproven.
+        assert.equal(review.payload.proof.outcomes.tallies.total, 1)
+        assert.equal(review.payload.proof.outcomes.tallies.proven, 0)
+        assert.equal(review.payload.proof.outcomes.tallies.unknown, 1)
+        assert.equal(review.payload.proof.outcomes.items[0].type, 'human')
+        assert.equal(review.payload.proof.outcomes.items[0].status, 'UNKNOWN')
+        assert.equal(review.payload.proof.outcomes.items[0].provenance, 'model judgment')
       }, { model: modelWithVerifier(false), workspaceRoot: directory })
     })
   })

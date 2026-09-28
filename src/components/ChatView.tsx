@@ -67,6 +67,35 @@ function PipelineStrip({ bridge }: { bridge: Bridge }) {
   </div>
 }
 
+function OutcomesSection({ bridge }: { bridge: Bridge }) {
+  const review = [...bridge.events].reverse().find((event) => event.type === 'run.review.ready')
+  const outcomes = review?.payload?.proof?.outcomes
+  if (!outcomes?.items?.length) return null
+  const { tallies } = outcomes
+  return (
+    <section aria-label="Approved outcomes" className="bg-surface-container rounded-lg p-4 space-y-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <h2 className="text-label-lg font-semibold">Approved outcomes</h2>
+        <span className="font-mono text-label-sm text-secondary">
+          {tallies.proven} proven · {tallies.unknown} unproven{tallies.failed ? ` · ${tallies.failed} failed` : ''}{tallies.pending ? ` · ${tallies.pending} waiting` : ''}
+        </span>
+      </div>
+      <p className="text-label-sm text-outline">What the approved plan promised, judged. Worker claims below are additional evidence, never the score.</p>
+      {outcomes.items.map((entry: any) => (
+        <div key={entry.id} className="flex items-center justify-between gap-2 p-2 rounded-lg bg-surface-container-lowest">
+          <span className="text-body-sm min-w-0 truncate" title={entry.text}>{entry.taskIndex + 1}. {entry.text}</span>
+          <span className="flex items-center gap-1.5 flex-shrink-0">
+            {entry.provenance ? <span className="text-label-sm text-outline">{entry.provenance}</span> : null}
+            <Chip tone={entry.status === 'PASS' ? 'ok' : entry.status === 'FAIL' ? 'bad' : entry.status === 'PENDING' ? 'idle' : 'busy'}>
+              {entry.status === 'PASS' ? 'proven' : entry.status === 'FAIL' ? 'failed' : entry.status === 'PENDING' ? 'waiting' : 'unproven'}
+            </Chip>
+          </span>
+        </div>
+      ))}
+    </section>
+  )
+}
+
 function ProofSection({ bridge }: { bridge: Bridge }) {
   const claims = bridge.claims
   if (!claims.length) return null
@@ -130,6 +159,7 @@ export function ChatView({ bridge, onOpenSettings }: { bridge: Bridge; onOpenSet
       {approval ? <ApprovalCard key={approval.toolCall.id} bridge={bridge} approval={approval} /> : null}
       {(bridge.runGrants ?? []).length ? <section aria-label="Run grants" className="space-y-2 p-3 bg-surface-container rounded-lg"><h2 className="text-label-md font-semibold">Allowed for this run</h2>{bridge.runGrants.map((grant) => <div key={grant.toolName} className="flex gap-2 items-center justify-between"><code className="font-mono text-body-sm break-all">{grant.toolName}</code><Button onClick={() => void bridge.revokeRunGrant(grant.toolName)}>Revoke</Button></div>)}</section> : null}
       <ProofSection bridge={bridge} />
+      <OutcomesSection bridge={bridge} />
       <div ref={endRef} aria-hidden="true" />
       <div className="fixed bottom-4 left-16 right-0 z-30 pointer-events-none">
         <div className="max-w-4xl mx-auto px-3 sm:px-4 pointer-events-auto"><div className="bg-surface-container/95 rounded-lg border border-outline-variant/40 shadow-panel p-2.5">
