@@ -460,6 +460,9 @@ const configuredConcurrency = () => {
  * (OP-27). A raised limit wakes the backlog as slots free; a lowered limit
  * stops admitting new entries and drains the queue as in-flight work finishes.
  */
+/**
+ * @param {number | (() => number)} [max]
+ */
 export function createLimiter(max = configuredConcurrency) {
   const limitNow = () => {
     const value = typeof max === 'function' ? max() : max
@@ -468,12 +471,21 @@ export function createLimiter(max = configuredConcurrency) {
   let active = 0
   const queue = []
   return {
-    async run(task) {
+    async run(task, { onWait = null } = {}) {
       if (active < limitNow() && !queue.length) {
         active += 1
       } else {
         // The slot is handed over inside the releaser, which is why nothing is
-        // incremented here.
+        // incremented here. The waiter is told once, when it starts waiting:
+        // the UI can explain "waiting for a provider slot" without a stream
+        // of low-level chatter.
+        if (onWait) {
+          try {
+            onWait({ queued: queue.length + 1 })
+          } catch {
+            // Observability never breaks a call.
+          }
+        }
         await new Promise((resolve) => queue.push(resolve))
       }
       try {
@@ -547,8 +559,15 @@ export function retryDelayMs(attempt, retryAfter) {
     if (Number.isFinite(date)) return Math.min(Math.max(date - Date.now(), 0), 30_000)
   }
   // Exponential backoff with jitter, so parallel workers do not retry in lockstep.
-  const base = Math.min(500 * 2 ** attempt, 8_000)
+const base = Math.min(500 * 2 ** attempt, 8_000)
   return Math.round(base * (0.5 + Math.random() * 0.5))
+}
+
+/** Why a call is being retried, in words a person can read — never a key. */
+function retryReason(error) {
+  if (error?.status === 429) return 'rate limited'
+  if (error?.status !== undefined && error?.status !== null) return `provider returned ${error.status}`
+  return 'the connection failed'
 }
 
 export class ProviderError extends Error {
@@ -564,7 +583,7 @@ export class ProviderError extends Error {
   }
 }
 
-export function createModelCaller({ providerRegistry, allowPrivate = privateProviderUrlsAllowed() }) {
+export function createModelCaller({ providerRegistry, allowPrivate = privateProviderUrlsAllowed(), onProviderState = null }) {
   const limiter = createLimiter()
   const breaker = createBreaker()
   /**
@@ -607,7 +626,9 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
       return await requestOnce(url, options)
     } catch (error) {
       if (!(error instanceof ProviderError) || !error.retryable || attempt + 1 >= maxAttempts) throw error
-      await sleep(retryDelayMs(attempt, error.retryAfter))
+      const delayMs = retryDelayMs(attempt, error.retryAfter)
+      options.onRetry?.({ attempt: attempt + 1, maxAttempts, delayMs, reason: retryReason(error), status: error.status ?? null })
+      await sleep(delayMs)
       return requestWithRetry(attempt + 1, url, options)
     }
   }
@@ -665,7 +686,10 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
       } catch (error) {
         const worthRetrying = error instanceof ProviderError && error.retryable === true && !sawDelta.value && attemptsLeft > 1
         if (!worthRetrying) throw error
-        await sleep(retryDelayMs(configuredMaxAttempts() - attemptsLeft, error.retryAfter))
+        const maxAttempts = configuredMaxAttempts()
+        const delayMs = retryDelayMs(maxAttempts - attemptsLeft, error.retryAfter)
+        options.onRetry?.({ attempt: maxAttempts - attemptsLeft + 1, maxAttempts, delayMs, reason: retryReason(error), status: error.status ?? null })
+        await sleep(delayMs)
         return attempt(attemptsLeft - 1, options)
       }
     }
@@ -682,9 +706,9 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
    * @param {any} provider
    * @param {string} model
    * @param {Array<Record<string, any>>} messages
-   * @param {{ tools?: Array<Record<string, any>>, instructions?: string, onDelta?: (delta: string) => void, reasoning?: string | null }} [options]
+   * @param {{ tools?: Array<Record<string, any>>, instructions?: string, onDelta?: (delta: string) => void, reasoning?: string | null, runId?: string | null }} [options]
    */
-  const callModel = async (provider, model, messages, { tools = [], instructions, onDelta, reasoning = null } = {}) => {
+  const callModel = async (provider, model, messages, { tools = [], instructions, onDelta, reasoning = null, runId = null } = {}) => {
     const credentials = providerRegistry.credentials(provider)
     // A provider marked as local is allowed to resolve to a private address; the
     // global flag stays as the fallback for everyone else. The address is checked
@@ -699,6 +723,17 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
     const { url, body } = buildRequest(provider.protocol, { baseUrl: provider.baseUrl, model, messages, tools, instructions, temperature: sampling.temperature, stream: streaming, reasoning: effectiveReasoning })
     const headers = { 'Content-Type': 'application/json', ...providerAuthHeaders(provider.protocol, credentials) }
     const requestOptions = { method: 'POST', headers, body: JSON.stringify(body), allowPrivate: allow }
+    // Redacted state for the person watching (P3.3): which provider, which
+    // attempt, how long — never a key, header, or message body.
+    const report = (event) => {
+      if (!onProviderState) return
+      try {
+        onProviderState({ providerId: provider.id, providerLabel: provider.label, runId, ...event })
+      } catch {
+        // Observability never breaks a call.
+      }
+    }
+    requestOptions.onRetry = ({ attempt, maxAttempts, delayMs, reason, status }) => report({ type: 'provider.retry', attempt, maxAttempts, delayMs, reason, status })
 
     const skipReason = breaker.reject(provider.id, provider.label)
     if (skipReason) throw new ProviderError(`${provider.label} is being skipped: ${skipReason}`, { status: 503, retryable: false })
@@ -733,7 +768,7 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
           }
           throw error
         }
-      })
+      }, { onWait: ({ queued }) => report({ type: 'provider.waiting', queued }) })
     } catch (error) {
       // Only failures worth retrying count against the provider's health.
       if (error instanceof ProviderError && (error.retryable || error.status === undefined)) breaker.failed(provider.id)

@@ -150,6 +150,16 @@ describe('conversation decisions', () => {
     expect(screen.getByText(/a revised plan needs approval below/)).toBeInTheDocument()
   })
 
+  it('explains a provider retry while the run is executing', () => {
+    const retry = { eventId: 'e1', runId: 'r1', sequence: 1, type: 'provider.retry', agentId: 'head', payload: { providerLabel: 'Luna', reason: 'rate limited', delayMs: 12000, attempt: 2, maxAttempts: 3 }, createdAt: Date.now() }
+    const { unmount } = render(<ChatView bridge={fixture({ events: [retry], run: { id: 'r1', projectId: 'p1', status: 'executing', budgetUsd: null } as Bridge['run'] })} />)
+    expect(screen.getByText(/Luna rate limited; retrying in 12s \(attempt 2 of 3\)/)).toBeInTheDocument()
+    unmount()
+
+    render(<ChatView bridge={fixture({ events: [retry], run: { id: 'r1', projectId: 'p1', status: 'review', budgetUsd: null } as Bridge['run'] })} />)
+    expect(screen.queryByText(/retrying in 12s/)).not.toBeInTheDocument()
+  })
+
   it('shows each worker its last tool call', () => {    render(<ChatView bridge={fixture({
       tasks: [{ id: 't1', agentId: 'research', title: 'Read files', status: 'running' } as any],
       toolCalls: [

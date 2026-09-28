@@ -340,8 +340,49 @@ test('a reasoning-by-default model that rejects tools is told off explicitly, th
   })
 })
 
-test('the provider concurrency limit is read when used, not latched at construction', async () => {
-  let limit = 1
+test('a queued call is told it is waiting, once, with the depth', async () => {
+  const limiter = createLimiter(1)
+  let release = null
+  const first = limiter.run(() => new Promise((resolve) => { release = resolve }))
+  const waits = []
+  const second = limiter.run(() => Promise.resolve('done'), { onWait: (info) => waits.push(info) })
+  assert.deepEqual(waits, [{ queued: 1 }])
+  release()
+  await first
+  await second
+})
+
+test('a retried call reports redacted wait state, and the key never appears', async () => {
+  await withProviderServer((_record, response, count) => {
+    if (count === 1) {
+      response.setHeader('retry-after', '1')
+      json(response, { error: { message: 'slow down' } }, 429)
+    } else {
+      json(response, { choices: [{ message: { content: 'ok' } }] })
+    }
+  }, async ({ baseUrl }) => {
+    await withStore(async (store) => {
+      const registry = createProviderRegistry(store)
+      registry.addCustom({ label: 'Busy', baseUrl, model: 'busy-model', apiKey: 'sk-secret-key', allowPrivate: true })
+      const states = []
+      const caller = createModelCaller({ providerRegistry: registry, onProviderState: (state) => states.push(state) })
+      const provider = registry.resolve('Busy')
+      const result = await caller.callModel(provider, 'busy-model', [{ role: 'user', content: 'go' }], { instructions: 'sys', runId: 'run-1' })
+      assert.equal(result.text, 'ok')
+      const retry = states.find((state) => state.type === 'provider.retry')
+      assert.ok(retry, `retry state in ${JSON.stringify(states)}`)
+      assert.equal(retry.runId, 'run-1')
+      assert.equal(retry.providerId, 'custom-busy')
+      assert.equal(retry.attempt, 1)
+      assert.equal(retry.maxAttempts, 3)
+      assert.equal(retry.reason, 'rate limited')
+      assert.equal(retry.delayMs > 0, true)
+      assert.equal(JSON.stringify(states).includes('sk-secret-key'), false, 'no key in the state')
+    })
+  })
+})
+
+test('the provider concurrency limit is read when used, not latched at construction', async () => {  let limit = 1
   const limiter = createLimiter(() => limit)
   const started = []
   const releases = []

@@ -184,7 +184,7 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
       // it returns: the finished reply is what gets recorded, not the fragments.
       const sink = store.partialSink(runId, { role })
       try {
-        const response = await callModel(provider, model, messages, { tools, instructions, onDelta: sink.push, reasoning })
+        const response = await callModel(provider, model, messages, { tools, instructions, onDelta: sink.push, reasoning, runId })
         const latencyMs = Date.now() - startedAt
         const cost = pricing ? pricing.costOf({ model, usage: response.usage }) : { costUsd: null, priced: false, version: null }
         store.recordModelCall({ runId, taskId, spanId: span.id, role, provider: provider.id, model, usage: response.usage, cost, latencyMs })

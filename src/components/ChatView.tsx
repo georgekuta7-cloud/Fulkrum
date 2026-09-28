@@ -53,6 +53,22 @@ function CheckpointNotice({ bridge }: { bridge: Bridge }) {
   )
 }
 
+function ProviderState({ bridge }: { bridge: Bridge }) {
+  // The state is current only while it is the newest thing on the chain: once
+  // the retried call produces its next event, the wait is over.
+  const latest = (bridge.events ?? []).at(-1)
+  if (!latest || (latest.type !== 'provider.retry' && latest.type !== 'provider.waiting')) return null
+  if (bridge.run?.status !== 'executing') return null
+  const payload = latest.payload ?? {}
+  return (
+    <p role="status" className="text-label-sm text-primary">
+      {latest.type === 'provider.retry'
+        ? `${payload.providerLabel ?? 'The provider'} ${payload.reason ?? 'is retrying'}; retrying in ${Math.round((payload.delayMs ?? 0) / 1000)}s (attempt ${payload.attempt} of ${payload.maxAttempts}).`
+        : `Waiting for a provider slot (${payload.queued ?? 1} ahead).`}
+    </p>
+  )
+}
+
 function PipelineStrip({ bridge }: { bridge: Bridge }) {
   const tasks = bridge.tasks
   if (!tasks.length) return null
@@ -150,6 +166,7 @@ export function ChatView({ bridge, onOpenSettings }: { bridge: Bridge; onOpenSet
       <RunRecovery key={run?.id} bridge={bridge} />
       <CheckpointNotice bridge={bridge} />
       <WorkerStrip bridge={bridge} />
+      <ProviderState bridge={bridge} />
       <PipelineStrip bridge={bridge} />
       {messages.length === 0 && !plan ? <p className="text-body-md text-on-surface-variant py-4">Give the Head AI a direction: what to build, fix, or investigate. Draft and inspect its plan before approving execution.</p> : null}
       {messages.map((message) => message.role === 'user' ? (

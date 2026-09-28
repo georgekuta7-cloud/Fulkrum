@@ -30,6 +30,15 @@ All notable changes to Fulkrum are documented here. This project follows
   proven (PASS or waived) separately from unproven.
 
 ### Added
+- **Provider waits and retries explain themselves.** Per P3.3, the model
+  caller reports redacted state — provider label, attempt, remaining
+  attempts, delay and a plain reason ("rate limited", "the connection
+  failed") — and a call that queues behind the limiter says it is waiting
+  for a slot. The run's chain carries them as `provider.retry` /
+  `provider.waiting` events, and the chat shows the wait while it is the
+  newest thing that happened, so a provider delay is distinct from waiting
+  for an approval or a budget stop. No key, header, or body is ever in the
+  state.
 - **Opt-in notifications, and a replan handoff that shows what changed.**
   Per P3.2, the attention queue offers to enable browser notifications
   (explicit permission only; generic text that never names a project), and

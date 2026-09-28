@@ -59,7 +59,21 @@ const toolBroker = new FulkrumToolBroker({ execution, workspaceRoot })
 const checkpoints = createCheckpointStore({ workspaceRoot, dataDir: settings.FULKRUM_DATA_DIR || 'data' })
 const writeCheckpointer = createWriteCheckpointer({ store, checkpoints })
 const pricing = createPricing()
-const modelCaller = createModelCaller({ providerRegistry, allowPrivate: privateProviderUrlsAllowed() })
+const modelCaller = createModelCaller({
+  providerRegistry,
+  allowPrivate: privateProviderUrlsAllowed(),
+  // Provider waits and retries become run events (P3.3): redacted to the
+  // provider label, attempt, delay and reason — never a key or a body.
+  onProviderState: (state) => {
+    if (!state.runId) return
+    try {
+      const { type, providerId, providerLabel, runId, ...payload } = state
+      store.appendEvent({ runId, type, agentId: 'head', payload: { providerId, providerLabel, ...payload } })
+    } catch {
+      // Observability must never break a call.
+    }
+  },
+})
 
 // Chat has no tools: the Head plans and answers. Workers get tools through the
 // orchestrator, restricted to their own role's allowlist. Both return usage so
