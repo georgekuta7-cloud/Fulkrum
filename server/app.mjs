@@ -704,6 +704,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
             return
           }
           store.appendEvent({ runId, type: 'checkpoint.accepted', agentId: 'head', payload: { baseline, final, note: 'the live folder keeps the run\u2019s changes' } })
+          orchestrator.releaseWorkspaceWriter?.(runId)
           sendJson(response, 200, { accepted: true, already: false })
           return
         }
@@ -723,6 +724,7 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
             agentId: 'head',
             payload: { baseline, final, commit: result.commit, restored: result.restored, removed: result.removed, skipped: result.skipped },
           })
+          orchestrator.releaseWorkspaceWriter?.(runId)
           sendJson(response, 200, { mode, restored: result })
         } catch (error) {
           sendJson(response, 409, { error: error instanceof Error ? error.message : 'The restore failed.' })
@@ -1916,6 +1918,9 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           if (abandoned.length) {
             store.appendEvent({ runId, type: 'run.cancelled', agentId: 'head', payload: { ...({ source: 'user', previousStatus: run.status }), abandonedCalls: abandoned.length } })
           }
+          // A cancelled run releases the workspace writer slot, which wakes
+          // the first queued write-capable run (P1.4).
+          orchestrator.releaseWorkspaceWriter?.(runId)
         }
         sendJson(response, 200, { run: nextRun, event })
         return

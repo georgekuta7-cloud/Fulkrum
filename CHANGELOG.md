@@ -16,6 +16,14 @@ All notable changes to Fulkrum are documented here. This project follows
   distinctly; the worker strip says `unproven`, not `done`.
 
 ### Added
+- **One write-capable run per live workspace.** A second write-capable run —
+  any run, since workers hold shell — queues behind the holder with the
+  holder named on its chain (`workspace.waiting`), starts no work while
+  waiting, and starts on its own when the holder's Accept, Discard or cancel
+  releases the slot. A run awaiting a human decision (review or failed, with
+  a final snapshot) keeps holding the slot until that decision, which is the
+  explicit path out rather than silent lease expiry. Applies across projects
+  and scheduled runs, since they share the one live root.
 - **Accept, conflict-safe Discard, and later Undo.** A finished run's changes
   are decided on the record: Accept never re-applies anything (the live
   folder already holds the changes) and is recorded once; Discard restores

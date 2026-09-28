@@ -391,6 +391,49 @@ test('accept records the decision without touching files, and undo restores afte
   })
 })
 
+test('a second write-capable run waits for the first and starts when it is decided', async () => {
+  const definition = { objective: 'Queue.', tasks: [{ role: 'research', title: 'Look', instructions: 'Report.', dependsOn: [] }] }
+  const model = async ({ options }) => {
+    if (String(options?.instructions ?? '').includes('You plan work')) return { text: JSON.stringify(definition), toolCalls: [], usage: null }
+    return { text: 'Summary.', toolCalls: [], usage: null }
+  }
+  await withTempDirectory(async (workspace) => {
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir: path.join(workspace, 'data') })
+    await withServer(async ({ request, store, providerRegistry }) => {
+      providerRegistry.addCustom({ label: 'Queue fixture', baseUrl: 'https://example.invalid/v1', model: 'fixture-model', apiKey: 'fixture-key' })
+      const startRun = async (name) => {
+        const project = await request('POST', '/api/projects', { name })
+        const run = await request('POST', '/api/runs', { projectId: project.payload.project.id })
+        const runId = run.payload.run.id
+        await request('POST', '/api/chat', { runId, message: 'Do the thing.', history: [] })
+        const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+        await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+        return runId
+      }
+      const waitFor = async (predicate, label) => {
+        const deadline = Date.now() + 15_000
+        while (Date.now() < deadline && !predicate()) await new Promise((resolve) => setTimeout(resolve, 100))
+        assert.ok(predicate(), label)
+      }
+
+      const first = await startRun('queue first')
+      await waitFor(() => store.getRun(first).status === 'review', 'the first run reaches review and holds the writer slot')
+
+      const second = await startRun('queue second')
+      await waitFor(() => store.listEvents(second).some((event) => event.type === 'workspace.waiting'), 'the second run waits')
+      const waiting = store.listEvents(second).find((event) => event.type === 'workspace.waiting')
+      assert.equal(waiting.payload.holder, first, 'and it is told who holds the slot')
+      assert.equal(store.listEvents(second).some((event) => event.type === 'task.started'), false, 'no work starts while waiting')
+
+      // The decision releases the slot; the queued run starts on its own.
+      const accepted = await request('POST', `/api/runs/${first}/checkpoint-accept`, {})
+      assert.equal(accepted.status, 200, JSON.stringify(accepted.payload))
+      await waitFor(() => store.listEvents(second).some((event) => event.type === 'task.started'), 'the queued run starts after the decision')
+      await waitFor(() => store.getRun(second).status === 'review', 'and finishes')
+    }, { workspaceRoot: workspace, checkpoints, model })
+  })
+})
+
 test('the status endpoint reports the checkpoint store honestly', async () => {
   await withTempDirectory(async (workspace) => {
     const dataDir = path.join(workspace, 'data')

@@ -76,6 +76,15 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
   const gate = createApprovalGate({ store })
   const approvalWaiters = gate.approvalWaiters
   const pendingAnswers = gate.pendingAnswers
+  // One writer per live workspace (P1.4). Every run is treated as
+  // write-capable: shell is available to workers, and "read-only" is a role's
+  // description, not a guarantee. A second run waits — it is queued, told who
+  // holds the slot, and starts when the holder's decision releases it. The
+  // durable checkpoints are what a crash reconciles with: the next baseline
+  // captures the tree the crashed run left.
+  const workspaceRootKey = toolBroker?.workspaceRoot ?? null
+  const workspaceWriter = { runId: null }
+  const workspaceWaiters = []
 
   /** Resolve a route, falling back rather than failing the run on a stale setting. */
   const resolveRoute = (runId, requested, roleName) => {
@@ -1186,6 +1195,23 @@ Rules:
     // it. In-flight work finishes, but no new task may start on a run this
     // process no longer owns — the row's owner is the only authority.
     const leaseStillOurs = () => store.getRun(runId)?.ownerId === ownerId
+    // One writer per workspace: a second write-capable run queues behind the
+    // holder, with the holder named on its chain. It starts when the holder's
+    // Accept/Discard/cancel releases the slot. Gated on the checkpoint store:
+    // the slot protects checkpointed state, and without one (a misconfigured
+    // bridge, or a test) the baseline refusal never fired either.
+    if (writeCheckpointer && workspaceRootKey && workspaceWriter.runId && workspaceWriter.runId !== runId) {
+      store.appendEvent({ runId, type: 'workspace.waiting', agentId: 'head', payload: { holder: workspaceWriter.runId, reason: 'another write-capable run owns the live workspace' } })
+      workspaceWaiters.push({ runId, options: { routing } })
+      // The queued run holds no lease while it waits; it re-acquires on start.
+      try {
+        store.releaseRunLease(runId, ownerId)
+      } catch {
+        // The store was closed underneath us; the waiter still re-acquires later.
+      }
+      return
+    }
+    workspaceWriter.runId = runId
     // ADR 0010 / P1.1: a write-capable run does not start without a verified
     // checkpoint of the live folder taken first. Without host Git there is no
     // undo, so the run stops before any work and says why.
@@ -1614,6 +1640,26 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
       } catch {
         // The store was closed underneath us, which happens during shutdown.
       }
+      // The workspace writer slot is held through the human decision when one
+      // is pending (a baseline and final snapshot exist, and the run waits in
+      // review or failed); everything else releases it now, which wakes the
+      // first queued run.
+      const finalStatus = store.getRun(runId)?.status
+      const decisionPending = ['review', 'failed'].includes(finalStatus ?? '')
+        && store.listEvents(runId).some((event) => event.type === 'checkpoint.final')
+      if (!decisionPending) releaseWorkspaceWriter(runId)
+    }
+  }
+
+  const releaseWorkspaceWriter = (runId) => {
+    if (workspaceWriter.runId !== runId) return
+    workspaceWriter.runId = null
+    const next = workspaceWaiters.shift()
+    if (next) {
+      workspaceWriter.runId = next.runId
+      // Start the waiter outside this stack; the walk re-reads the plan and
+      // begins where the queued run left off (nothing had started).
+      setTimeout(() => { start(next.runId, next.options).catch(() => {}) }, 0)
     }
   }
 
@@ -1657,5 +1703,5 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
   const answerToolCall = (toolCallId, answer) => gate.answer(toolCallId, answer)
   const abandonWaiters = (reason, runId = null) => gate.abandonAll(reason, runId)
 
-  return { start, activeRuns, approvalWaiters, approveToolCall, denyToolCall, answerToolCall, abandonWaiters, assertBudget, withBudget, maxStepsPerTask, inFlightBudget: budget.reservedFor }
+  return { start, activeRuns, approvalWaiters, approveToolCall, denyToolCall, answerToolCall, abandonWaiters, assertBudget, withBudget, maxStepsPerTask, inFlightBudget: budget.reservedFor, releaseWorkspaceWriter }
 }
