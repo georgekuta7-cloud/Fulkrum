@@ -667,6 +667,7 @@ test('the documented routes are the routes the server serves', async () => {
       { method: 'POST', template: '/api/maintenance/verify' },
       { method: 'POST', template: '/api/maintenance/backup' },
       { method: 'POST', template: '/api/maintenance/sandbox-check' },
+      { method: 'POST', template: '/api/maintenance/checkpoint-prune' },
       { method: 'GET', template: '/api/runs/{runId}' },
       { method: 'GET', template: '/api/runs/{runId}/events' },
       { method: 'GET', template: '/api/runs/{runId}/audit' },

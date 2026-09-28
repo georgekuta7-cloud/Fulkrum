@@ -212,14 +212,17 @@ export function createCheckpointStore({ workspaceRoot, dataDir, execFileImpl = e
     if (ref) {
       try {
         const existing = (await run(['rev-parse', '--verify', '--quiet', ref])).stdout.trim()
-        if (existing) return { commit: existing, files: 0, reused: true }
+        if (existing) return { commit: existing, files: 0, reused: true, largeTree: false }
       } catch {
         // No ref yet: take the baseline below.
       }
     }
     const result = await snapshot({ message: `run start${safeRunId ? ` \u00b7 run ${safeRunId}` : ''}` })
     if (ref && result.commit) await run(['update-ref', ref, result.commit])
-    return { ...result, reused: false }
+    // A large first snapshot is expensive; reporting it beats pretending the
+    // cost is not there (P1.1).
+    const largeTreeThreshold = Math.max(Number(process.env.FULKRUM_CHECKPOINT_LARGE_TREE_FILES ?? 10_000) || 10_000, 1)
+    return { ...result, reused: false, largeTree: result.files > largeTreeThreshold }
   }
 
   /**
@@ -272,6 +275,40 @@ export function createCheckpointStore({ workspaceRoot, dataDir, execFileImpl = e
     }
     const after = await snapshot({ message: `discard \u00b7 run ${String(baseline).slice(0, 8)}` })
     return { restored, removed, skipped, commit: after.commit }
+  }
+
+  /**
+   * Prune the checkpoint refs of runs whose decision is complete and old
+   * enough, then drop the unreferenced objects (P1.1). Undecided runs are
+   * never in the list the caller passes: a checkpoint needed for a pending
+   * review, undo, or discard is not prunable. Reports what it released and
+   * the store size before and after.
+   */
+  const prune = async ({ releaseRunIds = [] }) => {
+    await ensure()
+    const before = await directoryBytes(checkpointsDir)
+    const released = []
+    for (const runId of releaseRunIds) {
+      const safeRunId = typeof runId === 'string' && /^[A-Za-z0-9._-]+$/.test(runId) ? runId : null
+      if (!safeRunId) continue
+      const ref = `refs/runs/${safeRunId}`
+      try {
+        await run(['rev-parse', '--verify', '--quiet', ref])
+      } catch {
+        continue
+      }
+      await run(['update-ref', '-d', ref])
+      released.push(safeRunId)
+    }
+    if (released.length) {
+      try {
+        await run(['reflog', 'expire', '--expire=now', '--all'])
+      } catch {
+        // No reflog yet is not a failure.
+      }
+      await run(['gc', '--prune=now', '--quiet'])
+    }
+    return { released, bytesBefore: before, bytesAfter: await directoryBytes(checkpointsDir) }
   }
 
   /** The covered-file changes between two snapshots, as a reproducible diff. */
@@ -424,7 +461,7 @@ export function createCheckpointStore({ workspaceRoot, dataDir, execFileImpl = e
     return { commit, unchanged: false, files: tracked.length, message: subject }
   }
 
-  return { run, available, ensure, checkpoint, snapshot, baseline, diff, markConflicts, discardChanges, list, restore, status, workspaceRoot: root, dataDir: path.resolve(dataDir), gitDir, indexFile }
+  return { run, available, ensure, checkpoint, snapshot, baseline, diff, markConflicts, discardChanges, prune, list, restore, status, workspaceRoot: root, dataDir: path.resolve(dataDir), gitDir, indexFile }
 }
 
 /**

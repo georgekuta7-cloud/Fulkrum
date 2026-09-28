@@ -48,6 +48,15 @@ All notable changes to Fulkrum are documented here. This project follows
   proven (PASS or waived) separately from unproven.
 
 ### Added
+- **Checkpoint retention is a policy, and a large tree says so.** Per P1.1,
+  `POST /api/maintenance/checkpoint-prune` releases the checkpoint refs of
+  runs whose decision is complete and older than
+  `FULKRUM_CHECKPOINT_RETENTION_DAYS` (default 7), then drops the
+  unreferenced objects and records what it freed. An undecided run's
+  baseline — needed for a pending review, undo, or discard — is never
+  pruned. A baseline whose covered tree exceeds
+  `FULKRUM_CHECKPOINT_LARGE_TREE_FILES` is reported as a large tree instead
+  of being snapshotted silently.
 - **The plan previews the effective dispatch before approval.** Per P4.3, a
   draft's plan card carries a table of what will actually run: each task's
   role, the resolved provider and model (never "default provider"), whether

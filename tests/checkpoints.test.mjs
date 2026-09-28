@@ -438,6 +438,62 @@ test('a second write-capable run waits for the first and starts when it is decid
   })
 })
 
+test('pruning releases decided runs and never touches an undecided one', async () => {
+  await withTempDirectory(async (workspace) => {
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir: path.join(workspace, 'data') })
+    await writeFile(path.join(workspace, 'a.txt'), 'a\n')
+    const decided = await checkpoints.baseline({ runId: 'run-decided' })
+    const undecided = await checkpoints.baseline({ runId: 'run-undecided' })
+    assert.ok(decided.commit && undecided.commit)
+    const pruned = await checkpoints.prune({ releaseRunIds: ['run-decided'] })
+    assert.deepEqual(pruned.released, ['run-decided'])
+    await assert.rejects(() => checkpoints.run(['rev-parse', '--verify', '--quiet', 'refs/runs/run-decided']))
+    const kept = (await checkpoints.run(['rev-parse', '--verify', '--quiet', 'refs/runs/run-undecided'])).stdout.trim()
+    assert.equal(kept, undecided.commit, 'the undecided run keeps its baseline')
+  })
+})
+
+test('the prune endpoint releases only decided runs older than the retention window', async () => {
+  await withTempDirectory(async (workspace) => {
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir: path.join(workspace, 'data') })
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'prune fixture' })
+      const decided = store.createRun({ projectId: project.payload.project.id })
+      const undecided = store.createRun({ projectId: project.payload.project.id })
+      await checkpoints.baseline({ runId: decided.id })
+      await checkpoints.baseline({ runId: undecided.id })
+      store.appendEvent({ runId: decided.id, type: 'checkpoint.accepted', agentId: 'head', payload: { baseline: 'x', final: 'y' } })
+      store.updateRun(decided.id, { status: 'review' })
+      store.database.prepare('UPDATE runs SET updated_at = ? WHERE id = ?').run(Date.now() - 30 * 24 * 60 * 60 * 1000, decided.id)
+
+      const pruned = await request('POST', '/api/maintenance/checkpoint-prune')
+      assert.equal(pruned.status, 200, JSON.stringify(pruned.payload))
+      assert.deepEqual(pruned.payload.result.released, [decided.id])
+      assert.equal(store.lastMaintenance('checkpoint-prune').ok, true)
+      const kept = (await checkpoints.run(['rev-parse', '--verify', '--quiet', `refs/runs/${undecided.id}`])).stdout.trim()
+      assert.ok(kept, 'the undecided run is never pruned')
+    }, { workspaceRoot: workspace, checkpoints })
+  })
+})
+
+test('a large covered tree is reported, not silently snapshotted', async () => {
+  await withTempDirectory(async (workspace) => {
+    const dataDir = path.join(workspace, 'data')
+    const previous = process.env.FULKRUM_CHECKPOINT_LARGE_TREE_FILES
+    process.env.FULKRUM_CHECKPOINT_LARGE_TREE_FILES = '1'
+    try {
+      await writeFile(path.join(workspace, 'b.txt'), 'b\n')
+      await writeFile(path.join(workspace, 'c.txt'), 'c\n')
+      const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir })
+      const baseline = await checkpoints.baseline({ runId: 'run-large' })
+      assert.equal(baseline.largeTree, true)
+    } finally {
+      if (previous === undefined) delete process.env.FULKRUM_CHECKPOINT_LARGE_TREE_FILES
+      else process.env.FULKRUM_CHECKPOINT_LARGE_TREE_FILES = previous
+    }
+  })
+})
+
 test('the status endpoint reports the checkpoint store honestly', async () => {
   await withTempDirectory(async (workspace) => {
     const dataDir = path.join(workspace, 'data')

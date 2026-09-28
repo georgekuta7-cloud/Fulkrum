@@ -842,6 +842,29 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         return
       }
 
+      if (request.method === 'POST' && requestUrl.pathname === '/api/maintenance/checkpoint-prune') {
+        if (!checkpoints) {
+          sendJson(response, 503, { error: 'No checkpoint store is configured.' })
+          return
+        }
+        // Only runs whose decision is complete and old enough are released:
+        // a checkpoint needed for a pending review, undo, or discard is never
+        // prunable (P1.1).
+        const retentionDays = Math.max(Number(process.env.FULKRUM_CHECKPOINT_RETENTION_DAYS ?? 7) || 0, 0)
+        const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000
+        const releasable = []
+        for (const run of store.listRuns({ limit: 500 })) {
+          if (run.updatedAt > cutoff) continue
+          const types = store.listEvents(run.id).map((event) => event.type)
+          const decided = ['checkpoint.accepted', 'checkpoint.discarded', 'checkpoint.undone'].some((type) => types.includes(type))
+          if (decided || ['cancelled', 'completed'].includes(run.status)) releasable.push(run.id)
+        }
+        const result = await checkpoints.prune({ releaseRunIds: releasable })
+        const record = store.recordMaintenance({ kind: 'checkpoint-prune', ok: true, summary: `released ${result.released.length} ref(s), ${Math.max(result.bytesBefore - result.bytesAfter, 0)} bytes freed`, payload: result })
+        sendJson(response, 200, { result, record })
+        return
+      }
+
       if (request.method === 'POST' && requestUrl.pathname === '/api/maintenance/sandbox-check') {
         // The first-run question: does the boundary actually work on this
         // machine? A fixed argv through the same runtime every command uses —

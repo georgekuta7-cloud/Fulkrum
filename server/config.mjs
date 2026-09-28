@@ -41,6 +41,8 @@ export const settings = [
   { name: 'FULKRUM_BACKUP_KEEP', group: 'storage', kind: 'int', default: 7, min: 1, description: 'How many backups to keep before rotating the oldest out.' },
   { name: 'FULKRUM_WAL_AUTOCHECKPOINT', group: 'storage', kind: 'int', default: 1000, min: 0, description: 'WAL pages before SQLite checkpoints them into the main file.' },
   { name: 'FULKRUM_TOOL_OUTPUT_RETENTION_DAYS', group: 'storage', kind: 'int', default: 14, min: 0, description: 'How long tool outputs, raw inputs, and finished tasks turns are kept. 0 disables pruning.' },
+  { name: 'FULKRUM_CHECKPOINT_RETENTION_DAYS', group: 'storage', kind: 'int', default: 7, min: 0, description: 'How long a decided run\u2019s checkpoint ref is kept before pruning. Undecided runs are never pruned.' },
+  { name: 'FULKRUM_CHECKPOINT_LARGE_TREE_FILES', group: 'limits', kind: 'int', default: 10_000, min: 1, description: 'Covered files above which a baseline is reported as a large tree.' },
   { name: 'FULKRUM_PRICE_FILE', group: 'storage', kind: 'path', default: '', description: 'JSON price overrides, in the shape model -> {input, output, cacheRead, cacheWrite}.' },
 
   // --- Limits ---------------------------------------------------------------
