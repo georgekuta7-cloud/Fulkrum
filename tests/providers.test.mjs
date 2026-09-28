@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import test from 'node:test'
-import { bodySendsTemperature, bodyWithoutTemperature, buildRequest, createLimiter, createModelCaller, parseResponse, providerAuthHeaders, resolveToolNames, wireToolName, wireToolDefinitions } from '../server/modelCall.mjs'
+import { bodySendsTemperature, bodyWithoutTemperature, buildRequest, createLimiter, createModelCaller, credentialFingerprint, parseResponse, providerAuthHeaders, resolveToolNames, wireToolName, wireToolDefinitions } from '../server/modelCall.mjs'
 import { createProviderRegistry } from '../server/providerRegistry.mjs'
 import { isPrivateAddress } from '../server/networkPolicy.mjs'
 import { agentRoles } from '../server/roles.mjs'
@@ -408,6 +408,58 @@ test('the retry ceiling is read at use time, so a saved change applies live', as
     else process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS = previous.attempts
     if (previous.threshold === undefined) delete process.env.FULKRUM_BREAKER_THRESHOLD
     else process.env.FULKRUM_BREAKER_THRESHOLD = previous.threshold
+  }
+})
+
+test('calls on one key share a concurrency cap; different keys do not contend', async () => {
+  // The fingerprint is stable per key and never contains the key.
+  const same = credentialFingerprint({ baseUrl: 'https://x/v1' }, { key: 'sk-abc' })
+  const sameAgain = credentialFingerprint({ baseUrl: 'https://x/v1' }, { key: 'sk-abc' })
+  const other = credentialFingerprint({ baseUrl: 'https://x/v1' }, { key: 'sk-other' })
+  assert.equal(same, sameAgain)
+  assert.notEqual(same, other)
+  assert.equal(same.includes('sk-abc'), false)
+
+  const previous = { concurrency: process.env.FULKRUM_PROVIDER_MAX_CONCURRENCY, attempts: process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS }
+  process.env.FULKRUM_PROVIDER_MAX_CONCURRENCY = '1'
+  process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS = '2'
+  try {
+    // The first dial is rate-limited with a one-second retry: that holds the
+    // shared limiter slot while the second call on the same key queues.
+    await withProviderServer((_record, response, count) => {
+      if (count === 1) {
+        response.setHeader('retry-after', '1')
+        json(response, { error: { message: 'slow down' } }, 429)
+      } else {
+        json(response, { choices: [{ message: { content: 'ok' } }] })
+      }
+    }, async ({ baseUrl }) => {
+      await withStore(async (store) => {
+        const registry = createProviderRegistry(store)
+        registry.addCustom({ label: 'One', baseUrl, model: 'm', apiKey: 'sk-shared', allowPrivate: true })
+        registry.addCustom({ label: 'Two', baseUrl, model: 'm', apiKey: 'sk-shared', allowPrivate: true })
+        registry.addCustom({ label: 'Three', baseUrl, model: 'm', apiKey: 'sk-other', allowPrivate: true })
+        const states = []
+        const caller = createModelCaller({ providerRegistry: registry, onProviderState: (state) => states.push(state) })
+        const slow = caller.callModel(registry.resolve('One'), 'm', [{ role: 'user', content: 'go' }], { instructions: 's' })
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        const shared = caller.callModel(registry.resolve('Two'), 'm', [{ role: 'user', content: 'go' }], { instructions: 's' })
+        const independent = caller.callModel(registry.resolve('Three'), 'm', [{ role: 'user', content: 'go' }], { instructions: 's' })
+        await Promise.all([slow, shared, independent])
+
+        const waiting = states.filter((state) => state.type === 'provider.waiting')
+        assert.ok(waiting.length >= 1, `the same-key call waited: ${JSON.stringify(states)}`)
+        const sharedId = credentialFingerprint({ baseUrl }, { key: 'sk-shared' })
+        const independentId = credentialFingerprint({ baseUrl }, { key: 'sk-other' })
+        assert.equal(waiting.every((state) => state.credentialId === sharedId), true, `only the shared key waited: ${JSON.stringify(states)}`)
+        assert.equal(waiting.some((state) => state.credentialId === independentId), false, 'the other key never contended')
+      })
+    })
+  } finally {
+    if (previous.concurrency === undefined) delete process.env.FULKRUM_PROVIDER_MAX_CONCURRENCY
+    else process.env.FULKRUM_PROVIDER_MAX_CONCURRENCY = previous.concurrency
+    if (previous.attempts === undefined) delete process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS
+    else process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS = previous.attempts
   }
 })
 

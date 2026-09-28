@@ -85,6 +85,37 @@ export function PlanCard({ bridge }: { bridge: Bridge }) {
           {recordedEstimate ? ' · recorded at approval' : ''}
         </p>
       ) : null}
+      {plan.dispatch && plan.plan.status === 'draft' ? (
+        <div className="space-y-1">
+          <p className="text-label-sm text-outline">
+            Dispatch preview
+            {plan.dispatch.sharedKey ? ' · every row shares one provider key, so concurrent calls queue at the concurrency limit' : ''}
+            {plan.dispatch.budgetUsd !== null ? ` · hard ceiling $${plan.dispatch.budgetUsd}` : ' · no hard ceiling'}
+            {plan.dispatch.providersReady ? '' : ' · a row has no provider key'}
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-label-sm font-mono">
+              <thead>
+                <tr className="text-outline text-left">
+                  <th className="pr-3 font-normal">task</th><th className="pr-3 font-normal">role</th><th className="pr-3 font-normal">provider · model</th><th className="pr-3 font-normal">starts</th><th className="pr-3 font-normal">~calls</th><th className="font-normal">est.</th>
+                </tr>
+              </thead>
+              <tbody>
+                {plan.dispatch.rows.map((row) => (
+                  <tr key={row.taskIndex} className="text-on-surface-variant">
+                    <td className="pr-3 max-w-[16rem] truncate" title={row.title}>{row.title}</td>
+                    <td className="pr-3">{roleLabel(row.role)}</td>
+                    <td className="pr-3 max-w-[14rem] truncate" title={row.provider ? `${row.provider} · ${row.model}` : undefined}>{row.provider ? `${row.provider} · ${row.model}` : 'no provider key'}</td>
+                    <td className="pr-3">{row.group}</td>
+                    <td className="pr-3">{row.callsPerTask}</td>
+                    <td>{row.estCost ? `$${row.estCost.low.toFixed(2)}–$${row.estCost.high.toFixed(2)}` : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
       {plan.revision && plan.plan.status === 'draft' ? (
         <div className="p-2 rounded-lg bg-surface-container-lowest text-label-sm space-y-0.5">
           <p className="text-on-surface">

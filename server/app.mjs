@@ -1792,7 +1792,46 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
               }
             }
           }
-          sendJson(response, 200, { ...plan, roles: agentRoles, complexity: scoreComplexity({ direction, plan: { objective: plan.plan.objective, tasks: plan.tasks } }), revision })
+          // P4.3: the effective dispatch, resolved server-side before
+          // approval — who plays each role, on which model, and which start
+          // group it lands in. "default provider" is not a preview.
+          const projectSettings = store.getProject(run.projectId)?.project.settings ?? {}
+          const routingSettings = projectSettings.routing ?? {}
+          const fallbackProvider = providerRegistry.configuredProviders()[0] ?? null
+          const callsPerTask = Math.max(Number(process.env.FULKRUM_ESTIMATE_CALLS_PER_TASK ?? 4) || 4, 1)
+          const estimate = store.estimateRunCost(runId)
+          const dispatchRows = plan.tasks.map((task, index) => {
+            const requested = String(routingSettings[task.role] ?? '').trim()
+            let provider = fallbackProvider
+            if (requested) {
+              try {
+                provider = providerRegistry.resolve(requested) ?? fallbackProvider
+              } catch {
+                provider = fallbackProvider
+              }
+            }
+            const configured = Boolean(provider && providerRegistry.isConfigured(provider))
+            return {
+              taskIndex: index,
+              title: task.title,
+              role: task.role,
+              provider: configured ? provider.label : null,
+              model: configured ? providerRegistry.model(provider, requested || provider.label) : null,
+              group: agentRoles[task.role]?.readOnly ? 'parallel' : 'sequential',
+              callsPerTask,
+              estCost: configured && estimate?.perCall
+                ? { low: Number((estimate.perCall.low * callsPerTask).toFixed(4)), high: Number((estimate.perCall.high * callsPerTask).toFixed(4)) }
+                : null,
+            }
+          })
+          const distinctProviders = new Set(dispatchRows.map((row) => row.provider).filter(Boolean))
+          const dispatch = {
+            rows: dispatchRows,
+            sharedKey: distinctProviders.size === 1 && dispatchRows.length > 1,
+            providersReady: dispatchRows.every((row) => row.provider !== null),
+            budgetUsd: run.budgetUsd,
+          }
+          sendJson(response, 200, { ...plan, roles: agentRoles, complexity: scoreComplexity({ direction, plan: { objective: plan.plan.objective, tasks: plan.tasks } }), revision, dispatch })
           return
         }
         if (request.method === 'PATCH') {

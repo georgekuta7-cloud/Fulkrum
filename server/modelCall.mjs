@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { createSseParser } from './sse.mjs'
 import { privateProviderUrlsAllowed } from './networkPolicy.mjs'
 import { pinnedRequest, pinnedStream } from './outboundHttp.mjs'
@@ -583,8 +584,27 @@ export class ProviderError extends Error {
   }
 }
 
+/**
+ * A stable, non-reversible name for the credential a provider uses (P4.4):
+ * base URL plus key, hashed. Two routes on the same key share a concurrency
+ * cap; independently keyed providers never block each other. The key itself
+ * is never part of what callers see.
+ */
+export function credentialFingerprint(provider, credentials) {
+  const material = `${provider?.baseUrl ?? ''}\n${credentials?.key ?? ''}`
+  return createHash('sha256').update(material, 'utf8').digest('hex').slice(0, 16)
+}
+
 export function createModelCaller({ providerRegistry, allowPrivate = privateProviderUrlsAllowed(), onProviderState = null }) {
-  const limiter = createLimiter()
+  // One limiter per credential identity (P4.4). The supported operating model
+  // is one bridge process per provider account; a second bridge on the same
+  // account is outside this coordination guarantee, and says so in the docs.
+  const limiters = new Map()
+  const limiterFor = (provider) => {
+    const id = credentialFingerprint(provider, providerRegistry.credentials(provider))
+    if (!limiters.has(id)) limiters.set(id, createLimiter())
+    return { credentialId: id, limiter: limiters.get(id) }
+  }
   const breaker = createBreaker()
   /**
    * One request, to an address that was validated and is then pinned: the name is
@@ -723,12 +743,13 @@ export function createModelCaller({ providerRegistry, allowPrivate = privateProv
     const { url, body } = buildRequest(provider.protocol, { baseUrl: provider.baseUrl, model, messages, tools, instructions, temperature: sampling.temperature, stream: streaming, reasoning: effectiveReasoning })
     const headers = { 'Content-Type': 'application/json', ...providerAuthHeaders(provider.protocol, credentials) }
     const requestOptions = { method: 'POST', headers, body: JSON.stringify(body), allowPrivate: allow }
+    const { credentialId, limiter } = limiterFor(provider)
     // Redacted state for the person watching (P3.3): which provider, which
     // attempt, how long — never a key, header, or message body.
     const report = (event) => {
       if (!onProviderState) return
       try {
-        onProviderState({ providerId: provider.id, providerLabel: provider.label, runId, ...event })
+        onProviderState({ providerId: provider.id, providerLabel: provider.label, credentialId, runId, ...event })
       } catch {
         // Observability never breaks a call.
       }

@@ -109,6 +109,12 @@ export type Plan = {
   plan: { id: string; version: number; objective: string; contentHash: string; status: string; source: string; approvedAt?: number | null }
   tasks: PlanTask[]
   revision?: { previousVersion: number; previousStatus: string; added: string[]; removed: string[]; changed: string[] } | null
+  dispatch?: {
+    rows: Array<{ taskIndex: number; title: string; role: string; provider: string | null; model: string | null; group: string; callsPerTask: number; estCost: { low: number; high: number } | null }>
+    sharedKey: boolean
+    providersReady: boolean
+    budgetUsd: number | null
+  } | null
   fallbackReason?: string | null
   created?: boolean
   demo?: boolean

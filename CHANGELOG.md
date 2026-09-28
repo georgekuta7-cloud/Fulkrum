@@ -30,6 +30,19 @@ All notable changes to Fulkrum are documented here. This project follows
   proven (PASS or waived) separately from unproven.
 
 ### Added
+- **The plan previews the effective dispatch before approval.** Per P4.3, a
+  draft's plan card carries a table of what will actually run: each task's
+  role, the resolved provider and model (never "default provider"), whether
+  it starts in the parallel or sequential group, the expected calls, the
+  estimated cost range, the shared-key note when every row uses one key, and
+  the hard ceiling. A row without a provider key says so.
+- **Concurrency is per credential, not per bridge.** Per P4.4, calls are
+  grouped by a non-reversible fingerprint of base URL plus key: two routes
+  on the same key share one cap, independently keyed providers never block
+  each other, and the fingerprint never contains the key. The operating
+  model is documented as one bridge per provider account; the editable
+  concurrency limit stays the user's chosen cap, with live retry feedback
+  from P3.3 as the advice signal.
 - **Operating limits are visible and editable, with their source and
   liveness.** Per P4.2, the Budgets tab gains an Operating limits panel:
   provider concurrency, retry attempts, parallel readers, verifier steps,

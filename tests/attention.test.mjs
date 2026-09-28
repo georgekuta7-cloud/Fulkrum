@@ -62,6 +62,31 @@ test('a finished run awaiting its review and a revised draft read as review and 
   })
 })
 
+test('the plan previews the effective dispatch before approval', async () => {
+  await withServer(async ({ request, store, providerRegistry }) => {
+    providerRegistry.addCustom({ label: 'Solo', baseUrl: 'https://example.invalid/v1', model: 'solo-model', apiKey: 'sk-solo' })
+    const project = await request('POST', '/api/projects', { name: 'dispatch fixture' })
+    const projectId = project.payload.project.id
+    const run = await request('POST', '/api/runs', { projectId })
+    const runId = run.payload.run.id
+    store.createPlan({ projectId, runId, objective: 'Preview.', contentHash: 'h', source: 'test', tasks: [
+      { role: 'research', title: 'Look', instructions: 'Read.', dependsOn: [] },
+      { role: 'builder', title: 'Build', instructions: 'Write.', dependsOn: [0] },
+    ] })
+
+    const plan = await request('GET', `/api/runs/${runId}/plan`)
+    assert.equal(plan.status, 200)
+    const dispatch = plan.payload.dispatch
+    assert.equal(dispatch.rows.length, 2)
+    assert.equal(dispatch.rows[0].provider, 'Solo', 'the effective provider is named, not "default"')
+    assert.equal(dispatch.rows[0].model, 'solo-model')
+    assert.equal(dispatch.rows[0].group, 'parallel', 'readers may overlap')
+    assert.equal(dispatch.rows[1].group, 'sequential', 'writers are serialized')
+    assert.equal(dispatch.sharedKey, true, 'one key across rows is stated')
+    assert.equal(dispatch.providersReady, true)
+  })
+})
+
 test('a revised draft reports what changed from the previous version', async () => {
   await withServer(async ({ request, store }) => {
     const project = await request('POST', '/api/projects', { name: 'revision fixture' })

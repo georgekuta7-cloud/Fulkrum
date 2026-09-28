@@ -160,6 +160,20 @@ describe('conversation decisions', () => {
     expect(screen.queryByText(/retrying in 12s/)).not.toBeInTheDocument()
   })
 
+  it('previews the effective dispatch before approval', () => {
+    render(<ChatView bridge={fixture({
+      plan: {
+        plan: { id: 'plan1', version: 1, status: 'draft', objective: 'O', contentHash: 'h', source: 'model' },
+        tasks: [{ id: 'pt1', orderIndex: 0, role: 'builder', title: 'Build', instructions: 'I', acceptanceCheck: 'C', dependsOn: [] }],
+        dispatch: { rows: [{ taskIndex: 0, title: 'Build', role: 'builder', provider: 'Solo', model: 'solo-model', group: 'sequential', callsPerTask: 4, estCost: { low: 0.01, high: 0.04 } }], sharedKey: false, providersReady: true, budgetUsd: 5 },
+      },
+    })} />)
+    expect(screen.getByText(/Dispatch preview/)).toBeInTheDocument()
+    expect(screen.getByText('Solo · solo-model')).toBeInTheDocument()
+    expect(screen.getByText(/\$0\.01–\$0\.04/)).toBeInTheDocument()
+    expect(screen.getByText(/hard ceiling \$5/)).toBeInTheDocument()
+  })
+
   it('shows each worker its last tool call', () => {    render(<ChatView bridge={fixture({
       tasks: [{ id: 't1', agentId: 'research', title: 'Read files', status: 'running' } as any],
       toolCalls: [
