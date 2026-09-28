@@ -1778,6 +1778,56 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
     }
   }
 
+  /**
+   * Re-run a machine check for one task (P2.6): a check that could not run or
+   * did not hold gets another receipt. A passing re-run recovers the task to
+   * completed + PASS; the earlier verdict stays in the chain and the new one
+   * is appended, never rewritten.
+   */
+  const rerunCheck = async ({ runId, taskId }) => {
+    const task = store.getTask(taskId)
+    if (!task || task.runId !== runId) throw new Error('Task not found on this run.')
+    const run = store.getRun(runId)
+    const plan = run?.planId ? store.getPlan(run.planId) : store.getLatestPlanForRun(runId)
+    const planTask = plan?.tasks.find((entry) => entry.id === task.planTaskId)
+    const check = planTask?.check ?? null
+    if (!check || check.type === 'human') throw new Error('Only command or file checks can be re-run; a human criterion needs the verifier or a waiver.')
+    const outcomeId = `outcome-${plan.plan.id}-${planTask.orderIndex}`
+    let result
+    if (check.type === 'command') {
+      const argv = [check.command, ...(check.args ?? [])]
+      const outcome = toolBroker?.runCheck ? await toolBroker.runCheck(argv, { runId }) : { ran: false, reason: 'no tool broker is available' }
+      if (!outcome.ran) {
+        store.appendEvent({ runId, type: 'check.not_run', agentId: 'head', payload: { taskId, title: task.title, check, reason: outcome.reason, rerun: true } })
+        result = { status: 'UNKNOWN', criterion: `Approved check: \`${argv.join(' ')}\` could not run (${outcome.reason})` }
+      } else {
+        const expected = check.expectExit ?? 0
+        const passed = outcome.exitCode === expected
+        store.appendEvent({ runId, type: 'check.receipt', agentId: 'head', payload: { taskId, title: task.title, command: argv.join(' '), exitCode: outcome.exitCode, expectExit: expected, outputSha256: createHash('sha256').update(`${outcome.stdout}\n${outcome.stderr}`, 'utf8').digest('hex'), passed, rerun: true } })
+        result = { status: passed ? 'PASS' : 'FAIL', criterion: `Approved check: \`${argv.join(' ')}\` exited ${outcome.exitCode} (expected ${expected})` }
+      }
+    } else {
+      let content = null
+      try {
+        const target = resolveWorkspacePath(toolBroker.workspaceRoot, check.path)
+        content = readFileSync(target.resolved, 'utf8')
+      } catch {
+        content = null
+      }
+      const exists = content !== null
+      const passed = check.exists === false ? !exists : exists && (!check.contains || content.includes(check.contains))
+      store.appendEvent({ runId, type: 'check.assertion', agentId: 'head', payload: { taskId, title: task.title, check, passed, detail: checkText(check), rerun: true } })
+      result = { status: passed ? 'PASS' : 'FAIL', criterion: `Approved check: ${checkText(check)}` }
+    }
+    const stored = store.recordTaskVerdict({ runId, taskId, overall: result.status, results: [result], checkedBy: 'deterministic' })
+    store.appendEvent({ runId, type: 'task.verified', agentId: 'head', payload: { taskId, title: task.title, outcomeId, overall: result.status, verdictId: stored?.id ?? null, reviewer: null, rerun: true, results: [result] } })
+    if (result.status === 'PASS') {
+      store.updateTask(taskId, { status: 'completed', verificationStatus: 'PASS' })
+      store.appendEvent({ runId, type: 'task.recovered', agentId: 'head', payload: { taskId, title: task.title, reason: 'a re-run check passed', verdictId: stored?.id ?? null } })
+    }
+    return { taskId, title: task.title, status: result.status, detail: result.criterion }
+  }
+
   const start = (runId, options = {}) => {
     if (activeRuns.has(runId)) return activeRuns.get(runId)
     const promise = executeRun(runId, options)
@@ -1818,5 +1868,5 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
   const answerToolCall = (toolCallId, answer) => gate.answer(toolCallId, answer)
   const abandonWaiters = (reason, runId = null) => gate.abandonAll(reason, runId)
 
-  return { start, activeRuns, approvalWaiters, approveToolCall, denyToolCall, answerToolCall, abandonWaiters, assertBudget, withBudget, maxStepsPerTask, inFlightBudget: budget.reservedFor, releaseWorkspaceWriter }
+  return { start, activeRuns, approvalWaiters, approveToolCall, denyToolCall, answerToolCall, abandonWaiters, assertBudget, withBudget, maxStepsPerTask, inFlightBudget: budget.reservedFor, releaseWorkspaceWriter, rerunCheck }
 }

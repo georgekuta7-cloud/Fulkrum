@@ -73,6 +73,7 @@ export type Task = {
   agentId: string
   title: string
   status: string
+  verificationStatus?: string | null
   planTaskId?: string | null
   result?: string | null
   stepCount?: number

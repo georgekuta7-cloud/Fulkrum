@@ -906,17 +906,34 @@ export function useBridge() {
         return false
       }
     },
-    async acceptRunChanges() {
+    async acceptRunChanges(acknowledged = false) {
       if (!runId) return false
       const selection = runScope.capture(runId)
       try {
-        const result = await api.post<{ accepted: boolean; already: boolean }>(`/api/runs/${encodeURIComponent(runId)}/checkpoint-accept`, {})
+        const result = await api.post<{ accepted: boolean; already: boolean; unresolved?: number }>(`/api/runs/${encodeURIComponent(runId)}/checkpoint-accept`, { acknowledged })
         if (!selection.isCurrent()) return false
         setNotice(result.already ? 'This run\u2019s changes were already accepted.' : 'Accepted: the live folder keeps this run\u2019s changes.')
         await Promise.all([loadCheckpointDiff(), loadRun(runId)])
         return true
       } catch (caught) {
         if (selection.isCurrent()) report(caught, 'The accept failed.')
+        return false
+      }
+    },
+    async rerunChecks() {
+      if (!runId) return false
+      const selection = runScope.capture(runId)
+      try {
+        const result = await api.post<{ outcomes: Array<{ title: string; status: string; detail: string }>; resumed: boolean }>(`/api/runs/${encodeURIComponent(runId)}/checks/rerun`, {})
+        if (!selection.isCurrent()) return false
+        const passed = result.outcomes.filter((entry) => entry.status === 'PASS').length
+        const failed = result.outcomes.filter((entry) => entry.status === 'FAIL').length
+        const skipped = result.outcomes.filter((entry) => entry.status === 'skipped').length
+        setNotice(`Checks re-run: ${passed} proven${failed ? ` \u00b7 ${failed} failed` : ''}${skipped ? ` \u00b7 ${skipped} skipped` : ''}${result.resumed ? ' \u00b7 the run resumed' : ''}.`)
+        await Promise.all([loadRun(runId), loadCheckpointDiff(), loadArtifacts(runId)])
+        return true
+      } catch (caught) {
+        if (selection.isCurrent()) report(caught, 'The checks could not be re-run.')
         return false
       }
     },

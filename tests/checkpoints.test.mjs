@@ -375,11 +375,15 @@ test('accept records the decision without touching files, and undo restores afte
       while (Date.now() < deadline && store.getRun(runId).status === 'executing') await new Promise((resolve) => setTimeout(resolve, 100))
       assert.equal(store.getRun(runId).status, 'review')
 
-      const accepted = await request('POST', `/api/runs/${runId}/checkpoint-accept`, {})
+      const refused = await request('POST', `/api/runs/${runId}/checkpoint-accept`, {})
+      assert.equal(refused.status, 409, 'unproven outcomes cannot be accepted silently')
+      assert.equal(refused.payload.unresolved.length, 1)
+      const accepted = await request('POST', `/api/runs/${runId}/checkpoint-accept`, { acknowledged: true })
       assert.equal(accepted.status, 200, JSON.stringify(accepted.payload))
       assert.equal(accepted.payload.already, false)
+      assert.equal(accepted.payload.unresolved, 1, 'the acknowledgment is recorded with the count')
       assert.equal(existsSync(path.join(workspace, 'out.txt')), true, 'accept never re-applies or removes anything')
-      const again = await request('POST', `/api/runs/${runId}/checkpoint-accept`, {})
+      const again = await request('POST', `/api/runs/${runId}/checkpoint-accept`, { acknowledged: true })
       assert.equal(again.payload.already, true, 'the decision is recorded once')
 
       const undone = await request('POST', `/api/runs/${runId}/checkpoint-discard`, { mode: 'undo' })
@@ -426,7 +430,7 @@ test('a second write-capable run waits for the first and starts when it is decid
       assert.equal(store.listEvents(second).some((event) => event.type === 'task.started'), false, 'no work starts while waiting')
 
       // The decision releases the slot; the queued run starts on its own.
-      const accepted = await request('POST', `/api/runs/${first}/checkpoint-accept`, {})
+      const accepted = await request('POST', `/api/runs/${first}/checkpoint-accept`, { acknowledged: true })
       assert.equal(accepted.status, 200, JSON.stringify(accepted.payload))
       await waitFor(() => store.listEvents(second).some((event) => event.type === 'task.started'), 'the queued run starts after the decision')
       await waitFor(() => store.getRun(second).status === 'review', 'and finishes')

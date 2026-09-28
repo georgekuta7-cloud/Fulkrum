@@ -660,6 +660,7 @@ test('the documented routes are the routes the server serves', async () => {
       { method: 'POST', template: '/api/runs/{runId}/checkpoint-accept' },
       { method: 'POST', template: '/api/runs/{runId}/checkpoint-discard' },
       { method: 'POST', template: '/api/runs/{runId}/tasks/{taskId}/waive', values: { taskId: 'nope' } },
+      { method: 'POST', template: '/api/runs/{runId}/checks/rerun' },
       { method: 'POST', template: '/api/maintenance/verify' },
       { method: 'POST', template: '/api/maintenance/backup' },
       { method: 'POST', template: '/api/maintenance/sandbox-check' },

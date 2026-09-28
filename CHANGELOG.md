@@ -30,6 +30,14 @@ All notable changes to Fulkrum are documented here. This project follows
   proven (PASS or waived) separately from unproven.
 
 ### Added
+- **The finish screen decides on unresolved work, not around it.** Per P2.6,
+  Accept now refuses while outcomes are unproven or failed unless the human
+  ticks an explicit acknowledgment (recorded with the count), a "Re-run
+  checks" action re-executes machine checks and appends new receipts — a
+  passing re-run recovers the task to completed + PASS with `task.recovered`
+  on the chain, never rewriting the earlier verdict — and waiting dependents
+  resume when a re-run proves the ground. Human criteria still need the
+  verifier or a recorded waiver; nothing is auto-accepted.
 - **The reviewer is named, and the verifier budget is a per-run choice.** Per
   P2.5, the plan card shows the effective reviewer route — or says plainly
   that it is the same as the worker's route, with independent review

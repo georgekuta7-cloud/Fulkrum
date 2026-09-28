@@ -66,6 +66,7 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
     loadCheckpointDiff: vi.fn().mockResolvedValue(null),
     acceptRunChanges: vi.fn().mockResolvedValue(true),
     discardRunChanges: vi.fn().mockResolvedValue(true),
+    rerunChecks: vi.fn().mockResolvedValue(true),
     loadMarketplaceState: vi.fn().mockResolvedValue(null),
     loadArsenalState: vi.fn().mockResolvedValue(null),
     setError: vi.fn(),
@@ -167,7 +168,7 @@ describe('chat', () => {
     expect(screen.getByText('Ship it.')).toBeInTheDocument()
     expect(screen.getByText('On it.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Approve & Run' }))
-    expect(control).toHaveBeenCalledWith('approve-plan', { planId: 'plan-1', planHash: 'hash123' })
+    expect(control).toHaveBeenCalledWith('approve-plan', { planId: 'plan-1', planHash: 'hash123', verificationSteps: 3 })
     fireEvent.change(screen.getByLabelText('Direct the Head AI'), { target: { value: 'go faster' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send (Ctrl+Enter)' }))
     expect(chat).toHaveBeenCalledWith('go faster')
@@ -381,6 +382,27 @@ describe('files', () => {
 
     render(<FilesView bridge={makeBridge({ checkpointDiff: { available: false, reason: 'This run has no final snapshot yet.', files: [] } })} />)
     expect(screen.getByText(/no final snapshot yet/)).toBeInTheDocument()
+  })
+
+  it('requires acknowledging unproven outcomes before accepting, and can re-run checks', () => {
+    const acceptRunChanges = vi.fn().mockResolvedValue(true)
+    const rerunChecks = vi.fn().mockResolvedValue(true)
+    render(<FilesView bridge={makeBridge({
+      run: { id: 'run-1', projectId: 'p1', status: 'review', budgetUsd: 10 } as Bridge['run'],
+      tasks: [{ id: 't1', agentId: 'builder', title: 'Write it', status: 'completed', verificationStatus: 'UNKNOWN' } as any],
+      checkpointDiff: { available: true, baseline: 'a'.repeat(40), final: 'b'.repeat(40), files: [{ path: 'out.txt', change: 'added', added: 1, removed: 0 }] },
+      acceptRunChanges,
+      rerunChecks,
+    })} />)
+    const accept = screen.getByRole('button', { name: 'Accept changes' })
+    expect(accept).toBeDisabled()
+    expect(screen.getByText(/1 outcome\(s\) are unproven or failed/)).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('I accept the unproven outcomes'))
+    expect(accept).toBeEnabled()
+    fireEvent.click(accept)
+    expect(acceptRunChanges).toHaveBeenCalledWith(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Re-run checks' }))
+    expect(rerunChecks).toHaveBeenCalled()
   })
 })
 

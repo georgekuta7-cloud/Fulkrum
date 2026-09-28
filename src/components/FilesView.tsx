@@ -175,6 +175,7 @@ function WorkspaceTree({ bridge }: { bridge: Bridge }) {
 
 export function FilesView({ bridge }: { bridge: Bridge }) {
   const { loadCheckpoints, loadCheckpointDiff } = bridge
+  const [acknowledged, setAcknowledged] = useState(false)
   useEffect(() => {
     void loadCheckpoints()
     void loadCheckpointDiff()
@@ -186,6 +187,9 @@ export function FilesView({ bridge }: { bridge: Bridge }) {
   const accepted = Boolean(latestEvent('checkpoint.accepted'))
   const restored = Boolean(latestEvent('checkpoint.discarded') ?? latestEvent('checkpoint.undone'))
   const runExecuting = bridge.run?.status === 'executing'
+  // P2.6: unresolved outcomes must be acknowledged, waived, or re-run before
+  // the changes are accepted — no final screen accepts them silently.
+  const unresolved = (bridge.tasks ?? []).filter((task) => task.status === 'completed' && !['PASS', 'waived'].includes(task.verificationStatus ?? ''))
   return (
     <div className="w-full max-w-5xl mx-auto px-4 py-4 flex flex-col gap-4">
       <Panel title="Run changes" action={<span className="text-label-md text-outline">baseline \u2192 final snapshot</span>}>
@@ -201,10 +205,13 @@ export function FilesView({ bridge }: { bridge: Bridge }) {
               </div>
             )) : <p className="text-body-sm text-outline">No covered changes between this run's baseline and final snapshot.</p>}
             <div className="flex items-center gap-2 flex-wrap pt-1">
-              <Button disabled={runExecuting || accepted || restored} onClick={() => void bridge.acceptRunChanges()}>Accept changes</Button>
+              <Button disabled={runExecuting || accepted || restored || (unresolved.length > 0 && !acknowledged)} onClick={() => void bridge.acceptRunChanges(acknowledged)}>Accept changes</Button>
               <Button variant="danger" disabled={runExecuting || restored} onClick={() => void bridge.discardRunChanges(accepted ? 'undo' : 'discard')}>
                 {restored ? 'Changes restored' : accepted ? 'Undo run changes' : 'Discard run changes'}
               </Button>
+              {unresolved.length && !accepted && !restored ? (
+                <Button disabled={runExecuting} onClick={() => void bridge.rerunChecks()}>Re-run checks</Button>
+              ) : null}
               <span className="text-label-sm text-outline min-w-0">
                 {restored
                   ? 'Restored from the baseline; conflicts were left alone.'
@@ -213,6 +220,15 @@ export function FilesView({ bridge }: { bridge: Bridge }) {
                     : 'Accept keeps the live folder; Discard restores covered files from the baseline and leaves conflicts alone.'}
               </span>
             </div>
+            {unresolved.length && !accepted && !restored ? (
+              <div className="p-2 rounded-lg bg-surface-container-lowest space-y-1">
+                <p className="text-label-sm text-error">{unresolved.length} outcome(s) are unproven or failed: {unresolved.map((task) => task.title).join(', ')}. Waive them, re-run machine checks, or acknowledge to accept.</p>
+                <label className="flex items-center gap-2 text-label-sm">
+                  <input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />
+                  I accept the unproven outcomes
+                </label>
+              </div>
+            ) : null}
           </>
         ) : bridge.resourceErrors.checkpointDiff ? (
           <ResourceError label="Run changes" message={bridge.resourceErrors.checkpointDiff} onRetry={() => void bridge.retryResource('checkpointDiff')} />

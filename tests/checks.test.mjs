@@ -236,3 +236,35 @@ test('a file assertion is evaluated against the covered workspace', async () => 
     }, { model: modelWithCheck(planWithCheck({ type: 'file', path: 'checked.txt', contains: 'checked' })) })
   })
 })
+
+test('a failing check can be re-run to a passing receipt, and the task recovers', async () => {
+  let calls = 0
+  const execution = { run: async () => {
+    calls += 1
+    if (calls === 1) throw Object.assign(new Error('The command failed. (exit 1)\nflaky'), { code: 1 })
+    return { stdout: 'ok\n', stderr: '', container: 'stub' }
+  } }
+  await withKey(async () => {
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'rerun fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
+      const runId = run.payload.run.id
+      assert.equal(await runToReview(request, store, runId), 'failed', `unexpected status ${store.getRun(runId).status}`)
+      assert.equal(store.listTasks(runId)[0].verificationStatus, 'FAIL')
+
+      const rerun = await request('POST', `/api/runs/${runId}/checks/rerun`, {})
+      assert.equal(rerun.status, 200, JSON.stringify(rerun.payload))
+      assert.equal(rerun.payload.outcomes[0].status, 'PASS')
+      assert.equal(rerun.payload.outcomes[0].detail, 'Approved check: `npm test` exited 0 (expected 0)')
+
+      const task = store.listTasks(runId)[0]
+      assert.equal(task.status, 'completed', 'a passing re-run recovers the task')
+      assert.equal(task.verificationStatus, 'PASS')
+      const receipts = store.listEvents(runId).filter((event) => event.type === 'check.receipt')
+      assert.equal(receipts.length, 2, 'the new receipt is appended, never a rewrite')
+      assert.equal(receipts[1].payload.rerun, true)
+      assert.ok(store.listEvents(runId).find((event) => event.type === 'task.recovered'))
+      assert.ok(store.verifyEventChain(runId).ok)
+    }, { model: modelWithCheck(planWithCheck({ type: 'command', command: 'npm', args: ['test'], expectExit: 0 })), execution })
+  })
+})

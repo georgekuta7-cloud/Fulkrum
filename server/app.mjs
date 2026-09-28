@@ -695,20 +695,29 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           sendJson(response, 409, { error: 'This run has no usable baseline and final snapshot.' })
           return
         }
+        const body = await readJson(request).catch(() => ({}))
         if (decision === 'accept') {
           // Accept never re-applies changes: the live folder already holds
-          // them. It records the decision, once.
+          // them. It records the decision, once. Unproven or failed outcomes
+          // must be acknowledged first (P2.6): no final screen accepts
+          // unresolved work silently.
+          const unresolved = store.listTasks(runId)
+            .filter((task) => task.status === 'completed' && !['PASS', 'waived'].includes(task.verificationStatus ?? ''))
+            .map((task) => ({ taskId: task.id, title: task.title, status: task.verificationStatus ?? 'UNKNOWN' }))
+          if (unresolved.length && body?.acknowledged !== true) {
+            sendJson(response, 409, { error: `${unresolved.length} outcome(s) are unproven or failed; acknowledge them before accepting.`, unresolved })
+            return
+          }
           const existing = [...events].reverse().find((event) => event.type === 'checkpoint.accepted' && event.payload?.baseline === baseline && event.payload?.final === final)
           if (existing) {
             sendJson(response, 200, { accepted: true, already: true, recorded: existing.payload })
             return
           }
-          store.appendEvent({ runId, type: 'checkpoint.accepted', agentId: 'head', payload: { baseline, final, note: 'the live folder keeps the run\u2019s changes' } })
+          store.appendEvent({ runId, type: 'checkpoint.accepted', agentId: 'head', payload: { baseline, final, note: 'the live folder keeps the run\u2019s changes', acknowledged: unresolved.length ? true : false, unresolved: unresolved.length } })
           orchestrator.releaseWorkspaceWriter?.(runId)
-          sendJson(response, 200, { accepted: true, already: false })
+          sendJson(response, 200, { accepted: true, already: false, unresolved: unresolved.length })
           return
         }
-        const body = await readJson(request).catch(() => ({}))
         const mode = body?.mode === 'undo' ? 'undo' : 'discard'
         // Restart never repeats a completed restore: the decision is durable.
         const prior = [...events].reverse().find((event) => (event.type === 'checkpoint.discarded' || event.type === 'checkpoint.undone') && event.payload?.baseline === baseline && event.payload?.final === final)
@@ -767,6 +776,41 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         } catch (error) {
           sendJson(response, 409, { error: error instanceof Error ? error.message : 'The waiver failed.' })
         }
+        return
+      }
+
+      const checksRerunMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/checks\/rerun$/)
+      if (request.method === 'POST' && checksRerunMatch) {
+        const runId = safeDecode(checksRerunMatch[1])
+        const run = store.getRun(runId)
+        if (!run) {
+          sendJson(response, 404, { error: 'Run not found.' })
+          return
+        }
+        if (run.status === 'executing') {
+          sendJson(response, 409, { error: 'The run is executing: pause or cancel it before re-running checks.' })
+          return
+        }
+        // P2.6: a machine check that could not run or did not hold gets
+        // another receipt. Human criteria need the verifier or a waiver.
+        const targets = store.listTasks(runId).filter((task) => ['UNKNOWN', 'FAIL'].includes(task.verificationStatus ?? ''))
+        const outcomes = []
+        for (const task of targets) {
+          try {
+            outcomes.push(await orchestrator.rerunCheck({ runId, taskId: task.id }))
+          } catch (error) {
+            outcomes.push({ taskId: task.id, title: task.title, status: 'skipped', detail: error instanceof Error ? error.message : 'not re-runnable' })
+          }
+        }
+        // A passing re-run can release waiting dependents, like a waiver.
+        const waiting = store.listTasks(runId).some((entry) => entry.status === 'queued')
+        let resumed = false
+        if (waiting && ['review', 'failed'].includes(run.status) && outcomes.some((entry) => entry.status === 'PASS')) {
+          store.updateRun(runId, { status: 'executing' })
+          orchestrator.start(runId, { routing: {} })
+          resumed = true
+        }
+        sendJson(response, 200, { outcomes, resumed })
         return
       }
 
