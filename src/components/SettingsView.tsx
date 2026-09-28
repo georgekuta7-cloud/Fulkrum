@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Bridge } from '../hooks/useBridge'
 import { roleLabel } from '../lib/runGraph'
-import { Button, Chip, Panel, ResourceError, inputClass, selectClass } from './primitives'
+import { Button, Chip, Panel, ResourceError, StaleNote, inputClass, selectClass } from './primitives'
 import { ProviderCard } from './ProviderCard'
 import { Icon, type IconName } from './Icon'
 
@@ -313,6 +313,7 @@ export function SettingsView({ bridge }: { bridge: Bridge }) {
           {tab === 'learnings' ? (
             <Panel title="Learnings">
               <p className="text-body-sm text-on-surface-variant">Facts from reviewed runs, injected into planning. Forgetting removes them everywhere.</p>
+              <StaleNote stale={bridge.resourceStale?.learnings} label="Learnings" />
               {bridge.learnings.length ? bridge.learnings.map((learning: any) => (
                 <div key={learning.id} className="flex items-start justify-between gap-3 p-2.5 bg-surface-container rounded-lg">
                   <div className="min-w-0">

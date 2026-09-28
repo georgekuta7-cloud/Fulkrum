@@ -219,6 +219,7 @@ export type Status = {
   maintenance: Array<{ kind: string; ok: boolean; summary: string; createdAt: number }>
   execution: { available: boolean; label?: string; version?: string; image?: string; imageDigest?: string | null; imagePinned?: boolean; reason?: string; hint?: string; running?: Array<{ runId: string; container: string }> }
   checkpoints?: { available: boolean; initialized: boolean; checkpoints: number; bytes: number; reason?: string | null }
+  budget?: { runUsd: number | null; defaultRunUsd: number | null; dailyUsd: number | null; dailySpentUsd?: number }
   providers: Array<{ id: string; label: string; configured: boolean; keySource: string | null; breaker: { failures: number; openUntil: number; open: boolean } | null }>
   retention: { toolOutputDays: number | null; source: string | null }
 }

@@ -127,6 +127,16 @@ export function PlanCard({ bridge }: { bridge: Bridge }) {
           <p className="text-outline">Approving this version replaces the old plan; the estimate below is the new one.</p>
         </div>
       ) : null}
+      {plan.plan.status === 'draft' ? (
+        <p className="font-mono text-label-sm text-outline">
+          {run?.budgetUsd !== null && run?.budgetUsd !== undefined
+            ? `Limit $${run.budgetUsd.toFixed(2)} · $${Math.max(run.budgetUsd - (bridge.spend?.costUsd ?? 0), 0).toFixed(4)} left`
+            : 'No spending limit'}
+          {bridge.budget?.dailyUsd
+            ? ` · today $${(bridge.budget.dailySpentUsd ?? 0).toFixed(4)} of $${bridge.budget.dailyUsd.toFixed(2)}`
+            : ' · no daily limit'}
+        </p>
+      ) : null}
       {editing ? (
         <form className="space-y-4" onSubmit={async (event) => {
           event.preventDefault()

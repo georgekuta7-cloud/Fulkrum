@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Bridge } from '../hooks/useBridge'
-import { Button, Chip, EmptyState, Panel, ResourceError } from './primitives'
+import { Button, Chip, EmptyState, Panel, ResourceError, StaleNote } from './primitives'
 
 /**
  * What the run wrote: every artifact with its diff and a revert path, the
@@ -237,6 +237,7 @@ export function FilesView({ bridge }: { bridge: Bridge }) {
         )}
       </Panel>
       <Panel title="Artifacts" action={<span className="font-mono text-label-sm text-outline">{(bridge.artifacts ?? []).length} file(s)</span>}>
+        <StaleNote stale={bridge.resourceStale?.artifacts} label="Artifacts" />
         {(bridge.artifacts ?? []).length ? (bridge.artifacts ?? []).map((a: any) => (
           <ArtifactCard key={a.toolCallId ?? a.path} bridge={bridge} artifact={a} />
         )) : bridge.resourceErrors.artifacts ? (

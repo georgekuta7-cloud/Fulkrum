@@ -2518,7 +2518,14 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           ...snapshot,
           audit: store.verifyEventChain(runId),
           spend: store.spendForRun(runId),
-          budget: { runUsd: snapshot.run.budgetUsd, defaultRunUsd: Number(process.env.FULKRUM_RUN_BUDGET_USD ?? 0) || null, dailyUsd: Number(process.env.FULKRUM_DAILY_BUDGET_USD ?? 0) || null },
+          budget: {
+            runUsd: snapshot.run.budgetUsd,
+            defaultRunUsd: Number(process.env.FULKRUM_RUN_BUDGET_USD ?? 0) || null,
+            dailyUsd: Number(process.env.FULKRUM_DAILY_BUDGET_USD ?? 0) || null,
+            // What remains is only meaningful with what is already spent:
+            // "limit $X" and "$Y left" are different facts (P0.1).
+            dailySpentUsd: Number(store.spendSince(new Date(new Date().setHours(0, 0, 0, 0)).getTime()).costUsd.toFixed(4)),
+          },
         })
         return
       }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Bridge } from '../hooks/useBridge'
-import { Button, Chip, EmptyState, Panel, ResourceError, inputClass, selectClass } from './primitives'
+import { Button, Chip, EmptyState, Panel, ResourceError, StaleNote, inputClass, selectClass } from './primitives'
 
 /**
  * Everything that acts without a hand on the mouse: playbooks (approved plans
@@ -59,6 +59,7 @@ export function AutomationsView({ bridge }: { bridge: Bridge }) {
       <p className="text-label-md text-outline">{projectName ?? 'current project'} · schedules fire only while the bridge runs; missed intervals never burst-catch-up.</p>
 
       <Panel title="Playbooks" action={<span className="text-label-md text-outline">approved plans, reusable</span>}>
+        <StaleNote stale={bridge.resourceStale?.playbooks} label="Playbooks" />
         {playbooks.length ? playbooks.map((pb: any) => (
           <div key={pb.id} className="flex items-center justify-between gap-2 p-2.5 rounded-lg bg-surface-container">
             <div className="min-w-0">
@@ -91,6 +92,7 @@ export function AutomationsView({ bridge }: { bridge: Bridge }) {
       </Panel>
 
       <Panel title="Schedules" action={<span className="text-label-md text-outline">intervals that fire playbooks</span>}>
+        <StaleNote stale={bridge.resourceStale?.schedules} label="Schedules" />
         {schedules.length ? schedules.map((s: any) => {
           const pb = playbooks.find((entry: any) => entry.id === s.playbookId)
           return (
@@ -137,6 +139,7 @@ export function AutomationsView({ bridge }: { bridge: Bridge }) {
       </Panel>
 
       <Panel title="Goals" action={<span className="text-label-md text-outline">one objective, one shared ceiling</span>}>
+        <StaleNote stale={bridge.resourceStale?.goals} label="Goals" />
         {goals.length ? goals.map((goal: any) => (
           <div key={goal.id} className="flex items-center justify-between gap-2 p-2.5 rounded-lg bg-surface-container">
             <div className="min-w-0">
@@ -174,6 +177,7 @@ export function AutomationsView({ bridge }: { bridge: Bridge }) {
       </Panel>
 
       <Panel title="Blueprints" action={<span className="text-label-md text-outline">team setups, previewed first</span>}>
+        <StaleNote stale={bridge.resourceStale?.blueprints} label="Blueprints" />
         {blueprints.length ? blueprints.map((bp: any) => (
           <div key={`${bp.source}:${bp.name}`} className="flex items-center justify-between gap-2 p-2.5 rounded-lg bg-surface-container">
             <div className="min-w-0">

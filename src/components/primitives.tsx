@@ -59,6 +59,15 @@ export function ResourceError({ label, message, onRetry }: { label: string; mess
   )
 }
 
+/**
+ * Data that was already on screen when a refresh failed: still shown, but
+ * said to be the last loaded copy rather than passed off as fresh (P0.3).
+ */
+export function StaleNote({ stale, label }: { stale: boolean | undefined; label: string }) {
+  if (!stale) return null
+  return <p role="status" className="text-label-sm text-error">{label} is showing the last loaded data; the refresh failed.</p>
+}
+
 export function EmptyState({ icon, title, body, action }: { icon: IconName; title: string; body: string; action?: ReactNode }) {
   return (
     <div className="flex items-center justify-center h-full">

@@ -521,6 +521,8 @@ test('the status reports what is installed, and remembers what was checked', asy
       assert.equal(status.payload.lastVerify, null, 'nothing has been checked yet')
       assert.equal(status.payload.providers.length >= 7, true)
       assert.equal(status.payload.retention.toolOutputDays, 14)
+      const detail = await request('GET', `/api/runs/${run.payload.run.id}`)
+      assert.equal(typeof detail.payload.budget.dailySpentUsd, 'number', 'remaining allowance needs what is already spent')
 
       const verify = await request('POST', '/api/maintenance/verify')
       assert.equal(verify.status, 200)

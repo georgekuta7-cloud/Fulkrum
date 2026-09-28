@@ -174,6 +174,17 @@ describe('conversation decisions', () => {
     expect(screen.getByText(/hard ceiling \$5/)).toBeInTheDocument()
   })
 
+  it('shows remaining run and daily allowance distinctly from a limit', () => {
+    render(<ChatView bridge={fixture({
+      run: { id: 'r1', projectId: 'p1', status: 'planning', budgetUsd: 5 } as Bridge['run'],
+      spend: { costUsd: 0.04, calls: 2, unpricedCalls: 0 },
+      budget: { runUsd: 5, defaultRunUsd: null, dailyUsd: 10, dailySpentUsd: 0.04 },
+      plan: draftPlan,
+    })} />)
+    expect(screen.getByText(/Limit \$5\.00 · \$4\.9600 left/)).toBeInTheDocument()
+    expect(screen.getByText(/today \$0\.0400 of \$10\.00/)).toBeInTheDocument()
+  })
+
   it('shows each worker its last tool call', () => {    render(<ChatView bridge={fixture({
       tasks: [{ id: 't1', agentId: 'research', title: 'Read files', status: 'running' } as any],
       toolCalls: [

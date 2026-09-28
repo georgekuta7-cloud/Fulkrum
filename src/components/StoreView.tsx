@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Bridge } from '../hooks/useBridge'
-import { Button, Chip, EmptyState, Panel, ResourceError, inputClass } from './primitives'
+import { Button, Chip, EmptyState, Panel, ResourceError, StaleNote, inputClass } from './primitives'
 
 /**
  * The store and the arsenal, side by side the way a package manager shows
@@ -72,6 +72,7 @@ export function StoreView({ bridge }: { bridge: Bridge }) {
         >
           <label className="visually-hidden" htmlFor="store-search">Search marketplace</label>
           <input id="store-search" className={inputClass} placeholder="Search skills…" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <StaleNote stale={bridge.resourceStale?.marketplace} label="The marketplace" />
           {bridge.marketplace?.stale ? <p className="text-label-md text-error">The signed index has never been fetched — community imports below still work.</p> : null}
           {entries.length ? (
             <ul className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
@@ -155,6 +156,7 @@ export function StoreView({ bridge }: { bridge: Bridge }) {
 
       <div className="xl:col-span-4">
         <Panel title="Arsenal" action={<span className="font-mono text-label-sm text-outline">{(bridge.arsenal?.skills ?? []).length + (bridge.arsenal?.plugins ?? []).length} installed</span>}>
+          <StaleNote stale={bridge.resourceStale?.arsenal} label="The arsenal" />
           <p className="text-body-sm text-on-surface-variant">What the workers can use. Skills inject as reference at task start; plugins serve tools under the permission matrix.</p>
           {[...(bridge.arsenal?.skills ?? []), ...(bridge.arsenal?.plugins ?? [])].map((item: any) => (
             <div key={`${item.kind}:${item.id}`} className="flex items-center justify-between gap-2 p-2.5 rounded-lg bg-surface-container">

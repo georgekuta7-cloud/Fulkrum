@@ -54,6 +54,9 @@ export function useBridge() {
   const [byTask, setByTask] = useState<TaskSpend[]>([])
   const [runGrants, setRunGrants] = useState<RunGrant[]>([])
   const [estimate, setEstimate] = useState<Estimate | null>(null)
+  // The run's budget facts, refreshed with every full snapshot: what is left
+  // is only meaningful beside what is spent (P0.1).
+  const [budget, setBudget] = useState<{ runUsd: number | null; defaultRunUsd: number | null; dailyUsd: number | null; dailySpentUsd?: number } | null>(null)
   const [audit, setAudit] = useState<{ ok: boolean; checked: number; unverified?: number } | null>(null)
   const [learnings, setLearnings] = useState<Array<{ id: string; projectId: string; fact: string; sourceRunId: string | null; createdAt: number }>>([])
   const [playbooks, setPlaybooks] = useState<Array<{ id: string; projectId: string; name: string; contentHash: string; budgetUsd: number | null; approvedAt: number | null; createdAt: number }>>([])
@@ -76,6 +79,10 @@ export function useBridge() {
   // what broke and offer a retry instead of "nothing here yet". Aborted loads
   // (a newer selection replaced them) are not failures and never land here.
   const [resourceErrors, setResourceErrors] = useState<Record<string, string>>({})
+  // A resource that failed while data was already on screen is stale, not
+  // empty: panels say "showing the last loaded data" instead of treating the
+  // old copy as fresh (P0.3).
+  const [resourceStale, setResourceStale] = useState<Record<string, boolean>>({})
   // Text arriving for the call in flight: cleared when the stream says it landed.
   const [streaming, setStreaming] = useState<{ role: string; text: string } | null>(null)
   const [approval, setApproval] = useState<Approval | null>(null)
@@ -98,10 +105,17 @@ export function useBridge() {
   const noteResourceError = useCallback((key: string, caught: unknown) => {
     const message = caught instanceof ApiError ? caught.message : caught instanceof Error && caught.message ? caught.message : 'The request failed.'
     setResourceErrors((current) => (current[key] === message ? current : { ...current, [key]: message }))
+    setResourceStale((current) => (current[key] ? current : { ...current, [key]: true }))
   }, [])
   const clearResourceError = useCallback((key: string) => {
     setResourceErrors((current) => {
       if (!(key in current)) return current
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
+    setResourceStale((current) => {
+      if (!current[key]) return current
       const next = { ...current }
       delete next[key]
       return next
@@ -143,6 +157,7 @@ export function useBridge() {
     rowsRef.current = { tasks: nextTasks, calls: nextCalls }
     setTasks(nextTasks)
     setVerdicts(snapshot.verdicts ?? [])
+    setBudget((snapshot as { budget?: { runUsd: number | null; defaultRunUsd: number | null; dailyUsd: number | null; dailySpentUsd?: number } }).budget ?? null)
     setToolCalls(nextCalls)
     setApproval((current) => {
       const pending = nextCalls.filter((call) => call.status === 'approval_required')
@@ -454,6 +469,7 @@ export function useBridge() {
     setTasks([])
     setVerdicts([])
     setCheckpointDiff(null)
+    setBudget(null)
     setMessages([])
     setToolCalls([])
     setEvents([])
@@ -998,11 +1014,12 @@ export function useBridge() {
   const bridge = useMemo(() => ({
     ...workspace,
     projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, verdicts, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit,
-    learnings, playbooks, schedules, goals, blueprints, timeline, checkpoints, checkpointDiff, attention, error, notice, streaming, approval, booted, projectSettings,
+    learnings, playbooks, schedules, goals, blueprints, timeline, checkpoints, checkpointDiff, attention, budget, error, notice, streaming, approval, booted, projectSettings,
     // Workspace resources (marketplace, arsenal) and project/run resources
     // (learnings, playbooks, …) report failures the same way, so a panel only
     // has to know its own key.
     resourceErrors: { ...workspace.resourceErrors, ...resourceErrors },
+    resourceStale: { ...workspace.resourceStale, ...resourceStale },
     retryResource: async (key: string) => {
       if (key === 'learnings') return loadLearnings(projectId)
       if (key === 'playbooks') return loadPlaybooksFor(projectId)
@@ -1020,7 +1037,7 @@ export function useBridge() {
     openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor, loadCheckpoints, loadCheckpointDiff, loadAttention,
     ...actions,
     approveWithKeyboard: (scope: 'once' | 'run' | 'always') => actions.approveCall(scope),
-  }), [workspace, projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, verdicts, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit, learnings, playbooks, schedules, goals, blueprints, timeline, checkpoints, checkpointDiff, attention, error, notice, streaming, approval, booted, projectSettings, resourceErrors, actions, openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor, loadArtifacts, loadCheckpoints, loadCheckpointDiff, loadAttention])
+  }), [workspace, projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, verdicts, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit, learnings, playbooks, schedules, goals, blueprints, timeline, checkpoints, checkpointDiff, attention, budget, error, notice, streaming, approval, booted, projectSettings, resourceErrors, resourceStale, actions, openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor, loadArtifacts, loadCheckpoints, loadCheckpointDiff, loadAttention])
   return bridge
 }
 

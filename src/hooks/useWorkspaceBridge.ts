@@ -22,14 +22,22 @@ export function useWorkspaceBridge(report: Reporter, notify: (message: string | 
   // A failed load is not an empty workspace: panels read this to say what
   // broke and offer a retry instead of the "nothing here yet" line.
   const [resourceErrors, setResourceErrors] = useState<Record<string, string>>({})
+  const [resourceStale, setResourceStale] = useState<Record<string, boolean>>({})
 
   const noteResourceError = useCallback((key: string, caught: unknown) => {
     const message = caught instanceof Error && caught.message ? caught.message : 'The request failed.'
     setResourceErrors((current) => (current[key] === message ? current : { ...current, [key]: message }))
+    setResourceStale((current) => (current[key] ? current : { ...current, [key]: true }))
   }, [])
   const clearResourceError = useCallback((key: string) => {
     setResourceErrors((current) => {
       if (!(key in current)) return current
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
+    setResourceStale((current) => {
+      if (!current[key]) return current
       const next = { ...current }
       delete next[key]
       return next
@@ -184,8 +192,8 @@ export function useWorkspaceBridge(report: Reporter, notify: (message: string | 
   }), [loadArsenalState, loadConfig, loadGrants, loadMarketplaceState, loadProviders, loadStatus, notify, perform])
 
   return useMemo(() => ({
-    providers, status, grants, marketplace, arsenal, registry, configReport, appSettings, usage, resourceErrors,
+    providers, status, grants, marketplace, arsenal, registry, configReport, appSettings, usage, resourceErrors, resourceStale,
     loadProviders, loadStatus, loadGrants, loadMarketplaceState, loadArsenalState, loadConfig, loadSettings, loadUsage,
     ...actions,
-  }), [providers, status, grants, marketplace, arsenal, registry, configReport, appSettings, usage, resourceErrors, loadProviders, loadStatus, loadGrants, loadMarketplaceState, loadArsenalState, loadConfig, loadSettings, loadUsage, actions])
+  }), [providers, status, grants, marketplace, arsenal, registry, configReport, appSettings, usage, resourceErrors, resourceStale, loadProviders, loadStatus, loadGrants, loadMarketplaceState, loadArsenalState, loadConfig, loadSettings, loadUsage, actions])
 }

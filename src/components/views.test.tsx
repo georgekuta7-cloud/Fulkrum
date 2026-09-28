@@ -57,6 +57,7 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
     appSettings: [],
     projectSettings: {},
     resourceErrors: {},
+    resourceStale: {},
     retryResource: vi.fn(),
     sandboxCheck: vi.fn(),
     checkpoints: [],
@@ -636,6 +637,17 @@ describe('resource errors', () => {
     expect(screen.queryByText(/No playbooks/)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(retryResource).toHaveBeenCalledWith('playbooks')
+  })
+
+  it('marks data already on screen as stale when a refresh fails', () => {
+    render(<AutomationsView bridge={makeBridge({
+      playbooks: [{ id: 'pb1', projectId: 'p1', name: 'Deploy', contentHash: 'abc123def456', budgetUsd: null, approvedAt: 1, createdAt: 1 }],
+      schedules: [], goals: [], blueprints: [],
+      loadPlaybooksFor: vi.fn(), loadSchedulesFor: vi.fn(), loadGoalsFor: vi.fn(), loadBlueprintsFor: vi.fn(),
+      resourceStale: { playbooks: true },
+    })} />)
+    expect(screen.getAllByText('Deploy').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText(/Playbooks is showing the last loaded data/)).toBeInTheDocument()
   })
 
   it('says a failed marketplace load instead of the empty store', () => {
