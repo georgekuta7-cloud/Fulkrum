@@ -6,6 +6,17 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Changed
+- **Acceptance checks are typed and never blank.** Per P2.2, every plan task
+  carries a check: a runnable command (with args and expected exit), a file
+  assertion (path, exists, optional contains), or a human-review criterion.
+  Unsupported types and malformed fields are refused at validation; a task
+  that states no check gets a human criterion derived from its own
+  instructions, labeled "derived — review it" on the plan card, so nothing
+  is blank and nothing is invented silently. Old plans keep their free text
+  and are labeled legacy. The plan editor edits the typed shape (type
+  selector with fields per type), edits still change the hash and demand
+  fresh approval, and playbooks round-trip the full check so their hash
+  cannot drift.
 - **Execution and verification are separate axes, and an unproven dependency
   is not a passed one.** Per P2.1, a task's `status` says whether the work
   ran; `verification_status` says whether it was proven (migration 025 maps

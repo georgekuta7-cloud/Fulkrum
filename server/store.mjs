@@ -89,6 +89,9 @@ function planTaskFromRow(row) {
     title: row.title,
     instructions: row.instructions,
     acceptanceCheck: row.acceptance_check ?? '',
+    // NULL for plans created before the typed-check schema (P2.2): the UI
+    // labels them legacy rather than inventing a check.
+    check: row.check_json ? parseJson(row.check_json, null) : null,
     dependsOn: parseJson(row.depends_on_json, []),
     createdAt: Number(row.created_at),
   }
@@ -1460,9 +1463,9 @@ export class FulkrumStore {
       if (runId) this.database.prepare("UPDATE plans SET status = 'superseded' WHERE run_id = ? AND status = 'draft'").run(runId)
       this.database.prepare('INSERT INTO plans(id, project_id, run_id, version, objective, content_hash, status, source, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .run(id, projectId, runId, version, objective, contentHash, 'draft', source, now)
-      const insertTask = this.database.prepare('INSERT INTO plan_tasks(id, plan_id, order_index, role, title, instructions, acceptance_check, depends_on_json, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      const insertTask = this.database.prepare('INSERT INTO plan_tasks(id, plan_id, order_index, role, title, instructions, acceptance_check, check_json, depends_on_json, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       tasks.forEach((task, index) => {
-        insertTask.run(`plantask-${randomUUID()}`, id, index, task.role, task.title, task.instructions, task.acceptanceCheck ?? '', JSON.stringify(task.dependsOn ?? []), now)
+        insertTask.run(`plantask-${randomUUID()}`, id, index, task.role, task.title, task.instructions, task.acceptanceCheck ?? '', task.check ? JSON.stringify(task.check) : null, JSON.stringify(task.dependsOn ?? []), now)
       })
     })
     return this.getPlan(id)
@@ -1502,7 +1505,7 @@ export class FulkrumStore {
     for (const pin of pins) {
       if (!pin || typeof pin.id !== 'string' || typeof pin.sha256 !== 'string') throw new Error('Skill pins need an id and a sha256.')
     }
-    const planJson = JSON.stringify({ objective: plan.plan.objective, tasks: plan.tasks.map((task) => ({ role: task.role, title: task.title, instructions: task.instructions, acceptanceCheck: task.acceptanceCheck ?? '', dependsOn: task.dependsOn ?? [] })) })
+    const planJson = JSON.stringify({ objective: plan.plan.objective, tasks: plan.tasks.map((task) => ({ role: task.role, title: task.title, instructions: task.instructions, acceptanceCheck: task.acceptanceCheck ?? '', check: task.check ?? null, dependsOn: task.dependsOn ?? [] })) })
     const now = Date.now()
     this.database.prepare('INSERT INTO playbooks(id, project_id, name, plan_json, content_hash, budget_usd, approved_at, created_at, skills_json) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(id, projectId, title, planJson, plan.plan.contentHash, budgetUsd, plan.plan.approvedAt ?? now, now, JSON.stringify(pins))

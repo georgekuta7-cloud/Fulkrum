@@ -17,7 +17,45 @@ test('a well-formed plan is accepted and normalized', () => {
   assert.equal(result.ok, true)
   assert.equal(result.plan.tasks.length, 2)
   assert.deepEqual(result.plan.tasks[1].dependsOn, [0])
-  assert.equal(result.plan.tasks[0].acceptanceCheck, '')
+  // No blank checks (P2.2): a task that states none gets a human criterion
+  // derived from its own instructions, labeled so the approval surface can
+  // say "derived — review it".
+  assert.equal(result.plan.tasks[0].acceptanceCheck, 'Read the onboarding code.')
+  assert.equal(result.plan.tasks[0].check.type, 'human')
+  assert.equal(result.plan.tasks[0].check.derived, true)
+  assert.equal(result.plan.tasks[1].acceptanceCheck, 'The flow completes.')
+  assert.equal(result.plan.tasks[1].check.derived, undefined, 'a stated check is not labeled derived')
+})
+
+test('typed checks are validated strictly and unsupported types are refused', () => {
+  const typed = validatePlan({
+    objective: 'Typed.',
+    tasks: [
+      { role: 'builder', title: 'Test it', instructions: 'Run the tests.', check: { type: 'command', command: 'npm', args: ['test'], expectExit: 0 } },
+      { role: 'builder', title: 'File it', instructions: 'Write out.txt.', check: { type: 'file', path: 'out.txt', contains: 'done' }, dependsOn: [0] },
+    ],
+  })
+  assert.equal(typed.ok, true, typed.problems.join(' '))
+  assert.deepEqual(typed.plan.tasks[0].check, { type: 'command', command: 'npm', args: ['test'], expectExit: 0 })
+  assert.equal(typed.plan.tasks[1].check.path, 'out.txt')
+  assert.equal(typed.plan.tasks[1].check.contains, 'done')
+  assert.match(typed.plan.tasks[0].acceptanceCheck, /runs `npm test` and expects exit 0/)
+
+  const unsupported = validatePlan({ objective: 'x', tasks: [{ role: 'builder', title: 't', instructions: 'i', check: { type: 'telepathy', criterion: 'vibes' } }] })
+  assert.equal(unsupported.ok, false)
+  assert.match(unsupported.problems.join(' '), /unsupported check type/)
+
+  const badCommand = validatePlan({ objective: 'x', tasks: [{ role: 'builder', title: 't', instructions: 'i', check: { type: 'command', command: '' } }] })
+  assert.equal(badCommand.ok, false)
+  assert.match(badCommand.problems.join(' '), /needs a command/)
+
+  const escapingFile = validatePlan({ objective: 'x', tasks: [{ role: 'builder', title: 't', instructions: 'i', check: { type: 'file', path: '../outside.txt' } }] })
+  assert.equal(escapingFile.ok, false)
+  assert.match(escapingFile.problems.join(' '), /workspace-relative/)
+
+  const emptyHuman = validatePlan({ objective: 'x', tasks: [{ role: 'builder', title: 't', instructions: 'i', check: { type: 'human', criterion: '' } }] })
+  assert.equal(emptyHuman.ok, false)
+  assert.match(emptyHuman.problems.join(' '), /human-review criterion/)
 })
 
 test('malformed plans are rejected with reasons', () => {

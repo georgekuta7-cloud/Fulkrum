@@ -50,15 +50,29 @@ describe('conversation decisions', () => {
 
   it('makes plan instructions and acceptance criteria inspectable and editable', async () => {
     const editPlan = vi.fn().mockResolvedValue(true)
-    const bridge = fixture({ editPlan, estimate: { runId: 'r1', tasks: 2, expectedCalls: 14, basis: 'from 12 priced call(s) in this database', estimateUsd: { low: 0.02, average: 0.04, high: 0.06 }, perCall: null, ceilingUsd: null }, plan: { plan: { id: 'plan1', version: 1, status: 'draft', objective: 'Inspect the workspace.', contentHash: 'hash', source: 'model' }, tasks: [{ id: 'pt1', orderIndex: 0, role: 'research', title: 'Read files', instructions: 'Read the source.', acceptanceCheck: 'Cite the relevant files.', dependsOn: [] }] } })
+    const bridge = fixture({ editPlan, estimate: { runId: 'r1', tasks: 2, expectedCalls: 14, basis: 'from 12 priced call(s) in this database', estimateUsd: { low: 0.02, average: 0.04, high: 0.06 }, perCall: null, ceilingUsd: null }, plan: { plan: { id: 'plan1', version: 1, status: 'draft', objective: 'Inspect the workspace.', contentHash: 'hash', source: 'model' }, tasks: [{ id: 'pt1', orderIndex: 0, role: 'research', title: 'Read files', instructions: 'Read the source.', acceptanceCheck: 'Cite the relevant files.', check: { type: 'human', criterion: 'Cite the relevant files.' }, dependsOn: [] }] } })
     render(<ChatView bridge={bridge} />)
     expect(screen.getByText('Cite the relevant files.')).toBeVisible()
+    expect(screen.getByText(/human check/)).toBeInTheDocument()
     expect(screen.getByText(/~14 model calls/)).toBeInTheDocument()
     expect(screen.getByText(/est\. \$0\.02–\$0\.06/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Edit plan' }))
-    fireEvent.change(screen.getByLabelText('Task 1 acceptance'), { target: { value: 'Include file and line references.' } })
+    fireEvent.change(screen.getByLabelText('Task 1 criterion'), { target: { value: 'Include file and line references.' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save plan' }))
-    await waitFor(() => expect(editPlan).toHaveBeenCalledWith('Inspect the workspace.', [expect.objectContaining({ acceptanceCheck: 'Include file and line references.', instructions: 'Read the source.', role: 'research', dependsOn: [] })]))
+    await waitFor(() => expect(editPlan).toHaveBeenCalledWith('Inspect the workspace.', [expect.objectContaining({ instructions: 'Read the source.', role: 'research', dependsOn: [], check: expect.objectContaining({ type: 'human', criterion: 'Include file and line references.' }) })]))
+  })
+
+  it('edits a typed command check and sends the typed shape', async () => {
+    const editPlan = vi.fn().mockResolvedValue(true)
+    const bridge = fixture({ editPlan, plan: { plan: { id: 'plan1', version: 1, status: 'draft', objective: 'O', contentHash: 'hash', source: 'model' }, tasks: [{ id: 'pt1', orderIndex: 0, role: 'builder', title: 'Test it', instructions: 'Run the tests.', acceptanceCheck: 'Tests pass.', check: { type: 'human', criterion: 'Tests pass.' }, dependsOn: [] }] } })
+    render(<ChatView bridge={bridge} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit plan' }))
+    fireEvent.change(screen.getByLabelText('Task 1 check type'), { target: { value: 'command' } })
+    fireEvent.change(screen.getByLabelText('Task 1 command'), { target: { value: 'npm' } })
+    fireEvent.change(screen.getByLabelText('Task 1 arguments'), { target: { value: 'test --silent' } })
+    fireEvent.change(screen.getByLabelText('Task 1 expected exit code'), { target: { value: '0' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save plan' }))
+    await waitFor(() => expect(editPlan).toHaveBeenCalledWith('O', [expect.objectContaining({ check: { type: 'command', command: 'npm', args: ['test', '--silent'], expectExit: 0 } })]))
   })
 
   it('separates worker completion from the verification verdict', () => {

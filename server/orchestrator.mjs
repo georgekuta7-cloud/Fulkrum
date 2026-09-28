@@ -1374,8 +1374,12 @@ Rules:
             .find((dep) => {
               if (!dep) return false
               if (['queued', 'running'].includes(dep.entry.status)) return true
-              const required = typeof dep.from?.acceptanceCheck === 'string' && dep.from.acceptanceCheck.trim()
-              return Boolean(required) && dep.entry.status === 'completed' && !['PASS', 'waived'].includes(dep.entry.verificationStatus ?? '')
+              // "Required" means the plan explicitly stated a check (typed or
+              // text). A derived check is a placeholder for the approval
+              // surface to review, not a proof the dependent must wait on.
+              const check = dep.from?.check
+              const required = Boolean(check) && check.derived !== true
+              return required && dep.entry.status === 'completed' && !['PASS', 'waived'].includes(dep.entry.verificationStatus ?? '')
             })
           if (unprovenDep && !['completed', 'skipped'].includes(task.status)) {
             const reason = unprovenDep.entry.status === 'completed'

@@ -88,6 +88,11 @@ export type TaskVerdict = {
   createdAt: number
 }
 
+export type PlanCheck =
+  | { type: 'command'; command: string; args: string[]; expectExit: number; derived?: boolean }
+  | { type: 'file'; path: string; exists: boolean; contains?: string | null; derived?: boolean }
+  | { type: 'human'; criterion: string; derived?: boolean }
+
 export type PlanTask = {
   id: string
   orderIndex: number
@@ -95,6 +100,7 @@ export type PlanTask = {
   title: string
   instructions: string
   acceptanceCheck?: string
+  check?: PlanCheck | null
   dependsOn: number[]
 }
 

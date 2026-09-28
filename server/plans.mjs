@@ -3,6 +3,70 @@ import { canonicalJson } from './canonicalJson.mjs'
 
 export const planRoles = ['research', 'builder', 'architect', 'editor', 'debug']
 export const maxPlanTasks = 8
+export const CHECK_TYPES = ['command', 'file', 'human']
+
+/**
+ * Validate one acceptance check (P2.2). Typed checks are strict: an
+ * unsupported type or a missing required field is a problem, never a guess.
+ * A plain string is the legacy shape and normalizes to a human criterion.
+ */
+function normalizeCheck(task, index, problems) {
+  const raw = task?.check
+  if (raw !== undefined && raw !== null) {
+    if (typeof raw !== 'object' || Array.isArray(raw)) {
+      problems.push(`Task ${index + 1} has a check that is not an object.`)
+      return null
+    }
+    const type = typeof raw.type === 'string' ? raw.type.trim().toLowerCase() : ''
+    if (!CHECK_TYPES.includes(type)) {
+      problems.push(`Task ${index + 1} has an unsupported check type: ${type || '(missing)'}. Use command, file, or human.`)
+      return null
+    }
+    if (type === 'command') {
+      const command = typeof raw.command === 'string' ? raw.command.trim() : ''
+      if (!command || command.length > 200) problems.push(`Task ${index + 1} needs a command of 1–200 characters.`)
+      const args = Array.isArray(raw.args) ? raw.args.filter((entry) => typeof entry === 'string').slice(0, 50) : []
+      if (args.some((entry) => entry.length > 500)) problems.push(`Task ${index + 1} has a command argument longer than 500 characters.`)
+      const expectExit = raw.expectExit === undefined ? 0 : Number(raw.expectExit)
+      if (!Number.isInteger(expectExit)) problems.push(`Task ${index + 1} has a non-integer expectExit.`)
+      return { type, command, args, expectExit }
+    }
+    if (type === 'file') {
+      const filePath = typeof raw.path === 'string' ? raw.path.trim().replaceAll('\\', '/') : ''
+      if (!filePath || filePath.startsWith('/') || /^[A-Za-z]:/.test(filePath) || filePath.split('/').includes('..')) {
+        problems.push(`Task ${index + 1} needs a workspace-relative file path without "..".`)
+      }
+      const exists = raw.exists === undefined ? true : Boolean(raw.exists)
+      const contains = typeof raw.contains === 'string' && raw.contains ? raw.contains.slice(0, 500) : null
+      return { type, path: filePath, exists, contains }
+    }
+    const criterion = typeof raw.criterion === 'string' ? raw.criterion.trim() : ''
+    if (!criterion) problems.push(`Task ${index + 1} needs a human-review criterion.`)
+    // The derived label round-trips: a stored playbook re-validates to the
+    // exact check it was saved with, or its hash would drift on instantiate.
+    return { type: 'human', criterion: criterion.slice(0, 1000), ...(raw.derived === true ? { derived: true } : {}) }
+  }
+  const text = typeof task?.acceptanceCheck === 'string' ? task.acceptanceCheck.trim() : ''
+  if (text) return { type: 'human', criterion: text.slice(0, 1000) }
+  // No blank checks (P2.2). A task that states no check gets a human-review
+  // criterion derived from its own instructions, explicitly labeled so the
+  // approval surface can say "derived — review it"; nothing is invented
+  // silently, and unsupported or malformed checks above are still refused.
+  const instructions = typeof task?.instructions === 'string' ? task.instructions.trim() : ''
+  if (!instructions) return null
+  return { type: 'human', criterion: instructions.slice(0, 1000), derived: true }
+}
+
+/** The readable line a typed check shows as. */
+export function checkText(check) {
+  if (!check) return ''
+  if (check.type === 'command') return `runs \`${[check.command, ...(check.args ?? [])].join(' ')}\` and expects exit ${check.expectExit ?? 0}`
+  if (check.type === 'file') {
+    const base = check.exists === false ? `${check.path} does not exist` : `${check.path} exists`
+    return check.contains ? `${base} and contains "${check.contains}"` : base
+  }
+  return check.criterion ?? ''
+}
 
 export function validatePlan(candidate) {
   const problems = []
@@ -31,11 +95,13 @@ export function validatePlan(candidate) {
       if (dependency > index) problems.push(`Task ${index + 1} depends on a later task (${dependency}); dependencies must point backwards.`)
     }
 
+    const check = normalizeCheck(task, index, problems)
     normalizedTasks.push({
       role,
       title,
       instructions,
-      acceptanceCheck: typeof task?.acceptanceCheck === 'string' ? task.acceptanceCheck.trim() : '',
+      check,
+      acceptanceCheck: checkText(check) || (typeof task?.acceptanceCheck === 'string' ? task.acceptanceCheck.trim() : ''),
       dependsOn: [...new Set(dependsOn)].sort((a, b) => a - b),
     })
   })
@@ -147,10 +213,10 @@ Produce at most ${maxTasks} tasks. Use the "research" role for read-only investi
 Rules:
 - research tasks must not depend on each other; they can run in parallel.
 - builder tasks run one at a time, so give them explicit order through dependsOn.
-- Every task needs an acceptanceCheck that a reviewer could verify.
+- Every task needs a check, and it must be typed: a runnable command ({"type":"command","command":"npm","args":["test"],"expectExit":0}), a file assertion ({"type":"file","path":"out.txt"}), or a human-review criterion ({"type":"human","criterion":"how we know it worked"}). Prefer machine checks when the task produces a runnable result or a file; a human criterion is valid when no machine check exists.
 
 The workspace root is ${workspaceRoot}.
 
 Reply with JSON only, in exactly this shape:
-{"objective": "one sentence", "tasks": [{"role": "research", "title": "short title", "instructions": "what to do", "acceptanceCheck": "how we know it worked", "dependsOn": []}]}`
+{"objective": "one sentence", "tasks": [{"role": "research", "title": "short title", "instructions": "what to do", "check": {"type": "human", "criterion": "how we know it worked"}, "dependsOn": []}]}`
 }

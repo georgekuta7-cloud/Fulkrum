@@ -1,9 +1,30 @@
 import { useState } from 'react'
-import type { Estimate } from '../api/types'
+import type { Estimate, PlanCheck } from '../api/types'
 import type { Bridge } from '../hooks/useBridge'
 import { roleLabel, resolveRouteDisplay } from '../lib/runGraph'
 import { canDraftPlan, PLAN_ROLES } from '../lib/runState'
 import { Button, Chip, inputClass, selectClass } from './primitives'
+
+/** The editor keeps every check field as a string; the API gets the typed shape. */
+type EditorCheck = {
+  type: 'human' | 'command' | 'file'
+  criterion: string
+  command: string
+  args: string
+  expectExit: string | number
+  path: string
+  exists: boolean
+  contains: string
+  derived?: boolean
+}
+
+function toEditorCheck(check?: PlanCheck | null, acceptanceCheck?: string): EditorCheck {
+  const base: EditorCheck = { type: 'human', criterion: acceptanceCheck ?? '', command: '', args: '', expectExit: 0, path: '', exists: true, contains: '' }
+  if (check?.type === 'command') return { ...base, type: 'command', command: check.command, args: (check.args ?? []).join(' '), expectExit: check.expectExit ?? 0 }
+  if (check?.type === 'file') return { ...base, type: 'file', path: check.path, exists: check.exists !== false, contains: check.contains ?? '' }
+  if (check?.type === 'human') return { ...base, criterion: check.criterion, derived: check.derived }
+  return base
+}
 
 export function PlanCard({ bridge }: { bridge: Bridge }) {
   const { plan, run } = bridge
@@ -13,7 +34,7 @@ export function PlanCard({ bridge }: { bridge: Bridge }) {
   const [unlimitedAcknowledged, setUnlimitedAcknowledged] = useState(false)
   const [limit, setLimit] = useState('')
   const [objective, setObjective] = useState(plan?.plan.objective ?? '')
-  const [tasks, setTasks] = useState(() => (plan?.tasks ?? []).map((task) => ({ ...task, dependencies: task.dependsOn.map((dep) => dep + 1).join(', ') })))
+  const [tasks, setTasks] = useState(() => (plan?.tasks ?? []).map((task) => ({ ...task, dependencies: task.dependsOn.map((dep) => dep + 1).join(', '), check: toEditorCheck(task.check, task.acceptanceCheck) })))
   const plannable = !!run && canDraftPlan(run.status)
   const hasDirection = bridge.messages.some((message) => message.role === 'user')
   const providersReady = bridge.providers.some((provider) => provider.configured)
@@ -68,7 +89,14 @@ export function PlanCard({ bridge }: { bridge: Bridge }) {
           event.preventDefault()
           if (busy) return
           setError('')
-          const parsed = tasks.map((task) => ({ role: task.role, title: task.title, instructions: task.instructions, acceptanceCheck: task.acceptanceCheck ?? '', dependsOn: task.dependencies.trim() ? task.dependencies.split(',').map((value) => Number(value.trim()) - 1) : [] }))
+          const parsed = tasks.map((task) => {
+            const check = task.check.type === 'command'
+              ? { type: 'command', command: task.check.command.trim(), args: task.check.args.trim() ? task.check.args.trim().split(/\s+/) : [], expectExit: Number(task.check.expectExit ?? 0) }
+              : task.check.type === 'file'
+                ? { type: 'file', path: task.check.path.trim(), exists: task.check.exists !== false, ...(task.check.contains.trim() ? { contains: task.check.contains.trim() } : {}) }
+                : { type: 'human', criterion: task.check.criterion.trim() }
+            return { role: task.role, title: task.title, instructions: task.instructions, check, dependsOn: task.dependencies.trim() ? task.dependencies.split(',').map((value) => Number(value.trim()) - 1) : [] }
+          })
           if (parsed.some((task, index) => task.dependsOn.some((dep) => !Number.isInteger(dep) || dep < 0 || dep >= index))) {
             setError('Dependencies must be earlier task numbers, separated by commas.')
             return
@@ -82,7 +110,34 @@ export function PlanCard({ bridge }: { bridge: Bridge }) {
               <label className="flex flex-col gap-1 text-label-md">Task {index + 1} title<input className={inputClass} required value={task.title} onChange={(event) => setTasks((current) => current.map((entry, i) => i === index ? { ...entry, title: event.target.value } : entry))} /></label>
               <label className="flex flex-col gap-1 text-label-md">Task {index + 1} role<select className={selectClass} value={task.role} onChange={(event) => setTasks((current) => current.map((entry, i) => i === index ? { ...entry, role: event.target.value } : entry))}>{PLAN_ROLES.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select></label>
               <label className="flex flex-col gap-1 text-label-md">Task {index + 1} instructions<textarea className={inputClass} required rows={3} value={task.instructions} onChange={(event) => setTasks((current) => current.map((entry, i) => i === index ? { ...entry, instructions: event.target.value } : entry))} /></label>
-              <label className="flex flex-col gap-1 text-label-md">Task {index + 1} acceptance<textarea className={inputClass} rows={2} value={task.acceptanceCheck ?? ''} onChange={(event) => setTasks((current) => current.map((entry, i) => i === index ? { ...entry, acceptanceCheck: event.target.value } : entry))} /></label>
+              <label className="flex flex-col gap-1 text-label-md">Task {index + 1} check type
+                <select className={selectClass} value={task.check.type} onChange={(event) => {
+                  const type = event.target.value
+                  const blank = (type === 'command' ? { type: 'command' as const, command: '', args: '', expectExit: 0 } : type === 'file' ? { type: 'file' as const, path: '', exists: true, contains: '' } : { type: 'human' as const, criterion: '' })
+                  const base: EditorCheck = { type: blank.type, criterion: '', command: '', args: '', expectExit: 0, path: '', exists: true, contains: '' }
+                  const next: EditorCheck = { ...base, ...blank }
+                  setTasks((current) => current.map((entry, i) => i === index ? { ...entry, check: next } : entry))
+                }}>
+                  <option value="human">Human-review criterion</option>
+                  <option value="command">Runnable command</option>
+                  <option value="file">File assertion</option>
+                </select>
+              </label>
+              {task.check.type === 'command' ? (
+                <>
+                  <label className="flex flex-col gap-1 text-label-md">Task {index + 1} command<input className={inputClass} required value={task.check.command} onChange={(event) => setTasks((current) => current.map((entry, i) => i === index ? { ...entry, check: { ...entry.check, command: event.target.value } } : entry))} /></label>
+                  <label className="flex flex-col gap-1 text-label-md">Task {index + 1} arguments<input className={inputClass} placeholder="Space-separated, e.g. test --silent" value={task.check.args} onChange={(event) => setTasks((current) => current.map((entry, i) => i === index ? { ...entry, check: { ...entry.check, args: event.target.value } } : entry))} /></label>
+                  <label className="flex flex-col gap-1 text-label-md">Task {index + 1} expected exit code<input className={inputClass} type="number" value={task.check.expectExit} onChange={(event) => setTasks((current) => current.map((entry, i) => i === index ? { ...entry, check: { ...entry.check, expectExit: event.target.value } } : entry))} /></label>
+                </>
+              ) : task.check.type === 'file' ? (
+                <>
+                  <label className="flex flex-col gap-1 text-label-md">Task {index + 1} file path<input className={inputClass} required placeholder="Workspace-relative, e.g. out.txt" value={task.check.path} onChange={(event) => setTasks((current) => current.map((entry, i) => i === index ? { ...entry, check: { ...entry.check, path: event.target.value } } : entry))} /></label>
+                  <label className="flex items-center gap-2 text-label-md"><input type="checkbox" checked={task.check.exists !== false} onChange={(event) => setTasks((current) => current.map((entry, i) => i === index ? { ...entry, check: { ...entry.check, exists: event.target.checked } } : entry))} /> Must exist</label>
+                  <label className="flex flex-col gap-1 text-label-md">Task {index + 1} contains (optional)<input className={inputClass} value={task.check.contains} onChange={(event) => setTasks((current) => current.map((entry, i) => i === index ? { ...entry, check: { ...entry.check, contains: event.target.value } } : entry))} /></label>
+                </>
+              ) : (
+                <label className="flex flex-col gap-1 text-label-md">Task {index + 1} criterion<textarea className={inputClass} rows={2} value={task.check.criterion} onChange={(event) => setTasks((current) => current.map((entry, i) => i === index ? { ...entry, check: { ...entry.check, criterion: event.target.value } } : entry))} /></label>
+              )}
               <label className="flex flex-col gap-1 text-label-md">Task {index + 1} dependencies<input className={inputClass} placeholder="Earlier task numbers, e.g. 1, 2" value={task.dependencies} onChange={(event) => setTasks((current) => current.map((entry, i) => i === index ? { ...entry, dependencies: event.target.value } : entry))} /></label>
             </fieldset>
           ))}
@@ -113,7 +168,9 @@ export function PlanCard({ bridge }: { bridge: Bridge }) {
                 </div>
                 <p className="text-label-sm text-primary">{roleLabel(task.role)} · {resolveRouteDisplay(routing, bridge.providers, task.role) ?? 'default provider'}</p>
                 <p className="text-body-sm whitespace-pre-wrap break-words">{task.instructions}</p>
-                <p className="text-label-sm text-outline">Acceptance</p>
+                <p className="text-label-sm text-outline">
+                  Acceptance{task.check ? ` · ${task.check.type} check${task.check.derived ? ' · derived from the task — review it' : ''}` : ' · legacy plan, no typed check'}
+                </p>
                 <p className="text-body-sm whitespace-pre-wrap break-words">{task.acceptanceCheck || 'No explicit acceptance check.'}</p>
                 {task.dependsOn.length ? <p className="text-label-sm text-outline">After task {task.dependsOn.map((dep) => dep + 1).join(', ')}</p> : null}
               </li>
@@ -141,7 +198,7 @@ export function PlanCard({ bridge }: { bridge: Bridge }) {
           {plan.plan.status === 'draft' ? <Button variant="primary" disabled={busy || !providersReady || (unlimited && !unlimitedAcknowledged)} onClick={() => void perform(() => bridge.control('approve-plan', { planId: plan.plan.id, planHash: plan.plan.contentHash, ...(unlimited ? { unlimitedAcknowledged: true } : {}) }))}>Approve & Run</Button> : null}
           <Button disabled={busy} onClick={() => {
             setObjective(plan.plan.objective)
-            setTasks(plan.tasks.map((task) => ({ ...task, dependencies: task.dependsOn.map((dep) => dep + 1).join(', ') })))
+            setTasks(plan.tasks.map((task) => ({ ...task, dependencies: task.dependsOn.map((dep) => dep + 1).join(', '), check: toEditorCheck(task.check, task.acceptanceCheck) })))
             setEditing(true)
           }}>Edit plan</Button>
           <Button disabled={busy || !providersReady} onClick={() => void perform(() => bridge.draftPlan({ regenerate: true }))}>{busy ? 'Working…' : 'Redraft'}</Button>

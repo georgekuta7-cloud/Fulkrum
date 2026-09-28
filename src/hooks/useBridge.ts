@@ -649,7 +649,7 @@ export function useBridge() {
         return false
       }
     },
-    async editPlan(objective: string, tasks: Array<{ role: string; title: string; instructions: string; dependsOn: number[]; acceptanceCheck?: string }>) {
+    async editPlan(objective: string, tasks: Array<{ role: string; title: string; instructions: string; dependsOn: number[]; acceptanceCheck?: string; check?: Record<string, unknown> }>) {
       if (!canActOnRun() || !runId) return false
       const selection = runScope.capture(runId)
       try {
