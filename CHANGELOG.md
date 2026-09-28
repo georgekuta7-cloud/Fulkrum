@@ -16,6 +16,16 @@ All notable changes to Fulkrum are documented here. This project follows
   distinctly; the worker strip says `unproven`, not `done`.
 
 ### Added
+- **Accept, conflict-safe Discard, and later Undo.** A finished run's changes
+  are decided on the record: Accept never re-applies anything (the live
+  folder already holds the changes) and is recorded once; Discard restores
+  every covered path from the run-start baseline — run-created files are
+  removed, modified files get their original bytes back — and refuses to
+  touch a file that moved after the run ended, listing it as a conflict.
+  After acceptance the same action is recorded as an Undo. The diff marks
+  conflicts before any decision, restores run inside the write lock, are
+  snapshotted so the restore is itself history, and a repeat is refused:
+  restart never repeats a completed restore.
 - **A finished run shows one combined diff, computed from fixed snapshots.**
   The run takes a final snapshot when it stops moving (`checkpoint.final`),
   and `GET /api/runs/:id/checkpoint-diff` diffs the run-start baseline

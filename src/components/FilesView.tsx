@@ -182,18 +182,38 @@ export function FilesView({ bridge }: { bridge: Bridge }) {
   if (!bridge.run) {
     return <EmptyState icon="difference" title="No run open" body="Files belong to runs. Open one from the chat to see what it wrote." />
   }
+  const latestEvent = (type: string) => [...bridge.events].reverse().find((event) => event.type === type)
+  const accepted = Boolean(latestEvent('checkpoint.accepted'))
+  const restored = Boolean(latestEvent('checkpoint.discarded') ?? latestEvent('checkpoint.undone'))
+  const runExecuting = bridge.run?.status === 'executing'
   return (
     <div className="w-full max-w-5xl mx-auto px-4 py-4 flex flex-col gap-4">
       <Panel title="Run changes" action={<span className="text-label-md text-outline">baseline \u2192 final snapshot</span>}>
         {bridge.checkpointDiff?.available ? (
-          bridge.checkpointDiff.files.length ? bridge.checkpointDiff.files.map((file) => (
-            <div key={file.path} className="flex items-center justify-between gap-2 p-2 rounded-lg bg-surface-container">
-              <span className="font-mono text-body-sm text-on-surface truncate" title={file.path}>{file.path}</span>
-              <span className="font-mono text-label-sm text-outline flex-shrink-0">
-                {file.change}{file.added !== null ? ` +${file.added}/-${file.removed}` : ''}
+          <>
+            {bridge.checkpointDiff.files.length ? bridge.checkpointDiff.files.map((file) => (
+              <div key={file.path} className="flex items-center justify-between gap-2 p-2 rounded-lg bg-surface-container">
+                <span className="font-mono text-body-sm text-on-surface truncate" title={file.path}>{file.path}</span>
+                <span className="font-mono text-label-sm flex-shrink-0 flex items-center gap-2">
+                  {file.conflict ? <span className="text-error">conflict — changed since the run ended</span> : null}
+                  <span className="text-outline">{file.change}{file.added !== null ? ` +${file.added}/-${file.removed}` : ''}</span>
+                </span>
+              </div>
+            )) : <p className="text-body-sm text-outline">No covered changes between this run's baseline and final snapshot.</p>}
+            <div className="flex items-center gap-2 flex-wrap pt-1">
+              <Button disabled={runExecuting || accepted || restored} onClick={() => void bridge.acceptRunChanges()}>Accept changes</Button>
+              <Button variant="danger" disabled={runExecuting || restored} onClick={() => void bridge.discardRunChanges(accepted ? 'undo' : 'discard')}>
+                {restored ? 'Changes restored' : accepted ? 'Undo run changes' : 'Discard run changes'}
+              </Button>
+              <span className="text-label-sm text-outline min-w-0">
+                {restored
+                  ? 'Restored from the baseline; conflicts were left alone.'
+                  : accepted
+                    ? 'Accepted: the live folder keeps the run\u2019s changes.'
+                    : 'Accept keeps the live folder; Discard restores covered files from the baseline and leaves conflicts alone.'}
               </span>
             </div>
-          )) : <p className="text-body-sm text-outline">No covered changes between this run's baseline and final snapshot.</p>
+          </>
         ) : bridge.resourceErrors.checkpointDiff ? (
           <ResourceError label="Run changes" message={bridge.resourceErrors.checkpointDiff} onRetry={() => void bridge.retryResource('checkpointDiff')} />
         ) : (

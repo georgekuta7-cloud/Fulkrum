@@ -667,7 +667,66 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
           sendJson(response, 200, { available: false, reason: 'The recorded checkpoint hashes are not usable.' })
           return
         }
-        sendJson(response, 200, { available: true, baseline, final, files: await checkpoints.diff({ from: baseline, to: final }) })
+        sendJson(response, 200, { available: true, baseline, final, files: await checkpoints.markConflicts({ final, files: await checkpoints.diff({ from: baseline, to: final }) }) })
+        return
+      }
+
+      const checkpointDecisionMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/checkpoint-(accept|discard)$/)
+      if (request.method === 'POST' && checkpointDecisionMatch) {
+        const runId = safeDecode(checkpointDecisionMatch[1])
+        const decision = checkpointDecisionMatch[2]
+        const run = store.getRun(runId)
+        if (!run) {
+          sendJson(response, 404, { error: 'Run not found.' })
+          return
+        }
+        if (!checkpoints) {
+          sendJson(response, 503, { error: 'No checkpoint store is configured.' })
+          return
+        }
+        if (run.status === 'executing') {
+          sendJson(response, 409, { error: 'The run is executing: pause or cancel it before deciding on its changes.' })
+          return
+        }
+        const events = store.listEvents(runId)
+        const baseline = [...events].reverse().find((event) => event.type === 'checkpoint.baseline')?.payload?.commit
+        const final = [...events].reverse().find((event) => event.type === 'checkpoint.final')?.payload?.commit
+        if (!baseline || !final || !/^[0-9a-f]{7,64}$/i.test(String(baseline)) || !/^[0-9a-f]{7,64}$/i.test(String(final))) {
+          sendJson(response, 409, { error: 'This run has no usable baseline and final snapshot.' })
+          return
+        }
+        if (decision === 'accept') {
+          // Accept never re-applies changes: the live folder already holds
+          // them. It records the decision, once.
+          const existing = [...events].reverse().find((event) => event.type === 'checkpoint.accepted' && event.payload?.baseline === baseline && event.payload?.final === final)
+          if (existing) {
+            sendJson(response, 200, { accepted: true, already: true, recorded: existing.payload })
+            return
+          }
+          store.appendEvent({ runId, type: 'checkpoint.accepted', agentId: 'head', payload: { baseline, final, note: 'the live folder keeps the run\u2019s changes' } })
+          sendJson(response, 200, { accepted: true, already: false })
+          return
+        }
+        const body = await readJson(request).catch(() => ({}))
+        const mode = body?.mode === 'undo' ? 'undo' : 'discard'
+        // Restart never repeats a completed restore: the decision is durable.
+        const prior = [...events].reverse().find((event) => (event.type === 'checkpoint.discarded' || event.type === 'checkpoint.undone') && event.payload?.baseline === baseline && event.payload?.final === final)
+        if (prior) {
+          sendJson(response, 409, { error: 'This run\u2019s changes were already restored; refusing to repeat it.', recorded: prior.payload })
+          return
+        }
+        try {
+          const result = await toolBroker.withWriteLock(() => checkpoints.discardChanges({ baseline, final }))
+          store.appendEvent({
+            runId,
+            type: mode === 'undo' ? 'checkpoint.undone' : 'checkpoint.discarded',
+            agentId: 'head',
+            payload: { baseline, final, commit: result.commit, restored: result.restored, removed: result.removed, skipped: result.skipped },
+          })
+          sendJson(response, 200, { mode, restored: result })
+        } catch (error) {
+          sendJson(response, 409, { error: error instanceof Error ? error.message : 'The restore failed.' })
+        }
         return
       }
 

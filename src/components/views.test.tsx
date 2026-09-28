@@ -64,6 +64,8 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
     restoreCheckpoint: vi.fn().mockResolvedValue(true),
     checkpointDiff: null,
     loadCheckpointDiff: vi.fn().mockResolvedValue(null),
+    acceptRunChanges: vi.fn().mockResolvedValue(true),
+    discardRunChanges: vi.fn().mockResolvedValue(true),
     loadMarketplaceState: vi.fn().mockResolvedValue(null),
     loadArsenalState: vi.fn().mockResolvedValue(null),
     setError: vi.fn(),
@@ -357,11 +359,24 @@ describe('files', () => {
   })
 
   it('shows the run\u2019s combined changes, or why there is no snapshot yet', () => {
+    const acceptRunChanges = vi.fn().mockResolvedValue(true)
+    const discardRunChanges = vi.fn().mockResolvedValue(true)
     const { unmount } = render(<FilesView bridge={makeBridge({
-      checkpointDiff: { available: true, baseline: 'a'.repeat(40), final: 'b'.repeat(40), files: [{ path: 'out.txt', change: 'added', added: 1, removed: 0 }] },
+      run: { id: 'run-1', projectId: 'p1', status: 'review', budgetUsd: 10 } as Bridge['run'],
+      checkpointDiff: { available: true, baseline: 'a'.repeat(40), final: 'b'.repeat(40), files: [
+        { path: 'out.txt', change: 'added', added: 1, removed: 0 },
+        { path: 'keep.txt', change: 'modified', added: 2, removed: 1, conflict: true },
+      ] },
+      acceptRunChanges,
+      discardRunChanges,
     })} />)
     expect(screen.getByText('out.txt')).toBeInTheDocument()
     expect(screen.getByText(/added \+1\/-0/)).toBeInTheDocument()
+    expect(screen.getByText(/conflict \u2014 changed since the run ended/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Accept changes' }))
+    expect(acceptRunChanges).toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Discard run changes' }))
+    expect(discardRunChanges).toHaveBeenCalledWith('discard')
     unmount()
 
     render(<FilesView bridge={makeBridge({ checkpointDiff: { available: false, reason: 'This run has no final snapshot yet.', files: [] } })} />)

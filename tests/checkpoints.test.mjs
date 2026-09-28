@@ -298,6 +298,99 @@ test('a finished run has a baseline-to-final diff of covered changes', async () 
   })
 })
 
+test('discard restores covered originals, removes run-created files, and never touches conflicts', async () => {
+  const files = [
+    { path: 'keep.txt', content: 'changed by the run\n' },
+    { path: 'out.txt', content: 'created by the run\n' },
+    { path: 'gone.txt', content: 'created and untouched\n' },
+  ]
+  const model = async ({ messages, options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) return { text: JSON.stringify({ objective: 'Discard.', tasks: [{ role: 'builder', title: 'Write', instructions: 'Write files.', dependsOn: [] }] }), toolCalls: [], usage: null }
+    if (instructions.includes('Forge')) {
+      const rounds = messages.filter((message) => message.role === 'tool').length
+      if (rounds < files.length) return { text: `Writing ${files[rounds].path}`, toolCalls: [{ id: `w${rounds}`, name: 'workspace.write', arguments: files[rounds] }], usage: null }
+    }
+    return { text: 'Done.', toolCalls: [], usage: null }
+  }
+  await withTempDirectory(async (workspace) => {
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir: path.join(workspace, 'data') })
+    await writeFile(path.join(workspace, 'keep.txt'), 'original\n', 'utf8')
+    await withServer(async ({ request, store, providerRegistry }) => {
+      providerRegistry.addCustom({ label: 'Discard fixture', baseUrl: 'https://example.invalid/v1', model: 'fixture-model', apiKey: 'fixture-key' })
+      const project = await request('POST', '/api/projects', { name: 'discard fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
+      const runId = run.payload.run.id
+      await request('POST', '/api/chat', { runId, message: 'Do the thing.', history: [] })
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+      const deadline = Date.now() + 15_000
+      while (Date.now() < deadline && store.getRun(runId).status === 'executing') await new Promise((resolve) => setTimeout(resolve, 100))
+      assert.equal(store.getRun(runId).status, 'review', `unexpected status ${store.getRun(runId).status}`)
+      // An edit after the run ended: out.txt is now a conflict.
+      await writeFile(path.join(workspace, 'out.txt'), 'edited after the run\n', 'utf8')
+      const diff = await request('GET', `/api/runs/${runId}/checkpoint-diff`)
+      assert.equal(diff.payload.files.find((file) => file.path === 'out.txt')?.conflict, true, 'the diff marks what moved since the run ended')
+      assert.equal(diff.payload.files.find((file) => file.path === 'keep.txt')?.conflict, false)
+
+      const discarded = await request('POST', `/api/runs/${runId}/checkpoint-discard`, {})
+      assert.equal(discarded.status, 200, JSON.stringify(discarded.payload))
+      assert.deepEqual(discarded.payload.restored.restored, ['keep.txt'])
+      assert.deepEqual(discarded.payload.restored.removed, ['gone.txt'])
+      assert.deepEqual(discarded.payload.restored.skipped, [{ path: 'out.txt', reason: 'changed since the run ended' }])
+      assert.equal(await readFile(path.join(workspace, 'keep.txt'), 'utf8'), 'original\n', 'the original bytes are back')
+      assert.equal(existsSync(path.join(workspace, 'gone.txt')), false, 'a run-created file is removed')
+      assert.equal(await readFile(path.join(workspace, 'out.txt'), 'utf8'), 'edited after the run\n', 'a conflict is left alone')
+
+      const recorded = store.listEvents(runId).find((event) => event.type === 'checkpoint.discarded')
+      assert.ok(recorded, 'the decision and its receipts are on the chain')
+      assert.deepEqual(recorded.payload.skipped, [{ path: 'out.txt', reason: 'changed since the run ended' }])
+      const repeated = await request('POST', `/api/runs/${runId}/checkpoint-discard`, {})
+      assert.equal(repeated.status, 409, 'restart never repeats a completed restore')
+    }, { workspaceRoot: workspace, checkpoints, model })
+  })
+})
+
+test('accept records the decision without touching files, and undo restores afterwards', async () => {
+  const definition = { objective: 'Accept.', tasks: [{ role: 'builder', title: 'Write', instructions: 'Write out.txt.', dependsOn: [] }] }
+  const model = async ({ messages, options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) return { text: JSON.stringify(definition), toolCalls: [], usage: null }
+    if (instructions.includes('Forge') && !messages.some((message) => message.role === 'tool')) {
+      return { text: 'Writing.', toolCalls: [{ id: 'w1', name: 'workspace.write', arguments: { path: 'out.txt', content: 'accepted\n' } }], usage: null }
+    }
+    return { text: 'Done.', toolCalls: [], usage: null }
+  }
+  await withTempDirectory(async (workspace) => {
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir: path.join(workspace, 'data') })
+    await withServer(async ({ request, store, providerRegistry }) => {
+      providerRegistry.addCustom({ label: 'Accept fixture', baseUrl: 'https://example.invalid/v1', model: 'fixture-model', apiKey: 'fixture-key' })
+      const project = await request('POST', '/api/projects', { name: 'accept fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
+      const runId = run.payload.run.id
+      await request('POST', '/api/chat', { runId, message: 'Do the thing.', history: [] })
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+      const deadline = Date.now() + 15_000
+      while (Date.now() < deadline && store.getRun(runId).status === 'executing') await new Promise((resolve) => setTimeout(resolve, 100))
+      assert.equal(store.getRun(runId).status, 'review')
+
+      const accepted = await request('POST', `/api/runs/${runId}/checkpoint-accept`, {})
+      assert.equal(accepted.status, 200, JSON.stringify(accepted.payload))
+      assert.equal(accepted.payload.already, false)
+      assert.equal(existsSync(path.join(workspace, 'out.txt')), true, 'accept never re-applies or removes anything')
+      const again = await request('POST', `/api/runs/${runId}/checkpoint-accept`, {})
+      assert.equal(again.payload.already, true, 'the decision is recorded once')
+
+      const undone = await request('POST', `/api/runs/${runId}/checkpoint-discard`, { mode: 'undo' })
+      assert.equal(undone.status, 200, JSON.stringify(undone.payload))
+      assert.equal(existsSync(path.join(workspace, 'out.txt')), false, 'undo removes the accepted creation')
+      assert.ok(store.listEvents(runId).find((event) => event.type === 'checkpoint.undone'), 'the undo is on the chain')
+      assert.ok(store.verifyEventChain(runId).ok)
+    }, { workspaceRoot: workspace, checkpoints, model })
+  })
+})
+
 test('the status endpoint reports the checkpoint store honestly', async () => {
   await withTempDirectory(async (workspace) => {
     const dataDir = path.join(workspace, 'data')

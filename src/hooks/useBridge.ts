@@ -62,7 +62,7 @@ export function useBridge() {
   const [blueprints, setBlueprints] = useState<Array<{ name: string; version: string; description: string; source: string }>>([])
   const [timeline, setTimeline] = useState<{ seq: number; files: Array<{ path: string; content: string | null; truncated: boolean; unknown: string | null }>; gaps: string[] } | null>(null)
   const [checkpoints, setCheckpoints] = useState<Array<{ commit: string; at: number; subject: string }>>([])
-  const [checkpointDiff, setCheckpointDiff] = useState<{ available: boolean; reason?: string; baseline?: string; final?: string; files: Array<{ path: string; change: string; added: number | null; removed: number | null }> } | null>(null)
+  const [checkpointDiff, setCheckpointDiff] = useState<{ available: boolean; reason?: string; baseline?: string; final?: string; files: Array<{ path: string; change: string; added: number | null; removed: number | null; conflict?: boolean }> } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   // False until the first load finishes, so an empty project list reads as
@@ -310,9 +310,9 @@ export function useBridge() {
       setCheckpointDiff(null)
       return null
     }
-    let payload: { available: boolean; reason?: string; baseline?: string; final?: string; files: Array<{ path: string; change: string; added: number | null; removed: number | null }> }
+    let payload: { available: boolean; reason?: string; baseline?: string; final?: string; files: Array<{ path: string; change: string; added: number | null; removed: number | null; conflict?: boolean }> }
     try {
-      payload = await api.get<{ available: boolean; reason?: string; baseline?: string; final?: string; files: Array<{ path: string; change: string; added: number | null; removed: number | null }> }>(`/api/runs/${encodeURIComponent(runId)}/checkpoint-diff`)
+      payload = await api.get<{ available: boolean; reason?: string; baseline?: string; final?: string; files: Array<{ path: string; change: string; added: number | null; removed: number | null; conflict?: boolean }> }>(`/api/runs/${encodeURIComponent(runId)}/checkpoint-diff`)
     } catch (caught) {
       noteResourceError('checkpointDiff', caught)
       return null
@@ -906,6 +906,37 @@ export function useBridge() {
         return false
       }
     },
+    async acceptRunChanges() {
+      if (!runId) return false
+      const selection = runScope.capture(runId)
+      try {
+        const result = await api.post<{ accepted: boolean; already: boolean }>(`/api/runs/${encodeURIComponent(runId)}/checkpoint-accept`, {})
+        if (!selection.isCurrent()) return false
+        setNotice(result.already ? 'This run\u2019s changes were already accepted.' : 'Accepted: the live folder keeps this run\u2019s changes.')
+        await Promise.all([loadCheckpointDiff(), loadRun(runId)])
+        return true
+      } catch (caught) {
+        if (selection.isCurrent()) report(caught, 'The accept failed.')
+        return false
+      }
+    },
+    async discardRunChanges(mode: 'discard' | 'undo' = 'discard') {
+      if (!runId) return false
+      const selection = runScope.capture(runId)
+      try {
+        const result = await api.post<{ mode: string; restored: { restored: string[]; removed: string[]; skipped: Array<{ path: string; reason: string }> } }>(`/api/runs/${encodeURIComponent(runId)}/checkpoint-discard`, { mode })
+        if (!selection.isCurrent()) return false
+        const { restored, removed, skipped } = result.restored
+        const parts = [`${restored.length} restored`, `${removed.length} removed`]
+        if (skipped.length) parts.push(`${skipped.length} left alone (${skipped.slice(0, 3).map((entry) => entry.path).join(', ')}${skipped.length > 3 ? ', \u2026' : ''}): changed since the run ended`)
+        setNotice(`${mode === 'undo' ? 'Undo' : 'Discard'}: ${parts.join(' \u00b7 ')}.`)
+        await Promise.all([loadCheckpointDiff(), loadCheckpoints(), loadArtifacts(runId), loadRun(runId)])
+        return true
+      } catch (caught) {
+        if (selection.isCurrent()) report(caught, 'The restore failed.')
+        return false
+      }
+    },
     async restoreCheckpoint(commit: string) {
       if (!runId) return false
       const selection = runScope.capture(runId)
@@ -924,7 +955,7 @@ export function useBridge() {
     tree,
     fileHistory,
     reloadRuns: () => loadRuns(projectId),
-  }), [approval, canActOnRun, fileHistory, loadArtifacts, loadCheckpoints, loadEstimate, loadGoalsFor, loadGrants, loadLearnings, loadPlaybooksFor, loadProjectSettings, loadProjects, loadRun, loadRuns, loadSchedulesFor, messages, openProject, openRun, projectId, projectLoading, projectScope, projects, projectSettings, report, runId, runScope, timeline, tree])
+  }), [approval, canActOnRun, fileHistory, loadArtifacts, loadCheckpoints, loadCheckpointDiff, loadEstimate, loadGoalsFor, loadGrants, loadLearnings, loadPlaybooksFor, loadProjectSettings, loadProjects, loadRun, loadRuns, loadSchedulesFor, messages, openProject, openRun, projectId, projectLoading, projectScope, projects, projectSettings, report, runId, runScope, timeline, tree])
 
   const bridge = useMemo(() => ({
     ...workspace,

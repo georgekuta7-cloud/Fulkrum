@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { existsSync, readFileSync } from 'node:fs'
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { readIgnoreRuleLines, skippedDirectories } from './toolBroker.mjs'
@@ -222,6 +222,58 @@ export function createCheckpointStore({ workspaceRoot, dataDir, execFileImpl = e
     return { ...result, reused: false }
   }
 
+  /**
+   * Discard a run's covered changes: restore every path the baseline→final
+   * diff names back to its baseline state, but never overwrite a file that
+   * moved after the run ended. The current live bytes must equal the final
+   * snapshot's bytes for a path to be touched at all; anything else is a
+   * conflict, listed and left alone. A path the run created is removed, not
+   * left behind. The result is snapshotted so the discard is itself history.
+   *
+   * Text comparison: binary files compare as text and therefore mismatch
+   * safely — they are reported as conflicts rather than guessed at.
+   */
+  const discardChanges = async ({ baseline, final, paths = null }) => {
+    await ensure()
+    const changed = await diff({ from: baseline, to: final })
+    const selected = paths?.length ? changed.filter((entry) => paths.includes(entry.path)) : changed
+    const contentAt = async (commit, relative) => {
+      try {
+        return (await run(['show', `${commit}:${relative}`])).stdout
+      } catch {
+        return null
+      }
+    }
+    const liveContent = (relative) => {
+      try {
+        return readFileSync(path.join(root, relative), 'utf8')
+      } catch {
+        return null
+      }
+    }
+    const restored = []
+    const removed = []
+    const skipped = []
+    for (const entry of selected) {
+      const live = liveContent(entry.path)
+      const expected = await contentAt(final, entry.path)
+      if (live !== expected) {
+        skipped.push({ path: entry.path, reason: 'changed since the run ended' })
+        continue
+      }
+      const original = await contentAt(baseline, entry.path)
+      if (original === null) {
+        await rm(path.join(root, entry.path), { force: true })
+        removed.push(entry.path)
+      } else {
+        await run(['checkout', baseline, '--', entry.path])
+        restored.push(entry.path)
+      }
+    }
+    const after = await snapshot({ message: `discard \u00b7 run ${String(baseline).slice(0, 8)}` })
+    return { restored, removed, skipped, commit: after.commit }
+  }
+
   /** The covered-file changes between two snapshots, as a reproducible diff. */
   const diff = async ({ from, to }) => {
     const status = (await run(['diff', '--name-status', from, to])).stdout
@@ -242,6 +294,30 @@ export function createCheckpointStore({ workspaceRoot, dataDir, execFileImpl = e
         ...(counts.get(filePath) ?? { added: null, removed: null }),
       }
     })
+  }
+
+  /**
+   * Which of the diffed paths moved after the run's final snapshot. A conflict
+   * is shown, never overwritten: the same comparison the discard uses.
+   */
+  const markConflicts = async ({ final, files }) => {
+    const out = []
+    for (const entry of files) {
+      let live = null
+      try {
+        live = readFileSync(path.join(root, entry.path), 'utf8')
+      } catch {
+        live = null
+      }
+      let expected = null
+      try {
+        expected = (await run(['show', `${final}:${entry.path}`])).stdout
+      } catch {
+        expected = null
+      }
+      out.push({ ...entry, conflict: live !== expected })
+    }
+    return out
   }
 
   const changedPaths = async (commit) => {
@@ -348,7 +424,7 @@ export function createCheckpointStore({ workspaceRoot, dataDir, execFileImpl = e
     return { commit, unchanged: false, files: tracked.length, message: subject }
   }
 
-  return { run, available, ensure, checkpoint, snapshot, baseline, diff, list, restore, status, workspaceRoot: root, dataDir: path.resolve(dataDir), gitDir, indexFile }
+  return { run, available, ensure, checkpoint, snapshot, baseline, diff, markConflicts, discardChanges, list, restore, status, workspaceRoot: root, dataDir: path.resolve(dataDir), gitDir, indexFile }
 }
 
 /**
