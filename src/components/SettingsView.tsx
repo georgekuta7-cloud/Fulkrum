@@ -226,6 +226,7 @@ export function SettingsView({ bridge }: { bridge: Bridge }) {
           ) : null}
 
           {tab === 'budgets' ? (
+            <>
             <Panel title="Spend ceilings">
               <p className="text-body-sm text-on-surface-variant">Hard stops: a run over its ceiling transitions to budget_exceeded. 0 means no ceiling.</p>
               {[
@@ -269,6 +270,44 @@ export function SettingsView({ bridge }: { bridge: Bridge }) {
                 </div>
               ) : <p className="text-body-sm text-outline">Usage loads with this tab.</p>}
             </Panel>
+            <Panel title="Operating limits">
+              <p className="text-body-sm text-on-surface-variant">Effective values and whether a change applies live. Environment values always win and cannot be edited here.</p>
+              {([
+                ['FULKRUM_PROVIDER_MAX_CONCURRENCY', 'Provider requests at once'],
+                ['FULKRUM_PROVIDER_MAX_ATTEMPTS', 'Retry attempts per provider call'],
+                ['FULKRUM_MAX_PARALLEL_RESEARCHERS', 'Read-only tasks at once'],
+                ['FULKRUM_VERIFY_MAX_STEPS', 'Verifier steps per task'],
+                ['FULKRUM_TASK_MAX_ATTEMPTS', 'Task attempts including repairs'],
+                ['FULKRUM_MAX_TOOL_STEPS', 'Tool calls per task before summarizing'],
+              ] as const).map(([name, label]) => {
+                const setting = bridge.appSettings.find((entry) => entry.name === name)
+                if (!setting) return null
+                return (
+                  <div key={name} className="flex items-center justify-between gap-3 p-2 rounded-lg bg-surface-container">
+                    <div className="min-w-0">
+                      <p className="text-label-md text-on-surface">{label}</p>
+                      <p className="font-mono text-label-sm text-outline truncate" title={setting.description}>
+                        {name} · {setting.restartRequired ? 'restart required' : 'applies live'}{setting.source === 'env' ? ' · set in environment' : setting.source === 'db' ? ' · saved in app' : ' · default'}
+                      </p>
+                    </div>
+                    <input
+                      inputMode="numeric"
+                      className={`${inputClass} font-mono !w-24`}
+                      defaultValue={String(setting.value ?? setting.default)}
+                      disabled={setting.source === 'env'}
+                      key={`${name}:${JSON.stringify(setting.value)}`}
+                      aria-label={label}
+                      onBlur={async (event) => {
+                        const raw = event.target.value.trim()
+                        const next = raw === '' ? setting.default : Number(raw)
+                        if (Number.isFinite(next) && next !== Number(setting.value ?? setting.default)) await bridge.saveSetting(name, next)
+                      }}
+                    />
+                  </div>
+                )
+              })}
+            </Panel>
+            </>
           ) : null}
 
           {tab === 'learnings' ? (

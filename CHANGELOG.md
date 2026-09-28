@@ -30,6 +30,15 @@ All notable changes to Fulkrum are documented here. This project follows
   proven (PASS or waived) separately from unproven.
 
 ### Added
+- **Operating limits are visible and editable, with their source and
+  liveness.** Per P4.2, the Budgets tab gains an Operating limits panel:
+  provider concurrency, retry attempts, parallel readers, verifier steps,
+  task attempts, and tool steps, each showing its effective value, whether a
+  change applies live or needs a restart, and whether the value comes from
+  the environment, the app, or the default. Environment values are read-only
+  here because they always win. A test proves the retry ceiling is read at
+  use time — a saved change applies without a restart — matching the
+  concurrency fix from P4.2's first half.
 - **Provider waits and retries explain themselves.** Per P3.3, the model
   caller reports redacted state — provider label, attempt, remaining
   attempts, delay and a plain reason ("rate limited", "the connection

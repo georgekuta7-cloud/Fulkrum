@@ -382,6 +382,35 @@ test('a retried call reports redacted wait state, and the key never appears', as
   })
 })
 
+test('the retry ceiling is read at use time, so a saved change applies live', async () => {
+  const previous = { attempts: process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS, threshold: process.env.FULKRUM_BREAKER_THRESHOLD }
+  process.env.FULKRUM_BREAKER_THRESHOLD = '10'
+  try {
+    await withProviderServer((_record, response) => json(response, { error: { message: 'down' } }, 503), async ({ baseUrl, requests }) => {
+      await withStore(async (store) => {
+        const registry = createProviderRegistry(store)
+        registry.addCustom({ label: 'Flaky', baseUrl, model: 'flaky-model', apiKey: 'k', allowPrivate: true })
+        const caller = createModelCaller({ providerRegistry: registry })
+        const provider = registry.resolve('Flaky')
+
+        process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS = '1'
+        await assert.rejects(() => caller.callModel(provider, 'flaky-model', [{ role: 'user', content: 'go' }], { instructions: 'sys' }))
+        const afterOne = requests.length
+        assert.equal(afterOne, 1)
+
+        process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS = '2'
+        await assert.rejects(() => caller.callModel(provider, 'flaky-model', [{ role: 'user', content: 'go' }], { instructions: 'sys' }))
+        assert.equal(requests.length - afterOne, 2, 'the raised ceiling applied without a restart')
+      })
+    })
+  } finally {
+    if (previous.attempts === undefined) delete process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS
+    else process.env.FULKRUM_PROVIDER_MAX_ATTEMPTS = previous.attempts
+    if (previous.threshold === undefined) delete process.env.FULKRUM_BREAKER_THRESHOLD
+    else process.env.FULKRUM_BREAKER_THRESHOLD = previous.threshold
+  }
+})
+
 test('the provider concurrency limit is read when used, not latched at construction', async () => {  let limit = 1
   const limiter = createLimiter(() => limit)
   const started = []

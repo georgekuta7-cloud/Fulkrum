@@ -592,6 +592,17 @@ describe('settings', () => {
     expect(verifyAudit).toHaveBeenCalled()
   })
 
+  it('lists operating limits with effective values and live/restart labels', () => {
+    render(<SettingsView bridge={settingsBridge({ appSettings: [
+      { name: 'FULKRUM_PROVIDER_MAX_CONCURRENCY', group: 'providers', kind: 'int', description: 'Calls in flight to one provider.', choices: null, default: 3, value: 5, source: 'db', restartRequired: false, problem: null },
+      { name: 'FULKRUM_MAX_PARALLEL_RESEARCHERS', group: 'limits', kind: 'int', description: 'Read-only tasks at once.', choices: null, default: 3, value: 3, source: 'default', restartRequired: false, problem: null },
+    ] as any })} />)
+    fireEvent.click(screen.getByRole('button', { name: /Budgets/ }))
+    expect(screen.getByText('Operating limits')).toBeInTheDocument()
+    expect(screen.getByText(/FULKRUM_PROVIDER_MAX_CONCURRENCY · applies live · saved in app/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Provider requests at once')).toHaveValue('5')
+  })
+
   it('names the workspace and checks the sandbox boundary from the readiness panel', async () => {
     const sandboxCheck = vi.fn().mockResolvedValue({ ok: true, version: 'v24.13.0', container: 'fulkrum-stub' })
     const base = settingsBridge()
