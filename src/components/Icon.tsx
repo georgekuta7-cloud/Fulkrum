@@ -1,5 +1,5 @@
 import {
-  AlertCircle, ArrowUp, BadgeCheck, Bot, Brain, Bug, Check, ChevronDown, ClipboardCheck,
+  AlertCircle, ArrowUp, BadgeCheck, Bell, Bot, Brain, Bug, Check, ChevronDown, ClipboardCheck,
   ClipboardList, Compass, DraftingCompass, FileDiff, FolderOpen, Gavel, HelpCircle,
   History, KeyRound, Lock, MessageCircle, Moon, Network, Pause, Pencil, Play,
   ShieldCheck, SlidersHorizontal, Square, Store, Sun, Terminal, Trash2, TrendingUp,
@@ -18,7 +18,7 @@ const icons = {
   architecture: DraftingCompass, edit: Pencil, bug_report: Bug,
   content_paste_search: ClipboardCheck, badge: Users, security: ShieldCheck,
   monitoring: TrendingUp, settings: SlidersHorizontal, terminal: Terminal,
-  delete: Trash2, lock: Lock, lan: Network, block: Ban,
+  delete: Trash2, lock: Lock, lan: Network, block: Ban, notifications: Bell,
 } as const
 
 export type IconName = keyof typeof icons

@@ -88,6 +88,7 @@ export const endpoints = [
   { method: 'GET', path: '/api/workspace/history', summary: 'Every tool call that touched one file: ?path=', tags: ['runs'], errors: [400] },
   { method: 'GET', path: '/api/status', summary: 'Version, storage, backups, anchors, engine, provider health', tags: ['system'] },
   { method: 'GET', path: '/api/checkpoints', summary: 'Recent workspace checkpoints, newest first: ?limit=', tags: ['system'] },
+  { method: 'GET', path: '/api/attention', summary: 'Everything waiting on a human across runs: approvals, questions, reviews, stops, failed schedules', tags: ['system'] },
   { method: 'POST', path: '/api/runs/{runId}/checkpoints/restore', summary: 'Restore the paths a checkpoint touched, as a recorded human action', tags: ['runs'], errors: [400, 404, 409, 503] },
   { method: 'GET', path: '/api/runs/{runId}/checkpoint-diff', summary: 'The covered changes between a run\u2019s baseline and its final snapshot', tags: ['runs'], errors: [404] },
   { method: 'POST', path: '/api/runs/{runId}/checkpoint-accept', summary: 'Record that the live folder keeps the run\u2019s changes', tags: ['runs'], errors: [404, 409, 503] },

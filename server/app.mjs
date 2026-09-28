@@ -593,6 +593,13 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         return
       }
 
+      if (request.method === 'GET' && requestUrl.pathname === '/api/attention') {
+        // Durable records, derived from state (P3.1): a reload reproduces the
+        // queue, and resolving an item removes it because its cause is gone.
+        sendJson(response, 200, store.listAttention())
+        return
+      }
+
       if (request.method === 'GET' && requestUrl.pathname === '/api/checkpoints') {
         if (!checkpoints) {
           sendJson(response, 200, { available: false, checkpoints: [] })

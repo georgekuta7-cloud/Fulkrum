@@ -63,6 +63,10 @@ export function useBridge() {
   const [timeline, setTimeline] = useState<{ seq: number; files: Array<{ path: string; content: string | null; truncated: boolean; unknown: string | null }>; gaps: string[] } | null>(null)
   const [checkpoints, setCheckpoints] = useState<Array<{ commit: string; at: number; subject: string }>>([])
   const [checkpointDiff, setCheckpointDiff] = useState<{ available: boolean; reason?: string; baseline?: string; final?: string; files: Array<{ path: string; change: string; added: number | null; removed: number | null; conflict?: boolean }> } | null>(null)
+  // The durable attention queue (P3.1), across every run. Refreshed on a
+  // timer while the tab is visible: the endpoint reads state only and sends
+  // no model calls, so this is cheap and safe.
+  const [attention, setAttention] = useState<{ items: Array<{ id: string; kind: string; runId: string; projectId: string; title: string; detail: string | null; since: number }>; counts: Record<string, number>; total: number }>({ items: [], counts: {}, total: 0 })
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   // False until the first load finishes, so an empty project list reads as
@@ -321,6 +325,23 @@ export function useBridge() {
     clearResourceError('checkpointDiff')
     return payload
   }, [clearResourceError, noteResourceError, runId])
+
+  const loadAttention = useCallback(async () => {
+    try {
+      const payload = await api.get<{ items: Array<{ id: string; kind: string; runId: string; projectId: string; title: string; detail: string | null; since: number }>; counts: Record<string, number>; total: number }>('/api/attention')
+      setAttention(payload)
+    } catch {
+      // The attention centre must never break the app; the next tick retries.
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadAttention()
+    const timer = setInterval(() => {
+      if (!document.hidden) void loadAttention()
+    }, 20_000)
+    return () => clearInterval(timer)
+  }, [loadAttention])
 
   const loadGoalsFor = useCallback(async (forProject: string | null) => {
     const selection = projectScope.capture(forProject)
@@ -977,7 +998,7 @@ export function useBridge() {
   const bridge = useMemo(() => ({
     ...workspace,
     projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, verdicts, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit,
-    learnings, playbooks, schedules, goals, blueprints, timeline, checkpoints, checkpointDiff, error, notice, streaming, approval, booted, projectSettings,
+    learnings, playbooks, schedules, goals, blueprints, timeline, checkpoints, checkpointDiff, attention, error, notice, streaming, approval, booted, projectSettings,
     // Workspace resources (marketplace, arsenal) and project/run resources
     // (learnings, playbooks, …) report failures the same way, so a panel only
     // has to know its own key.
@@ -996,10 +1017,10 @@ export function useBridge() {
       return null
     },
     setError, setNotice, setApproval,
-    openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor, loadCheckpoints, loadCheckpointDiff,
+    openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor, loadCheckpoints, loadCheckpointDiff, loadAttention,
     ...actions,
     approveWithKeyboard: (scope: 'once' | 'run' | 'always') => actions.approveCall(scope),
-  }), [workspace, projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, verdicts, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit, learnings, playbooks, schedules, goals, blueprints, timeline, checkpoints, checkpointDiff, error, notice, streaming, approval, booted, projectSettings, resourceErrors, actions, openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor, loadArtifacts, loadCheckpoints, loadCheckpointDiff])
+  }), [workspace, projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, verdicts, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit, learnings, playbooks, schedules, goals, blueprints, timeline, checkpoints, checkpointDiff, attention, error, notice, streaming, approval, booted, projectSettings, resourceErrors, actions, openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor, loadArtifacts, loadCheckpoints, loadCheckpointDiff, loadAttention])
   return bridge
 }
 

@@ -64,6 +64,7 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
     restoreCheckpoint: vi.fn().mockResolvedValue(true),
     checkpointDiff: null,
     loadCheckpointDiff: vi.fn().mockResolvedValue(null),
+    attention: { items: [], counts: {}, total: 0 },
     acceptRunChanges: vi.fn().mockResolvedValue(true),
     discardRunChanges: vi.fn().mockResolvedValue(true),
     rerunChecks: vi.fn().mockResolvedValue(true),
@@ -133,6 +134,29 @@ describe('header', () => {
     expect(onOpenSettings).toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Switch to light theme' }))
     expect(onToggleTheme).toHaveBeenCalled()
+  })
+
+  it('shows the attention queue and opens the waiting run from it', () => {
+    const openRun = vi.fn()
+    const onOpenChat = vi.fn()
+    render(<Header bridge={makeBridge({
+      openRun,
+      attention: {
+        total: 2,
+        counts: { approval: 1, budget: 1 },
+        items: [
+          { id: 'approval:c1', kind: 'approval', runId: 'run-9', projectId: 'p1', title: 'Approve workspace.write', detail: 'a.txt', since: Date.now() - 120_000 },
+          { id: 'budget:run-8', kind: 'budget', runId: 'run-8', projectId: 'p1', title: 'Run stopped at its budget', detail: 'ceiling $2', since: Date.now() - 60_000 },
+        ],
+      },
+    })} theme="dark" onToggleTheme={vi.fn()} onOpenSettings={vi.fn()} onOpenChat={onOpenChat} />)
+    const bell = screen.getByRole('button', { name: 'Attention: 2 waiting' })
+    fireEvent.click(bell)
+    expect(screen.getByText('Approve workspace.write')).toBeInTheDocument()
+    expect(screen.getByText(/waiting 2m/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitem', { name: /Approve workspace.write/ }))
+    expect(openRun).toHaveBeenCalledWith('run-9')
+    expect(onOpenChat).toHaveBeenCalled()
   })
 
   it('switches projects from the menu, and Escape closes it', () => {

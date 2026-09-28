@@ -819,6 +819,58 @@ export class FulkrumStore {
     return { outputSha256: createHash('sha256').update(serialized, 'utf8').digest('hex'), outputBytes: Buffer.byteLength(serialized, 'utf8') }
   }
 
+  /**
+   * Durable attention records (P3.1): everything waiting on a human, across
+   * every run — pending approvals and questions, budget stops, failed and
+   * interrupted runs, finished runs awaiting their review decision (a draft
+   * plan reads as a replan needing approval), and enabled schedules whose
+   * last fire did not succeed. Derived from state, never from a transient UI
+   * flag, so a reload reproduces the queue and a decision removes its item.
+   */
+  listAttention() {
+    const items = []
+    const pending = this.database.prepare("SELECT tc.*, r.project_id AS run_project_id FROM tool_calls tc JOIN runs r ON r.id = tc.run_id WHERE tc.status = 'approval_required' ORDER BY tc.created_at ASC").all()
+    for (const row of pending) {
+      const call = toolCallFromRow(row)
+      const question = call.name === 'run.ask' ? String(call.input?.question ?? '').slice(0, 200) : null
+      items.push({
+        id: `approval:${call.id}`,
+        kind: call.name === 'run.ask' ? 'question' : 'approval',
+        runId: call.runId,
+        projectId: row.run_project_id,
+        title: question ? `A worker asked: ${question}` : `Approve ${call.name}`,
+        detail: call.resolved?.relative ?? (Array.isArray(call.resolved?.argv) ? call.resolved.argv.join(' ') : null),
+        since: call.createdAt,
+      })
+    }
+    for (const run of this.listRuns({ limit: 200 })) {
+      if (run.status === 'budget_exceeded') {
+        items.push({ id: `budget:${run.id}`, kind: 'budget', runId: run.id, projectId: run.projectId, title: 'Run stopped at its budget', detail: run.budgetUsd === null ? null : `ceiling $${run.budgetUsd}`, since: run.updatedAt })
+      } else if (run.status === 'failed') {
+        items.push({ id: `failed:${run.id}`, kind: 'failed', runId: run.id, projectId: run.projectId, title: 'Run failed', detail: run.interruptionReason, since: run.updatedAt })
+      } else if (run.status === 'interrupted') {
+        items.push({ id: `interrupted:${run.id}`, kind: 'interrupted', runId: run.id, projectId: run.projectId, title: 'Run interrupted', detail: run.interruptionReason, since: run.updatedAt })
+      } else if (run.status === 'review') {
+        // The newest plan decides: a revised draft (a replan) needs approval
+        // even while the run's planId still points at the approved version.
+        const plan = this.getLatestPlanForRun(run.id) ?? (run.planId ? this.getPlan(run.planId) : null)
+        const draft = plan?.plan.status === 'draft'
+        items.push({ id: `review:${run.id}`, kind: draft ? 'replan' : 'review', runId: run.id, projectId: run.projectId, title: draft ? 'A revised plan needs your approval' : 'Run finished; review its result', detail: plan?.plan.objective ?? null, since: run.updatedAt })
+      }
+    }
+    for (const row of this.database.prepare('SELECT * FROM schedules WHERE enabled = 1 AND last_run_id IS NOT NULL').all()) {
+      const run = this.getRun(row.last_run_id)
+      if (run && ['failed', 'interrupted', 'budget_exceeded'].includes(run.status)) {
+        const name = this.getPlaybook(row.playbook_id)?.name ?? row.playbook_id
+        items.push({ id: `schedule:${row.id}`, kind: 'schedule', runId: run.id, projectId: row.project_id, title: `Schedule "${name}" failed its last fire`, detail: run.status, since: run.updatedAt })
+      }
+    }
+    items.sort((a, b) => a.since - b.since)
+    const counts = {}
+    for (const item of items) counts[item.kind] = (counts[item.kind] ?? 0) + 1
+    return { items, counts, total: items.length }
+  }
+
   /** The same treatment for an input whose bulk is file content. */
   summarizeInput(input) {
     if (!input || typeof input !== 'object' || typeof input.content !== 'string') return input

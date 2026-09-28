@@ -30,6 +30,16 @@ All notable changes to Fulkrum are documented here. This project follows
   proven (PASS or waived) separately from unproven.
 
 ### Added
+- **One attention centre, derived from state.** Per P3.1, a bell in the
+  header carries a live count of everything waiting on a human across every
+  run: parked approvals and questions, budget stops, failed and interrupted
+  runs, finished runs awaiting their review decision (a revised draft reads
+  as a replan needing approval), and enabled schedules whose last fire did
+  not succeed. Each item names its kind and how long it has waited, and opens
+  its run. The queue is computed from state, so a reload reproduces it and a
+  decision removes its item — nothing depends on a transient UI flag. The
+  client refreshes it on a timer only while the tab is visible, and the
+  endpoint reads state only: no model calls.
 - **The finish screen decides on unresolved work, not around it.** Per P2.6,
   Accept now refuses while outcomes are unproven or failed unless the human
   ticks an explicit acknowledgment (recorded with the count), a "Re-run
