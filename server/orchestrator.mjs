@@ -23,8 +23,10 @@ const maxStepsPerTask = () => Number(process.env.FULKRUM_MAX_TOOL_STEPS ?? 8)
 // the same files, parallel readers do not.
 const maxParallelReaders = () => Math.max(Number(process.env.FULKRUM_MAX_PARALLEL_RESEARCHERS ?? 3), 1)
 // Verify and review in a few read-only steps, not a full task budget: judging
-// should be cheaper than doing.
-const verifyMaxSteps = () => Math.max(Number(process.env.FULKRUM_VERIFY_MAX_STEPS ?? 3) || 3, 1)
+// should be cheaper than doing. A run can choose its budget at approval
+// (P2.5), bounded so a typo cannot mint a full-task budget for judging.
+const VERIFY_STEPS_MAX = 50
+const verifyStepsDefault = () => Math.max(Number(process.env.FULKRUM_VERIFY_MAX_STEPS ?? 3) || 3, 1)
 // Times one task may be attempted including repairs. The counter lives in the
 // row, so restarts cannot mint fresh allowances and the repair loop terminates.
 const taskMaxAttempts = () => Math.max(Number(process.env.FULKRUM_TASK_MAX_ATTEMPTS ?? 2) || 2, 1)
@@ -85,6 +87,13 @@ export function createRunOrchestrator({ store, providerRegistry, toolBroker, cal
   const workspaceRootKey = toolBroker?.workspaceRoot ?? null
   const workspaceWriter = { runId: null }
   const workspaceWaiters = []
+
+  /** The verifier step budget: the run's choice, else the boot setting, capped. */
+  const verifyMaxSteps = (runId = null) => {
+    const perRun = runId ? Number(store.getRun(runId)?.verificationSteps ?? 0) : 0
+    const chosen = Number.isFinite(perRun) && perRun > 0 ? perRun : verifyStepsDefault()
+    return Math.min(Math.max(Math.floor(chosen), 1), VERIFY_STEPS_MAX)
+  }
 
   /** Resolve a route, falling back rather than failing the run on a stale setting. */
   const resolveRoute = (runId, requested, roleName) => {
@@ -991,6 +1000,10 @@ Rules:
       // and the model judges the rest with read-only tools. The builder's
       // turns are never in the room, so it cannot verify its own work.
       let verification = null
+      // Who judged, and whether that was independent of the worker (P2.5):
+      // recorded beside the verdict so the same-route fallback is visible.
+      let reviewerRouteUsed = null
+      let reviewerSameAsTask = null
       {
         // The provider is configured — anything else threw above — so every
         // completion is verified, no exceptions.
@@ -1064,7 +1077,7 @@ Rules:
             runId,
             instructions: 'You are Head AI verifying a worker task. Check each acceptance criterion against the workspace and the evidence, using the read tools when a claim needs confirming. Judge the work, not the worker. Every result must cite the evidence it judged by id (#ev-... as shown in the digest); a result that cites nothing recorded is treated as UNKNOWN no matter what status it claims. End with a fenced ```verdict block: {"results": [{"criterion": "...", "status": "PASS, FAIL, or UNKNOWN", "evidence": ["ev-..."]}]}.',
             messages: [{ role: 'user', content: `Task: ${task.title}\n${task.instructions}\nAcceptance check: ${planTask.acceptanceCheck || '(none stated)'}\nWorker summary and evidence:\n${digest}` }],
-            maxSteps: verifyMaxSteps(),
+            maxSteps: verifyMaxSteps(runId),
             route: (typeof reviewerRoute === 'string' && reviewerRoute.trim() ? reviewerRoute : null) ?? route ?? '',
             parentSpanId: span.id,
             taskId: task.id,
@@ -1109,6 +1122,8 @@ Rules:
           }
           results = [...deterministic, ...citedResults]
           checkedBy = `head via ${verdict.provider?.id ?? provider.id}/${verdict.model ?? providerRegistry.model(provider, route)}`
+          reviewerRouteUsed = (typeof reviewerRoute === 'string' && reviewerRoute.trim() ? reviewerRoute.trim() : null) ?? (typeof route === 'string' && route.trim() ? route : 'default')
+          reviewerSameAsTask = !(typeof reviewerRoute === 'string' && reviewerRoute.trim())
         }
 
         const overall = summarizeVerdict(results)
@@ -1116,7 +1131,7 @@ Rules:
         // The verdict reports against the approved outcome it was predicted
         // to satisfy (P2.4): the plan's own check, not the worker's claims.
         const outcomeId = `outcome-${store.getRun(runId)?.planId ?? 'plan'}-${planTask.orderIndex}`
-        store.appendEvent({ runId, type: 'task.verified', agentId: 'head', payload: { taskId: task.id, title: task.title, outcomeId, overall, verdictId: stored?.id ?? null, results } })
+        store.appendEvent({ runId, type: 'task.verified', agentId: 'head', payload: { taskId: task.id, title: task.title, outcomeId, overall, verdictId: stored?.id ?? null, reviewer: reviewerRouteUsed ? { route: reviewerRouteUsed, sameAsTask: reviewerSameAsTask } : null, results } })
         verification = { overall, verdictId: stored?.id ?? null, outcomeId }
         // Cited results judge the claims they cite: a claim whose evidence
         // was judged takes that verdict. Results without citations judge
@@ -1490,7 +1505,7 @@ Rules:
             runId,
             instructions: 'You are Head AI deciding the next step for this run. Repair retries failed tasks inside the approved plan when the failure looks fixable. Replan proposes a new plan version with a full objective and tasks array when the plan itself is wrong — it still needs human approval. Stop ends the run. Proceed is forbidden while tasks have failed. End with a fenced ```decision block: {"decision": "repair, replan, stop, or proceed", "reason": "...", "plan": {...} for replan}.',
             messages: [{ role: 'user', content: packet }],
-            maxSteps: verifyMaxSteps(),
+            maxSteps: verifyMaxSteps(runId),
             parentSpanId: runSpan.id,
           })
           if (answer.cancelled || !await waitUntilRunnable(runId)) return { cancelled: true }
@@ -1619,7 +1634,7 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
           runId,
           instructions: 'You are Head AI reviewing worker outputs. Verify worker claims against the workspace with the read tools when a claim needs confirming. Return a concise decision packet, not hidden reasoning.',
           messages: [{ role: 'user', content: reviewPrompt }],
-          maxSteps: verifyMaxSteps(),
+          maxSteps: verifyMaxSteps(runId),
           route: reviewRoute,
           parentSpanId: runSpan.id,
           pseudoId: `review-${runId}`,

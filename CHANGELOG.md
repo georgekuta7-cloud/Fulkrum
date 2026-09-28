@@ -30,6 +30,14 @@ All notable changes to Fulkrum are documented here. This project follows
   proven (PASS or waived) separately from unproven.
 
 ### Added
+- **The reviewer is named, and the verifier budget is a per-run choice.** Per
+  P2.5, the plan card shows the effective reviewer route — or says plainly
+  that it is the same as the worker's route, with independent review
+  recommended — and offers a verifier step budget (1–50) chosen at approval
+  and stored on the run. Every verdict records which route judged it and
+  whether that was independent; an out-of-range budget is refused rather than
+  silently clamped, and the run's ceiling remains the hard stop for what the
+  steps may spend.
 - **The score is the approved outcomes, not the worker's claims.** Per P2.4,
   approving a plan records its checks as predicted outcome IDs bound to the
   plan hash (`plan.outcomes`); every verdict reports against its outcome, and

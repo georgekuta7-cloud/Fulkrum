@@ -33,6 +33,7 @@ export function PlanCard({ bridge }: { bridge: Bridge }) {
   const [error, setError] = useState('')
   const [unlimitedAcknowledged, setUnlimitedAcknowledged] = useState(false)
   const [limit, setLimit] = useState('')
+  const [verifierSteps, setVerifierSteps] = useState('3')
   const [objective, setObjective] = useState(plan?.plan.objective ?? '')
   const [tasks, setTasks] = useState(() => (plan?.tasks ?? []).map((task) => ({ ...task, dependencies: task.dependsOn.map((dep) => dep + 1).join(', '), check: toEditorCheck(task.check, task.acceptanceCheck) })))
   const plannable = !!run && canDraftPlan(run.status)
@@ -178,6 +179,16 @@ export function PlanCard({ bridge }: { bridge: Bridge }) {
           })}
         </ol>
       )}
+      {!editing && plannable && plan.plan.status === 'draft' ? (
+        <div className="flex items-end gap-3 flex-wrap">
+          <p className="text-label-md text-outline min-w-0">
+            Reviewer: {routing.reviewer?.trim() ? resolveRouteDisplay(routing, bridge.providers, 'reviewer') ?? routing.reviewer : 'same as the worker\u2019s route — an independent reviewer is recommended'}
+          </p>
+          <label className="flex flex-col gap-1 text-label-md">Verifier steps
+            <input className={inputClass} type="number" min={1} max={50} value={verifierSteps} onChange={(event) => setVerifierSteps(event.target.value)} title="How many read-only steps the verifier may take per task (1–50)" />
+          </label>
+        </div>
+      ) : null}
       {!editing && plannable && plan.plan.status === 'draft' && unlimited ? (
         <div role="note" className="p-3 rounded-lg bg-surface-container-lowest space-y-3">
           <p className="text-body-sm">This run has no spending limit. Model calls keep going until the plan finishes, and only you can stop a runaway.</p>
@@ -195,7 +206,7 @@ export function PlanCard({ bridge }: { bridge: Bridge }) {
       ) : null}
       {!editing && plannable ? (
         <div className="flex gap-2 flex-wrap">
-          {plan.plan.status === 'draft' ? <Button variant="primary" disabled={busy || !providersReady || (unlimited && !unlimitedAcknowledged)} onClick={() => void perform(() => bridge.control('approve-plan', { planId: plan.plan.id, planHash: plan.plan.contentHash, ...(unlimited ? { unlimitedAcknowledged: true } : {}) }))}>Approve & Run</Button> : null}
+          {plan.plan.status === 'draft' ? <Button variant="primary" disabled={busy || !providersReady || (unlimited && !unlimitedAcknowledged)} onClick={() => void perform(() => bridge.control('approve-plan', { planId: plan.plan.id, planHash: plan.plan.contentHash, ...(unlimited ? { unlimitedAcknowledged: true } : {}), ...(Number(verifierSteps) >= 1 ? { verificationSteps: Number(verifierSteps) } : {}) }))}>Approve & Run</Button> : null}
           <Button disabled={busy} onClick={() => {
             setObjective(plan.plan.objective)
             setTasks(plan.tasks.map((task) => ({ ...task, dependencies: task.dependsOn.map((dep) => dep + 1).join(', '), check: toEditorCheck(task.check, task.acceptanceCheck) })))

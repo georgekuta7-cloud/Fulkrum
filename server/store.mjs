@@ -60,6 +60,7 @@ function runFromRow(row) {
     interruptedAt: row.interrupted_at === null || row.interrupted_at === undefined ? null : Number(row.interrupted_at),
     interruptionReason: row.interruption_reason ?? null,
     interruptedFrom: row.interrupted_from ?? null,
+    verificationSteps: row.verification_steps === null || row.verification_steps === undefined ? null : Number(row.verification_steps),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   }
@@ -558,6 +559,7 @@ export class FulkrumStore {
       planId: patch.planId === undefined ? current.planId : patch.planId,
       budgetUsd: patch.budgetUsd === undefined ? current.budgetUsd : patch.budgetUsd,
       budgetExceededAt: patch.budgetExceededAt === undefined ? current.budgetExceededAt : patch.budgetExceededAt,
+      verificationSteps: patch.verificationSteps === undefined ? current.verificationSteps : patch.verificationSteps,
       ownerId: patch.ownerId === undefined ? current.ownerId : patch.ownerId,
       heartbeatAt: patch.heartbeatAt === undefined ? current.heartbeatAt : patch.heartbeatAt,
       leaseExpiresAt: patch.leaseExpiresAt === undefined ? current.leaseExpiresAt : patch.leaseExpiresAt,
@@ -565,8 +567,8 @@ export class FulkrumStore {
       interruptionReason: patch.interruptionReason === undefined ? current.interruptionReason : patch.interruptionReason,
       interruptedFrom: patch.interruptedFrom === undefined ? current.interruptedFrom : patch.interruptedFrom,
     }
-    this.database.prepare('UPDATE runs SET status = ?, mode = ?, permission_mode = ?, plan_version = ?, plan_id = ?, budget_usd = ?, budget_exceeded_at = ?, owner_id = ?, heartbeat_at = ?, lease_expires_at = ?, interrupted_at = ?, interruption_reason = ?, interrupted_from = ?, updated_at = ? WHERE id = ?')
-      .run(next.status, next.mode, next.permissionMode, next.planVersion, next.planId, next.budgetUsd, next.budgetExceededAt, next.ownerId, next.heartbeatAt, next.leaseExpiresAt, next.interruptedAt, next.interruptionReason, next.interruptedFrom, Date.now(), runId)
+    this.database.prepare('UPDATE runs SET status = ?, mode = ?, permission_mode = ?, plan_version = ?, plan_id = ?, budget_usd = ?, budget_exceeded_at = ?, verification_steps = ?, owner_id = ?, heartbeat_at = ?, lease_expires_at = ?, interrupted_at = ?, interruption_reason = ?, interrupted_from = ?, updated_at = ? WHERE id = ?')
+      .run(next.status, next.mode, next.permissionMode, next.planVersion, next.planId, next.budgetUsd, next.budgetExceededAt, next.verificationSteps, next.ownerId, next.heartbeatAt, next.leaseExpiresAt, next.interruptedAt, next.interruptionReason, next.interruptedFrom, Date.now(), runId)
     return this.getRun(runId)
   }
 

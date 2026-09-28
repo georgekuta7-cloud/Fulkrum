@@ -165,7 +165,17 @@ describe('conversation decisions', () => {
     fireEvent.click(screen.getByLabelText(/Approve without a limit/))
     expect(approve).toBeEnabled()
     fireEvent.click(approve)
-    await waitFor(() => expect(control).toHaveBeenCalledWith('approve-plan', { planId: 'plan1', planHash: 'hash', unlimitedAcknowledged: true }))
+    await waitFor(() => expect(control).toHaveBeenCalledWith('approve-plan', { planId: 'plan1', planHash: 'hash', unlimitedAcknowledged: true, verificationSteps: 3 }))
+  })
+
+  it('shows the reviewer route and sends the chosen verifier budget', async () => {
+    const control = vi.fn().mockResolvedValue({ id: 'r1' })
+    render(<ChatView bridge={fixture({ control, plan: draftPlan })} />)
+    expect(screen.getByText(/same as the worker’s route/)).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Verifier steps'), { target: { value: '7' } })
+    fireEvent.click(screen.getByLabelText(/Approve without a limit/))
+    fireEvent.click(screen.getByRole('button', { name: 'Approve & Run' }))
+    await waitFor(() => expect(control).toHaveBeenCalledWith('approve-plan', expect.objectContaining({ verificationSteps: 7 })))
   })
 
   it('approves a budgeted run without the acknowledgment', async () => {
@@ -173,6 +183,6 @@ describe('conversation decisions', () => {
     render(<ChatView bridge={fixture({ control, run: { id: 'r1', projectId: 'p1', status: 'planning', budgetUsd: 5 } as Bridge['run'], plan: draftPlan })} />)
     expect(screen.queryByText(/no spending limit/)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Approve & Run' }))
-    await waitFor(() => expect(control).toHaveBeenCalledWith('approve-plan', { planId: 'plan1', planHash: 'hash' }))
+    await waitFor(() => expect(control).toHaveBeenCalledWith('approve-plan', { planId: 'plan1', planHash: 'hash', verificationSteps: 3 }))
   })
 })

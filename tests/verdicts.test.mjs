@@ -174,6 +174,33 @@ test('a dependent of an unproven task waits until the check is waived, then runs
   })
 })
 
+test('the verifier step budget is per-run, bounded, and the reviewer route is recorded', async () => {
+  await withKey(async () => {
+    await withWorkspace(async (directory) => {
+      await withServer(async ({ request, store }) => {
+        const project = await request('POST', '/api/projects', { name: 'verifier budget fixture' })
+        const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'selective' })
+        const runId = run.payload.run.id
+        await request('POST', '/api/chat', { runId, message: 'Prove verdicts cite.', history: [] })
+        const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+
+        const tooMany = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {}, verificationSteps: 999 })
+        assert.equal(tooMany.status, 400, 'a typo cannot mint a full-task budget for judging')
+
+        const approved = await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {}, verificationSteps: 7 })
+        assert.equal(approved.status, 200, JSON.stringify(approved.payload))
+        assert.equal(store.getRun(runId).verificationSteps, 7, 'the run carries its chosen budget')
+
+        const deadline = Date.now() + 10_000
+        while (Date.now() < deadline && !['review', 'failed'].includes(store.getRun(runId).status)) await new Promise((resolve) => setTimeout(resolve, 100))
+        const verified = store.listEvents(runId).find((event) => event.type === 'task.verified')
+        assert.ok(verified, 'the task was verified')
+        assert.equal(verified.payload.reviewer.sameAsTask, true, 'no reviewer cast → the task route judged it, and the record says so')
+      }, { model: modelWithVerifier(true), workspaceRoot: directory })
+    })
+  })
+})
+
 test('verification runs on the reviewer route when one is cast, else the task route', async () => {
   const previousXai = process.env.XAI_API_KEY
   const previousOpenai = process.env.OPENAI_API_KEY

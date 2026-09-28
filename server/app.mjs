@@ -1935,6 +1935,18 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
             store.appendEvent({ runId, type: 'plan.estimate', agentId: 'head', payload: { planId: plan.plan.id, version: plan.plan.version, hash: plan.plan.contentHash, estimate: store.estimateRunCost(runId) } })
           }
           approvalPayload = { planId: plan.plan.id, planVersion: plan.plan.version, planHash: plan.plan.contentHash, taskCount: plan.tasks.length }
+          // P2.5: the verifier step budget is chosen at approval, bounded so a
+          // typo cannot mint a full-task budget for judging. The run's ceiling
+          // remains the hard stop for what the steps may spend.
+          if (body.verificationSteps !== undefined && body.verificationSteps !== null) {
+            const steps = Number(body.verificationSteps)
+            if (!Number.isInteger(steps) || steps < 1 || steps > 50) {
+              sendJson(response, 400, { error: 'Verification steps must be an integer between 1 and 50.' })
+              return
+            }
+            store.updateRun(runId, { verificationSteps: steps })
+            approvalPayload.verificationSteps = steps
+          }
         }
 
         const patch = { status: resumePlanning ? 'planning' : transition[0] }
