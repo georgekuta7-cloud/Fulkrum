@@ -62,6 +62,8 @@ function makeBridge(overrides: Partial<Bridge> = {}): Bridge {
     checkpoints: [],
     loadCheckpoints: vi.fn().mockResolvedValue([]),
     restoreCheckpoint: vi.fn().mockResolvedValue(true),
+    checkpointDiff: null,
+    loadCheckpointDiff: vi.fn().mockResolvedValue(null),
     loadMarketplaceState: vi.fn().mockResolvedValue(null),
     loadArsenalState: vi.fn().mockResolvedValue(null),
     setError: vi.fn(),
@@ -352,6 +354,18 @@ describe('files', () => {
       checkpoints: [{ commit: 'abcdef1234567890', at: 1, subject: 'write note.txt' }],
     })} />)
     expect(screen.getByRole('button', { name: 'restore' })).toBeDisabled()
+  })
+
+  it('shows the run\u2019s combined changes, or why there is no snapshot yet', () => {
+    const { unmount } = render(<FilesView bridge={makeBridge({
+      checkpointDiff: { available: true, baseline: 'a'.repeat(40), final: 'b'.repeat(40), files: [{ path: 'out.txt', change: 'added', added: 1, removed: 0 }] },
+    })} />)
+    expect(screen.getByText('out.txt')).toBeInTheDocument()
+    expect(screen.getByText(/added \+1\/-0/)).toBeInTheDocument()
+    unmount()
+
+    render(<FilesView bridge={makeBridge({ checkpointDiff: { available: false, reason: 'This run has no final snapshot yet.', files: [] } })} />)
+    expect(screen.getByText(/no final snapshot yet/)).toBeInTheDocument()
   })
 })
 

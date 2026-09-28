@@ -174,6 +174,32 @@ export function createCheckpointStore({ workspaceRoot, dataDir, execFileImpl = e
   }
 
   /**
+   * Stage and commit everything covered, whatever changed since the last
+   * commit. Reuses the tip when nothing staged; creates the root commit when
+   * the covered tree is empty and no tip exists — a snapshot must always
+   * resolve to a commit, or later diffs have no base.
+   */
+  const snapshot = async ({ message = 'snapshot' }) => {
+    await ensure()
+    await refreshExclude()
+    await run(['add', '--all'])
+    const staged = (await run(['diff', '--cached', '--name-only'])).stdout.split('\n').map((line) => line.trim()).filter(Boolean)
+    let commit
+    if (staged.length) {
+      await run(['commit', '--quiet', '--no-verify', '-m', message])
+      commit = (await run(['rev-parse', 'HEAD'])).stdout.trim()
+    } else {
+      try {
+        commit = (await run(['rev-parse', 'HEAD'])).stdout.trim()
+      } catch {
+        await run(['commit', '--quiet', '--no-verify', '--allow-empty', '-m', message])
+        commit = (await run(['rev-parse', 'HEAD'])).stdout.trim()
+      }
+    }
+    return { commit, files: staged.length }
+  }
+
+  /**
    * The run-start checkpoint (P1.1): a full snapshot of covered content,
    * taken before any work, with one private ref per run so the baseline
    * survives restarts and a resumed run keeps its original. A second call
@@ -191,26 +217,31 @@ export function createCheckpointStore({ workspaceRoot, dataDir, execFileImpl = e
         // No ref yet: take the baseline below.
       }
     }
-    await refreshExclude()
-    await run(['add', '--all'])
-    const staged = (await run(['diff', '--cached', '--name-only'])).stdout.split('\n').map((line) => line.trim()).filter(Boolean)
-    let commit = null
-    if (staged.length) {
-      await run(['commit', '--quiet', '--no-verify', '-m', `run start${safeRunId ? ` \u00b7 run ${safeRunId}` : ''}`])
-      commit = (await run(['rev-parse', 'HEAD'])).stdout.trim()
-    } else {
-      // Nothing new to stage: reuse the current tip, or create the root commit
-      // when the covered tree is empty and no tip exists yet — a baseline must
-      // always resolve to a commit, or later diffs have no base.
-      try {
-        commit = (await run(['rev-parse', 'HEAD'])).stdout.trim()
-      } catch {
-        await run(['commit', '--quiet', '--no-verify', '--allow-empty', '-m', `run start${safeRunId ? ` \u00b7 run ${safeRunId}` : ''}`])
-        commit = (await run(['rev-parse', 'HEAD'])).stdout.trim()
-      }
+    const result = await snapshot({ message: `run start${safeRunId ? ` \u00b7 run ${safeRunId}` : ''}` })
+    if (ref && result.commit) await run(['update-ref', ref, result.commit])
+    return { ...result, reused: false }
+  }
+
+  /** The covered-file changes between two snapshots, as a reproducible diff. */
+  const diff = async ({ from, to }) => {
+    const status = (await run(['diff', '--name-status', from, to])).stdout
+    const numstat = (await run(['diff', '--numstat', from, to])).stdout
+    const counts = new Map()
+    for (const line of numstat.split('\n')) {
+      const [added, removed, ...rest] = line.split('\t')
+      const filePath = rest.join('\t')
+      if (filePath) counts.set(filePath, { added: added === '-' ? null : Number(added), removed: removed === '-' ? null : Number(removed) })
     }
-    if (ref && commit) await run(['update-ref', ref, commit])
-    return { commit, files: staged.length, reused: false }
+    return status.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
+      const parts = line.split('\t')
+      const kind = parts[0]?.[0]
+      const filePath = parts.at(-1) ?? ''
+      return {
+        path: filePath,
+        change: kind === 'A' ? 'added' : kind === 'D' ? 'deleted' : kind === 'R' ? 'renamed' : 'modified',
+        ...(counts.get(filePath) ?? { added: null, removed: null }),
+      }
+    })
   }
 
   const changedPaths = async (commit) => {
@@ -317,7 +348,7 @@ export function createCheckpointStore({ workspaceRoot, dataDir, execFileImpl = e
     return { commit, unchanged: false, files: tracked.length, message: subject }
   }
 
-  return { run, available, ensure, checkpoint, baseline, list, restore, status, workspaceRoot: root, dataDir: path.resolve(dataDir), gitDir, indexFile }
+  return { run, available, ensure, checkpoint, snapshot, baseline, diff, list, restore, status, workspaceRoot: root, dataDir: path.resolve(dataDir), gitDir, indexFile }
 }
 
 /**
@@ -349,6 +380,12 @@ export function createWriteCheckpointer({ store, checkpoints }) {
     return result
   }
   const baseline = ({ runId }) => checkpoints.baseline({ runId })
+  /** The run-end snapshot (P1.2): what the covered folder held when the run stopped moving. */
+  const finalize = async ({ runId, agentId = 'head' }) => {
+    const result = await checkpoints.snapshot({ message: `run end \u00b7 run ${runId}` })
+    store.appendEvent({ runId, type: 'checkpoint.final', agentId, payload: { commit: result.commit, files: result.files, at: Date.now() } })
+    return result
+  }
   /**
    * After every shell command, including failed ones (P1.2): the receipt
    * names the changed paths; this snapshots them so the change is on the
@@ -388,5 +425,5 @@ export function createWriteCheckpointer({ store, checkpoints }) {
     }
     return result
   }
-  return { assertReady, afterWrite, afterShell, baseline }
+  return { assertReady, afterWrite, afterShell, baseline, finalize }
 }

@@ -638,6 +638,39 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         return
       }
 
+      const checkpointDiffMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/checkpoint-diff$/)
+      if (request.method === 'GET' && checkpointDiffMatch) {
+        const runId = safeDecode(checkpointDiffMatch[1])
+        const run = store.getRun(runId)
+        if (!run) {
+          sendJson(response, 404, { error: 'Run not found.' })
+          return
+        }
+        if (!checkpoints) {
+          sendJson(response, 200, { available: false, reason: 'No checkpoint store is configured.' })
+          return
+        }
+        const events = store.listEvents(runId)
+        const baseline = [...events].reverse().find((event) => event.type === 'checkpoint.baseline')?.payload?.commit
+        const final = [...events].reverse().find((event) => event.type === 'checkpoint.final')?.payload?.commit
+        if (!baseline) {
+          sendJson(response, 200, { available: false, reason: 'This run has no baseline checkpoint.' })
+          return
+        }
+        if (!final) {
+          sendJson(response, 200, { available: false, reason: 'This run has no final snapshot yet.' })
+          return
+        }
+        // The commits come from our own events, and are still validated as
+        // hashes before git sees them.
+        if (!/^[0-9a-f]{7,64}$/i.test(String(baseline)) || !/^[0-9a-f]{7,64}$/i.test(String(final))) {
+          sendJson(response, 200, { available: false, reason: 'The recorded checkpoint hashes are not usable.' })
+          return
+        }
+        sendJson(response, 200, { available: true, baseline, final, files: await checkpoints.diff({ from: baseline, to: final }) })
+        return
+      }
+
       if (request.method === 'POST' && requestUrl.pathname === '/api/maintenance/verify') {
         const result = store.verifyEverything()
         const summary = result.ok

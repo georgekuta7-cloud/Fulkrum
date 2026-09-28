@@ -1570,6 +1570,18 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
 
       if (!await waitUntilRunnable(runId)) return
       if (store.getRun(runId)?.status !== 'executing') return
+      // The run-end snapshot (P1.2): the diff the review shows is computed
+      // from this fixed commit, never from a live folder that keeps moving.
+      // A failure here is recorded and does not stop the review; the diff
+      // surface will say the snapshot is unavailable.
+      if (writeCheckpointer) {
+        try {
+          await writeCheckpointer.finalize({ runId })
+        } catch (error) {
+          const detail = error instanceof Error && error.message ? error.message : 'the final snapshot failed'
+          store.appendEvent({ runId, type: 'checkpoint.failed', agentId: 'head', payload: { source: 'final', reason: detail } })
+        }
+      }
       store.updateRun(runId, { status: 'review' })
       store.appendEvent({
         runId,

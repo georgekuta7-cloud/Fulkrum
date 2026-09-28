@@ -174,15 +174,32 @@ function WorkspaceTree({ bridge }: { bridge: Bridge }) {
 }
 
 export function FilesView({ bridge }: { bridge: Bridge }) {
-  const { loadCheckpoints } = bridge
+  const { loadCheckpoints, loadCheckpointDiff } = bridge
   useEffect(() => {
     void loadCheckpoints()
-  }, [loadCheckpoints])
+    void loadCheckpointDiff()
+  }, [loadCheckpoints, loadCheckpointDiff])
   if (!bridge.run) {
     return <EmptyState icon="difference" title="No run open" body="Files belong to runs. Open one from the chat to see what it wrote." />
   }
   return (
     <div className="w-full max-w-5xl mx-auto px-4 py-4 flex flex-col gap-4">
+      <Panel title="Run changes" action={<span className="text-label-md text-outline">baseline \u2192 final snapshot</span>}>
+        {bridge.checkpointDiff?.available ? (
+          bridge.checkpointDiff.files.length ? bridge.checkpointDiff.files.map((file) => (
+            <div key={file.path} className="flex items-center justify-between gap-2 p-2 rounded-lg bg-surface-container">
+              <span className="font-mono text-body-sm text-on-surface truncate" title={file.path}>{file.path}</span>
+              <span className="font-mono text-label-sm text-outline flex-shrink-0">
+                {file.change}{file.added !== null ? ` +${file.added}/-${file.removed}` : ''}
+              </span>
+            </div>
+          )) : <p className="text-body-sm text-outline">No covered changes between this run's baseline and final snapshot.</p>
+        ) : bridge.resourceErrors.checkpointDiff ? (
+          <ResourceError label="Run changes" message={bridge.resourceErrors.checkpointDiff} onRetry={() => void bridge.retryResource('checkpointDiff')} />
+        ) : (
+          <p className="text-body-sm text-outline">{bridge.checkpointDiff?.reason ?? 'No snapshot diff yet.'}</p>
+        )}
+      </Panel>
       <Panel title="Artifacts" action={<span className="font-mono text-label-sm text-outline">{(bridge.artifacts ?? []).length} file(s)</span>}>
         {(bridge.artifacts ?? []).length ? (bridge.artifacts ?? []).map((a: any) => (
           <ArtifactCard key={a.toolCallId ?? a.path} bridge={bridge} artifact={a} />

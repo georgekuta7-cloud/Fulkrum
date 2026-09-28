@@ -62,6 +62,7 @@ export function useBridge() {
   const [blueprints, setBlueprints] = useState<Array<{ name: string; version: string; description: string; source: string }>>([])
   const [timeline, setTimeline] = useState<{ seq: number; files: Array<{ path: string; content: string | null; truncated: boolean; unknown: string | null }>; gaps: string[] } | null>(null)
   const [checkpoints, setCheckpoints] = useState<Array<{ commit: string; at: number; subject: string }>>([])
+  const [checkpointDiff, setCheckpointDiff] = useState<{ available: boolean; reason?: string; baseline?: string; final?: string; files: Array<{ path: string; change: string; added: number | null; removed: number | null }> } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   // False until the first load finishes, so an empty project list reads as
@@ -302,6 +303,25 @@ export function useBridge() {
     return payload.checkpoints ?? []
   }, [clearResourceError, noteResourceError])
 
+  // The combined covered-file diff a finished run reports: baseline to the
+  // run-end snapshot, computed from fixed commits (P1.2).
+  const loadCheckpointDiff = useCallback(async () => {
+    if (!runId) {
+      setCheckpointDiff(null)
+      return null
+    }
+    let payload: { available: boolean; reason?: string; baseline?: string; final?: string; files: Array<{ path: string; change: string; added: number | null; removed: number | null }> }
+    try {
+      payload = await api.get<{ available: boolean; reason?: string; baseline?: string; final?: string; files: Array<{ path: string; change: string; added: number | null; removed: number | null }> }>(`/api/runs/${encodeURIComponent(runId)}/checkpoint-diff`)
+    } catch (caught) {
+      noteResourceError('checkpointDiff', caught)
+      return null
+    }
+    setCheckpointDiff(payload)
+    clearResourceError('checkpointDiff')
+    return payload
+  }, [clearResourceError, noteResourceError, runId])
+
   const loadGoalsFor = useCallback(async (forProject: string | null) => {
     const selection = projectScope.capture(forProject)
     if (!selection.isCurrent()) return []
@@ -412,6 +432,7 @@ export function useBridge() {
     setRunLoading(false)
     setTasks([])
     setVerdicts([])
+    setCheckpointDiff(null)
     setMessages([])
     setToolCalls([])
     setEvents([])
@@ -908,7 +929,7 @@ export function useBridge() {
   const bridge = useMemo(() => ({
     ...workspace,
     projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, verdicts, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit,
-    learnings, playbooks, schedules, goals, blueprints, timeline, checkpoints, error, notice, streaming, approval, booted, projectSettings,
+    learnings, playbooks, schedules, goals, blueprints, timeline, checkpoints, checkpointDiff, error, notice, streaming, approval, booted, projectSettings,
     // Workspace resources (marketplace, arsenal) and project/run resources
     // (learnings, playbooks, …) report failures the same way, so a panel only
     // has to know its own key.
@@ -921,15 +942,16 @@ export function useBridge() {
       if (key === 'blueprints') return loadBlueprintsFor()
       if (key === 'artifacts' && runId) return loadArtifacts(runId)
       if (key === 'checkpoints') return loadCheckpoints()
+      if (key === 'checkpointDiff') return loadCheckpointDiff()
       if (key === 'marketplace') return workspace.loadMarketplaceState()
       if (key === 'arsenal') return workspace.loadArsenalState()
       return null
     },
     setError, setNotice, setApproval,
-    openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor, loadCheckpoints,
+    openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor, loadCheckpoints, loadCheckpointDiff,
     ...actions,
     approveWithKeyboard: (scope: 'once' | 'run' | 'always') => actions.approveCall(scope),
-  }), [workspace, projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, verdicts, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit, learnings, playbooks, schedules, goals, blueprints, timeline, checkpoints, error, notice, streaming, approval, booted, projectSettings, resourceErrors, actions, openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor, loadArtifacts, loadCheckpoints])
+  }), [workspace, projects, projectId, projectLoading, runs, runId, runLoading, run, tasks, verdicts, messages, toolCalls, events, plan, artifacts, claims, spend, byTask, runGrants, estimate, audit, learnings, playbooks, schedules, goals, blueprints, timeline, checkpoints, checkpointDiff, error, notice, streaming, approval, booted, projectSettings, resourceErrors, actions, openProject, openRun, closeRun, loadRuns, loadClaims, loadLearnings, loadPlaybooksFor, loadSchedulesFor, loadGoalsFor, loadBlueprintsFor, loadArtifacts, loadCheckpoints, loadCheckpointDiff])
   return bridge
 }
 

@@ -16,6 +16,13 @@ All notable changes to Fulkrum are documented here. This project follows
   distinctly; the worker strip says `unproven`, not `done`.
 
 ### Added
+- **A finished run shows one combined diff, computed from fixed snapshots.**
+  The run takes a final snapshot when it stops moving (`checkpoint.final`),
+  and `GET /api/runs/:id/checkpoint-diff` diffs the run-start baseline
+  against it — a reproducible list of added, modified, deleted and renamed
+  covered paths with line counts, never recalculated from a live folder that
+  keeps moving. The Files view shows it as "Run changes", and says why when
+  a snapshot is missing.
 - **Shell changes are snapshotted after every command, failed ones
   included.** A command that exits nonzero still changed files, and a
   receipt that omitted them understated what happened. The broker now

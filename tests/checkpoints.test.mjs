@@ -164,6 +164,11 @@ test('approving a plan takes a baseline checkpoint before any work', async () =>
       assert.ok(baseline.payload.commit)
       const ref = await checkpoints.run(['rev-parse', `refs/runs/${runId}`])
       assert.equal(ref.stdout.trim(), baseline.payload.commit)
+
+      // Let the run settle before the harness cleans up: a background
+      // finalize racing the temp-directory removal locks files on Windows.
+      const settle = Date.now() + 10_000
+      while (Date.now() < settle && store.getRun(runId).status === 'executing') await new Promise((resolve) => setTimeout(resolve, 100))
     }, { workspaceRoot: workspace, checkpoints, model })
   })
 })
@@ -235,6 +240,61 @@ test('a shell command that changes files is snapshotted, even when it fails', as
       assert.equal(blob2.stdout, 'v2\n', 'the bytes the failed command left are captured')
       assert.equal(store.getToolCall(store.listToolCalls(runId).filter((call) => call.name === 'shell.exec').at(-1).id).status, 'failed')
     }, { workspaceRoot: workspace, checkpoints, execution })
+  })
+})
+
+test('the run-end snapshot and diff show what the run changed, reproducibly', async () => {
+  await withTempDirectory(async (workspace) => {
+    const dataDir = path.join(workspace, 'data')
+    await writeFile(path.join(workspace, 'keep.txt'), 'unchanged\n')
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir })
+    const baseline = await checkpoints.baseline({ runId: 'run-diff' })
+    await writeFile(path.join(workspace, 'keep.txt'), 'changed\n')
+    await writeFile(path.join(workspace, 'new.txt'), 'brand new\n')
+    const final = await checkpoints.snapshot({ message: 'run end' })
+    const files = await checkpoints.diff({ from: baseline.commit, to: final.commit })
+    assert.deepEqual(files.map((file) => [file.path, file.change]).sort(), [['keep.txt', 'modified'], ['new.txt', 'added']])
+    const modified = files.find((file) => file.path === 'keep.txt')
+    assert.equal(modified.added, 1)
+    assert.equal(modified.removed, 1)
+  })
+})
+
+test('a finished run has a baseline-to-final diff of covered changes', async () => {
+  const definition = { objective: 'Diff.', tasks: [{ role: 'builder', title: 'Write', instructions: 'Write out.txt.', dependsOn: [] }] }
+  const model = async ({ messages, options }) => {
+    const instructions = String(options?.instructions ?? '')
+    if (instructions.includes('You plan work')) return { text: JSON.stringify(definition), toolCalls: [], usage: null }
+    if (instructions.includes('Forge') && !messages.some((message) => message.role === 'tool')) {
+      return { text: 'Writing.', toolCalls: [{ id: 'w1', name: 'workspace.write', arguments: { path: 'out.txt', content: 'diff me\n' } }], usage: null }
+    }
+    return { text: 'Done.', toolCalls: [], usage: null }
+  }
+  await withTempDirectory(async (workspace) => {
+    const checkpoints = createCheckpointStore({ workspaceRoot: workspace, dataDir: path.join(workspace, 'data') })
+    await withServer(async ({ request, store, providerRegistry }) => {
+      providerRegistry.addCustom({ label: 'Diff fixture', baseUrl: 'https://example.invalid/v1', model: 'fixture-model', apiKey: 'fixture-key' })
+      const project = await request('POST', '/api/projects', { name: 'diff fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
+      const runId = run.payload.run.id
+      await request('POST', '/api/chat', { runId, message: 'Do the thing.', history: [] })
+      const drafted = await request('POST', `/api/runs/${runId}/plan`, {})
+      await request('POST', `/api/runs/${runId}/control`, { action: 'approve-plan', planId: drafted.payload.plan.id, planHash: drafted.payload.plan.contentHash, routing: {} })
+
+      const deadline = Date.now() + 15_000
+      while (Date.now() < deadline && store.getRun(runId).status === 'executing') await new Promise((resolve) => setTimeout(resolve, 100))
+      assert.equal(store.getRun(runId).status, 'review', `unexpected status ${store.getRun(runId).status}`)
+      assert.ok(store.listEvents(runId).find((event) => event.type === 'checkpoint.baseline'), 'the baseline is on the chain')
+      assert.ok(store.listEvents(runId).find((event) => event.type === 'checkpoint.final'), 'and the run-end snapshot too')
+
+      const diff = await request('GET', `/api/runs/${runId}/checkpoint-diff`)
+      assert.equal(diff.status, 200)
+      assert.equal(diff.payload.available, true, JSON.stringify(diff.payload))
+      const entry = diff.payload.files.find((file) => file.path === 'out.txt')
+      assert.ok(entry, `out.txt in ${JSON.stringify(diff.payload.files)}`)
+      assert.equal(entry.change, 'added')
+      assert.ok(entry.added >= 1)
+    }, { workspaceRoot: workspace, checkpoints, model })
   })
 })
 
