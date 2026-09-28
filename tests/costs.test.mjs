@@ -385,9 +385,9 @@ test('the daily ceiling counts calls in flight across runs, not just recorded sp
       assert.equal(exceeded?.payload?.scope, 'day', 'the stop names the daily ceiling')
       const statuses = store.listTasks(runId).map((task) => task.status).sort()
       // The finished reader's verdict is UNKNOWN (the stub returns no verdict
-      // block), so the honest status is unproven (ADR 0011) — the point here
-      // is the other reader was blocked by the daily ceiling, not its verdict.
-      assert.deepEqual(statuses, ['blocked', 'unproven'], 'one reader finished, the other saw the first in flight')
+      // block), so it is completed with an unproven verification — the point
+      // here is the other reader was blocked by the daily ceiling.
+      assert.deepEqual(statuses, ['blocked', 'completed'], 'one reader finished, the other saw the first in flight')
     }, { model, pricing })
   } finally {
     if (previousKey === undefined) delete process.env.XAI_API_KEY

@@ -92,6 +92,7 @@ export const endpoints = [
   { method: 'GET', path: '/api/runs/{runId}/checkpoint-diff', summary: 'The covered changes between a run\u2019s baseline and its final snapshot', tags: ['runs'], errors: [404] },
   { method: 'POST', path: '/api/runs/{runId}/checkpoint-accept', summary: 'Record that the live folder keeps the run\u2019s changes', tags: ['runs'], errors: [404, 409, 503] },
   { method: 'POST', path: '/api/runs/{runId}/checkpoint-discard', summary: 'Restore covered changes from the baseline, conflict-safe; { mode: \'undo\' } records it as an undo', tags: ['runs'], errors: [404, 409, 503] },
+  { method: 'POST', path: '/api/runs/{runId}/tasks/{taskId}/waive', summary: 'Waive an unproven or failed check with a required reason, letting waiting dependents proceed', tags: ['runs'], errors: [400, 404, 409] },
   { method: 'POST', path: '/api/maintenance/verify', summary: 'Walk every audit chain, and record the result', tags: ['system'] },
   { method: 'POST', path: '/api/maintenance/backup', summary: 'Take a copy of the database, and record it', tags: ['system'] },
   { method: 'POST', path: '/api/maintenance/sandbox-check', summary: 'Run a fixed command through the jail and record whether the boundary answers', tags: ['system'] },

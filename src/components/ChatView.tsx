@@ -27,9 +27,9 @@ function WorkerStrip({ bridge }: { bridge: Bridge }) {
       const active = tasks.find((task) => task.status === 'running')
       const waiting = bridge.approval?.toolCall.agentId === role
       const last = lastByRole.get(role)
-      const state = waiting ? 'waiting' : active ? (bridge.run?.status === 'paused' ? 'paused' : 'working') : bridge.streaming?.role === role ? 'working' : tasks.at(-1)?.status === 'completed' ? 'done' : tasks.at(-1)?.status === 'unproven' ? 'unproven' : tasks.at(-1)?.status === 'failed' ? 'failed' : 'idle'
+      const state = waiting ? 'waiting' : active ? (bridge.run?.status === 'paused' ? 'paused' : 'working') : bridge.streaming?.role === role ? 'working' : tasks.at(-1)?.status === 'completed' ? 'done' : tasks.at(-1)?.status === 'failed' ? 'failed' : 'idle'
       return <div key={role} className="p-2 rounded-lg border border-outline-variant/40 bg-surface-container min-w-0 space-y-1">
-        <div className="flex items-center justify-between gap-2"><span className="text-label-md font-semibold">{roleLabel(role)}</span><Chip tone={state === 'failed' ? 'bad' : waiting || state === 'done' ? 'ok' : state === 'working' || state === 'unproven' ? 'busy' : 'idle'}>{state}</Chip></div>
+        <div className="flex items-center justify-between gap-2"><span className="text-label-md font-semibold">{roleLabel(role)}</span><Chip tone={state === 'failed' ? 'bad' : waiting || state === 'done' ? 'ok' : state === 'working' ? 'busy' : 'idle'}>{state}</Chip></div>
         <p className="text-body-sm text-on-surface-variant truncate" title={active?.title}>{active?.title ?? (waiting ? 'parked on approval' : 'no active task')}</p>
         <p className="font-mono text-label-sm text-outline truncate" title={resolveRouteDisplay(routing, bridge.providers, role) ?? undefined}>{resolveRouteDisplay(routing, bridge.providers, role) ?? 'default provider'}{costs.get(role) ? ` · $${costs.get(role)!.toFixed(4)}` : ''}</p>
         {last ? <p className="font-mono text-label-sm text-outline truncate" title={`${last.name} · ${last.status}`}>last: {last.name} · {last.status}</p> : null}
@@ -60,7 +60,7 @@ function PipelineStrip({ bridge }: { bridge: Bridge }) {
   return <div className="flex items-center gap-2 px-3 py-2 bg-surface-container rounded-lg border border-outline-variant/40 overflow-x-auto" role="status" aria-label={`Plan progress: ${done} of ${tasks.length} tasks done`}>
     {tasks.map((task, index) => <div key={task.id} className="flex items-center gap-2 shrink-0">
       {index > 0 ? <span className="w-6 h-px bg-outline-variant" aria-hidden="true" /> : null}
-      <span className={`w-2 h-2 rounded-full ${task.status === 'completed' ? 'bg-secondary' : task.status === 'unproven' ? 'bg-secondary/60' : task.status === 'running' ? 'bg-primary' : task.status === 'failed' ? 'bg-error' : 'bg-outline-variant'}`} aria-hidden="true" />
+      <span className={`w-2 h-2 rounded-full ${task.status === 'completed' ? 'bg-secondary' : task.status === 'running' ? 'bg-primary' : task.status === 'failed' ? 'bg-error' : 'bg-outline-variant'}`} aria-hidden="true" />
       <span className="text-label-md whitespace-nowrap">{task.title}</span>
     </div>)}
     <span className="ml-auto font-mono text-label-sm text-secondary shrink-0">{Math.round((done / tasks.length) * 100)}%</span>

@@ -1043,6 +1043,11 @@ Rules:
           const validation = extractedVerdict.invalidJson || !extractedVerdict.value
             ? { ok: false, problems: ['The verdict block is not valid JSON.'], verdict: null }
             : validateVerdictBlock(extractedVerdict.value)
+          // An unusable verdict is its own event: it is not the same fact as
+          // a verifier that judged and said UNKNOWN (P2.1).
+          if (!validation.ok) {
+            store.appendEvent({ runId, type: 'task.verification.invalid', agentId: 'head', payload: { taskId: task.id, title: task.title, problems: validation.problems } })
+          }
           // A PASS must point at something recorded: model results that cite
           // no evidence in this task's ledger degrade to UNKNOWN, with the
           // reason in the criterion so the degradation itself is reviewable.
@@ -1059,6 +1064,12 @@ Rules:
             if (cited.length) return { ...result, evidence: cited }
             return { ...result, status: 'UNKNOWN', evidence: [], criterion: `${result.criterion} (no cited evidence)` }
           })
+          // A PASS degraded for missing citations is its own event too: the
+          // verifier claimed proof and the ledger refused it (P2.1).
+          const uncited = citedResults.filter((result) => result.status === 'UNKNOWN' && String(result.criterion).includes('(no cited evidence)'))
+          if (uncited.length) {
+            store.appendEvent({ runId, type: 'task.verification.uncited', agentId: 'head', payload: { taskId: task.id, title: task.title, criteria: uncited.map((result) => result.criterion) } })
+          }
           results = [...deterministic, ...citedResults]
           checkedBy = `head via ${verdict.provider?.id ?? provider.id}/${verdict.model ?? providerRegistry.model(provider, route)}`
         }
@@ -1093,13 +1104,12 @@ Rules:
         }
 
         if (overall === 'UNKNOWN') {
-          // Deliberate (ADR 0011): work done, proof absent is its own outcome.
-          // The task is not completed, dependents may still run on it — with
-          // the handoff saying the ground is unproven — and the review counts
-          // it as unproven rather than folding it into success. The event
-          // carries the same completion facts as task.completed; only the
-          // claim of proof is missing.
-          store.updateTask(task.id, { status: 'unproven', result: cleanResult, stepCount: outcome.steps })
+          // Two axes (P2.1, ADR 0011 revised): the work finished — execution
+          // is completed — and verification is UNKNOWN. Dependents that need
+          // a proven predecessor wait; the human can waive with a reason or
+          // repair. The event carries the same completion facts as
+          // task.completed; only the claim of proof is missing.
+          store.updateTask(task.id, { status: 'completed', verificationStatus: 'UNKNOWN', result: cleanResult, stepCount: outcome.steps })
           store.appendEvent({
             runId,
             type: 'task.unproven',
@@ -1152,6 +1162,7 @@ Rules:
       // checkpoint decides repair, replan, or stop.
       if (error instanceof BudgetExceededError) {
         store.updateTask(task.id, { status: 'blocked', result: error.message })
+        store.appendEvent({ runId, type: 'task.blocked', agentId: task.agentId, payload: { taskId: task.id, title: task.title, reason: error.message, source: 'budget' } })
         store.endSpan(span.id, { status: 'blocked' })
         throw error
       }
@@ -1332,7 +1343,7 @@ Rules:
             // completed, unproven, or failed.
             const fromTask = store.getTask(cached.id) ?? cached
             taskByPlanTaskId.set(from.id, fromTask)
-            store.appendEvent({ runId, type: 'worker.handoff', agentId: from.role, payload: { from: from.role, to: planTask.role, summary: digestForTask(fromTask, resultsByPlanTask.get(dependency)), planTaskId: planTask.id, fromCache: fromTask.status === 'completed', unproven: fromTask.status === 'unproven' } })
+            store.appendEvent({ runId, type: 'worker.handoff', agentId: from.role, payload: { from: from.role, to: planTask.role, summary: digestForTask(fromTask, resultsByPlanTask.get(dependency)), planTaskId: planTask.id, fromCache: fromTask.status === 'completed', unproven: fromTask.status === 'completed' && !['PASS', 'waived'].includes(fromTask.verificationStatus ?? '') } })
           }
 
           // A failed prerequisite stops its dependents explicitly: they are
@@ -1351,6 +1362,27 @@ Rules:
             store.updateTask(task.id, { status: 'skipped', result: reason })
             store.appendEvent({ runId, type: 'task.skipped', agentId: task.agentId, payload: { taskId: task.id, title: task.title, reason } })
             return { task: store.getTask(task.id), skipped: true }
+          }
+          // A dependent needs a proven predecessor (P2.1) when the plan
+          // actually stated a check for it: a task with an acceptance check
+          // that finished with verification UNKNOWN — or not finished at all
+          // — leaves the dependent queued with the reason on the chain. A
+          // task with no stated check has nothing to prove, so its dependents
+          // proceed. A human waives or repairs; the run then continues.
+          const unprovenDep = planTask.dependsOn
+            .map(depEntry)
+            .find((dep) => {
+              if (!dep) return false
+              if (['queued', 'running'].includes(dep.entry.status)) return true
+              const required = typeof dep.from?.acceptanceCheck === 'string' && dep.from.acceptanceCheck.trim()
+              return Boolean(required) && dep.entry.status === 'completed' && !['PASS', 'waived'].includes(dep.entry.verificationStatus ?? '')
+            })
+          if (unprovenDep && !['completed', 'skipped'].includes(task.status)) {
+            const reason = unprovenDep.entry.status === 'completed'
+              ? `Waiting: "${unprovenDep.entry.title}" finished with verification ${unprovenDep.entry.verificationStatus ?? 'UNKNOWN'}; it must be proven or waived.`
+              : `Waiting: "${unprovenDep.entry.title}" has not finished yet.`
+            store.appendEvent({ runId, type: 'task.waiting', agentId: task.agentId, payload: { taskId: task.id, title: task.title, dependency: unprovenDep.entry.id, reason } })
+            return { task: store.getTask(task.id), waiting: true }
           }
           if (task.status === 'skipped') {
             if (failedDep) return { task, skipped: true }
@@ -1578,8 +1610,8 @@ ${summaries.map(({ planTask, result }) => `${planTask.role} · ${planTask.title}
       // (ADR 0011) — never folded into proven.
       const taskTallies = { proven: 0, unproven: 0, failed: 0, skipped: 0 }
       for (const task of store.listTasks(runId)) {
-        if (task.status === 'completed') taskTallies.proven += 1
-        else if (task.status === 'unproven') taskTallies.unproven += 1
+        if (task.status === 'completed' && ['PASS', 'waived'].includes(task.verificationStatus ?? '')) taskTallies.proven += 1
+        else if (task.status === 'completed') taskTallies.unproven += 1
         else if (task.status === 'failed') taskTallies.failed += 1
         else if (task.status === 'skipped') taskTallies.skipped += 1
       }

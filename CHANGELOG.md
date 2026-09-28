@@ -6,14 +6,17 @@ All notable changes to Fulkrum are documented here. This project follows
 ## [Unreleased]
 
 ### Changed
-- **An unproven task is no longer marked completed.** A task whose verdict
-  was UNKNOWN fell through to the same completion path as a PASS, so a run
-  could read as finished while nothing had been proven. Per ADR 0011, such a
-  task is now `unproven`: the chain records `task.unproven`, dependents still
-  run with a handoff that says the ground is unproven, the review counts
-  proven/unproven/failed/skipped separately, and a resumed run re-runs
-  unproven tasks instead of keeping them as done. The control room draws them
-  distinctly; the worker strip says `unproven`, not `done`.
+- **Execution and verification are separate axes, and an unproven dependency
+  is not a passed one.** Per P2.1, a task's `status` says whether the work
+  ran; `verification_status` says whether it was proven (migration 025 maps
+  the short-lived `unproven` status to completed + UNKNOWN and identifies
+  existing tasks). A dependent whose predecessor carries an acceptance check
+  waits — `task.waiting`, queued, not failed — until that check is proven or
+  waived. A human waives an unproven or failed check with a required reason
+  (`task.waived`), which is the explicit policy that lets the run resume.
+  The reasons for an UNKNOWN are distinct events now: unusable reviewer
+  verdict, uncited PASS, budget exhaustion, and waiver. The review counts
+  proven (PASS or waived) separately from unproven.
 
 ### Added
 - **One write-capable run per live workspace.** A second write-capable run —

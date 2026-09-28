@@ -409,7 +409,8 @@ test('a resumed task continues its conversation instead of starting over', async
       assert.equal(messages[2].results?.[0]?.id, 'c1', 'including the tool result it had already seen')
       assert.equal(store.countTaskTurns(task.id), 3, 'answering immediately adds no duplicate turns')
       assert.equal(store.listEvents(run.id).some((event) => event.type === 'task.resumed'), true, 'and the resume is in the audit log')
-      assert.equal(store.getTask(task.id).status, 'unproven', 'the work resumed and finished; the uncited verdict leaves it unproven')
+      assert.equal(store.getTask(task.id).status, 'completed', 'the work resumed and finished')
+      assert.equal(store.getTask(task.id).verificationStatus, 'UNKNOWN', 'the uncited verdict leaves it unproven')
     }, { model })
   } finally {
     if (previousKey === undefined) delete process.env.XAI_API_KEY
@@ -658,6 +659,7 @@ test('the documented routes are the routes the server serves', async () => {
       { method: 'GET', template: '/api/runs/{runId}/checkpoint-diff' },
       { method: 'POST', template: '/api/runs/{runId}/checkpoint-accept' },
       { method: 'POST', template: '/api/runs/{runId}/checkpoint-discard' },
+      { method: 'POST', template: '/api/runs/{runId}/tasks/{taskId}/waive', values: { taskId: 'nope' } },
       { method: 'POST', template: '/api/maintenance/verify' },
       { method: 'POST', template: '/api/maintenance/backup' },
       { method: 'POST', template: '/api/maintenance/sandbox-check' },
@@ -1081,7 +1083,8 @@ test('the tool loop runs model-chosen tools, parks for approval, then resumes', 
 
       assert.equal(await readFile(path.join(directory, 'proof.txt'), 'utf8'), 'built by forge')
       const builderTask = store.listTasks(runId).find((task) => task.agentId === 'builder')
-      assert.equal(builderTask.status, 'unproven', 'the loop ran and resumed; the uncited verdict leaves it unproven')
+      assert.equal(builderTask.status, 'completed', 'the loop ran and resumed')
+      assert.equal(builderTask.verificationStatus, 'UNKNOWN', 'the uncited verdict leaves it unproven')
       assert.match(builderTask.result, /Wrote proof\.txt after approval/)
       assert.equal(builderTask.stepCount >= 2, true, 'the loop should record two model steps')
 
@@ -1495,7 +1498,8 @@ test('a failed task skips its dependents, and stop ends the run with the reason'
       assert.equal(store.getRun(runId).status, 'failed', `unexpected status ${store.getRun(runId).status}`)
 
       const byTitle = Object.fromEntries(store.listTasks(runId).map((task) => [task.title, task]))
-      assert.equal(byTitle['Look'].status, 'unproven', 'the scout ran; the uncited verdict leaves it unproven')
+      assert.equal(byTitle['Look'].status, 'completed', 'the scout finished')
+      assert.equal(byTitle['Look'].verificationStatus, 'UNKNOWN', 'its uncited verdict leaves it unproven')
       assert.equal(byTitle['Claim a ghost'].status, 'failed')
       assert.equal(byTitle['Build on the ghost'].status, 'skipped', 'dependents are skipped, not queued forever')
       assert.match(String(byTitle['Build on the ghost'].result), /Claim a ghost failed/, 'the skip names its cause')

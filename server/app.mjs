@@ -732,6 +732,44 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
         return
       }
 
+      const taskWaiveMatch = requestUrl.pathname.match(/^\/api\/runs\/([^/]+)\/tasks\/([^/]+)\/waive$/)
+      if (request.method === 'POST' && taskWaiveMatch) {
+        const runId = safeDecode(taskWaiveMatch[1])
+        const taskId = safeDecode(taskWaiveMatch[2])
+        const run = store.getRun(runId)
+        const task = store.getTask(taskId)
+        if (!run || !task || task.runId !== runId) {
+          sendJson(response, 404, { error: 'Task not found on this run.' })
+          return
+        }
+        if (run.status === 'executing') {
+          sendJson(response, 409, { error: 'The run is executing: pause or cancel it before waiving a check.' })
+          return
+        }
+        const body = await readJson(request).catch(() => ({}))
+        const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 500) : ''
+        if (!reason) {
+          sendJson(response, 400, { error: 'A waiver needs a reason: what makes this check noncritical.' })
+          return
+        }
+        try {
+          const previous = task.verificationStatus
+          const waived = store.waiveTask(taskId)
+          store.appendEvent({ runId, type: 'task.waived', agentId: 'head', payload: { taskId, title: task.title, reason, previous } })
+          // A waiver is the explicit policy that lets dependents proceed: a
+          // run that was waiting resumes from here, keeping its writer slot.
+          const waiting = store.listTasks(runId).some((entry) => entry.status === 'queued')
+          if (waiting && ['review', 'failed'].includes(run.status)) {
+            store.updateRun(runId, { status: 'executing' })
+            orchestrator.start(runId, { routing: {} })
+          }
+          sendJson(response, 200, { waived, resumed: waiting && ['review', 'failed'].includes(run.status) })
+        } catch (error) {
+          sendJson(response, 409, { error: error instanceof Error ? error.message : 'The waiver failed.' })
+        }
+        return
+      }
+
       if (request.method === 'POST' && requestUrl.pathname === '/api/maintenance/verify') {
         const result = store.verifyEverything()
         const summary = result.ok

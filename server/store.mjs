@@ -129,6 +129,7 @@ function taskFromRow(row) {
     title: row.title,
     instructions: row.instructions,
     status: row.status,
+    verificationStatus: row.verification_status ?? null,
     result: row.result,
     planTaskId: row.plan_task_id ?? null,
     stepCount: Number(row.step_count ?? 0),
@@ -969,11 +970,12 @@ export class FulkrumStore {
     if (!current) throw new Error(`Task not found: ${taskId}`)
     const next = {
       status: patch.status ?? current.status,
+      verificationStatus: patch.verificationStatus === undefined ? current.verificationStatus : patch.verificationStatus,
       result: patch.result ?? current.result,
       stepCount: patch.stepCount ?? current.stepCount,
       attempt: patch.attempt ?? current.attempt,
     }
-    this.database.prepare('UPDATE run_tasks SET status = ?, result = ?, step_count = ?, attempt = ?, updated_at = ? WHERE id = ?').run(next.status, next.result, next.stepCount, next.attempt, Date.now(), taskId)
+    this.database.prepare('UPDATE run_tasks SET status = ?, verification_status = ?, result = ?, step_count = ?, attempt = ?, updated_at = ? WHERE id = ?').run(next.status, next.verificationStatus, next.result, next.stepCount, next.attempt, Date.now(), taskId)
     return this.getTask(taskId)
   }
 
@@ -1068,10 +1070,29 @@ export class FulkrumStore {
    */
   recordTaskVerdict({ runId, taskId, overall, results = [], checkedBy = null, id = `verdict-${randomUUID()}` }) {
     if (!['PASS', 'FAIL', 'UNKNOWN'].includes(overall)) throw new Error(`Unknown verdict: ${overall}`)
-    this.database.prepare('INSERT INTO task_verdicts(id, run_id, task_id, overall, results_json, checked_by, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)')
-      .run(id, runId, taskId, overall, JSON.stringify(results ?? []), checkedBy, Date.now())
+    // The verdict and the task's verification status are one fact: writing
+    // them together keeps the projection from ever disagreeing with the
+    // verdict table (P2.1).
+    this.transaction(() => {
+      this.database.prepare('INSERT INTO task_verdicts(id, run_id, task_id, overall, results_json, checked_by, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)')
+        .run(id, runId, taskId, overall, JSON.stringify(results ?? []), checkedBy, Date.now())
+      this.database.prepare('UPDATE run_tasks SET verification_status = ?, updated_at = ? WHERE id = ?').run(overall, Date.now(), taskId)
+    })
     const row = this.database.prepare('SELECT * FROM task_verdicts WHERE id = ?').get(id)
     return row ? verdictFromRow(row) : null
+  }
+
+  /**
+   * A human waives an unproven or failed check (P2.1). The reason is
+   * required and recorded by the caller's `task.waived` event; the store
+   * only flips the projection, and only for a verdict that can be waived.
+   */
+  waiveTask(taskId) {
+    const task = this.getTask(taskId)
+    if (!task) throw new Error(`Task not found: ${taskId}`)
+    if (!['UNKNOWN', 'FAIL'].includes(task.verificationStatus ?? '')) throw new Error('Only an unproven or failed verdict can be waived.')
+    this.database.prepare("UPDATE run_tasks SET verification_status = 'waived', updated_at = ? WHERE id = ?").run(Date.now(), taskId)
+    return this.getTask(taskId)
   }
 
   getTaskVerdict(taskId) {

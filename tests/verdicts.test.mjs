@@ -98,13 +98,14 @@ test('a PASS that cites nothing recorded degrades to UNKNOWN, and the task is un
         assert.equal(store.getRun(runId).status, 'review', 'the run still reaches its review')
 
         const task = store.listTasks(runId)[0]
-        assert.equal(task.status, 'unproven', 'work done, proof absent is its own outcome')
+        assert.equal(task.status, 'completed', 'the work finished')
+        assert.equal(task.verificationStatus, 'UNKNOWN', 'and acceptance is unproven — two axes, not one')
         const verdict = store.getTaskVerdict(task.id)
         assert.equal(verdict.overall, 'UNKNOWN')
         assert.match(verdict.results[0].criterion, /no cited evidence/, 'the degradation names its reason')
 
         assert.ok(store.listEvents(runId).find((event) => event.type === 'task.unproven'), 'the record says unproven')
-        assert.equal(store.listEvents(runId).some((event) => event.type === 'task.completed'), false, 'and never claims completion')
+        assert.ok(store.listEvents(runId).find((event) => event.type === 'task.verification.uncited'), 'and the missing citation has its own event')
 
         const claims = store.listRunClaims(runId)
         assert.equal(claims.length, 1)
@@ -118,7 +119,7 @@ test('a PASS that cites nothing recorded degrades to UNKNOWN, and the task is un
   })
 })
 
-test('a dependent of an unproven task still runs, and its handoff says the ground is unproven', async () => {
+test('a dependent of an unproven task waits until the check is waived, then runs', async () => {
   const twoTaskPlan = JSON.stringify({
     objective: 'Prove the ground.',
     tasks: [
@@ -138,17 +139,28 @@ test('a dependent of an unproven task still runs, and its handoff says the groun
     await withWorkspace(async (directory) => {
       await withServer(async ({ request, store }) => {
         const runId = await runToReview(request, store)
-        assert.equal(store.getRun(runId).status, 'review')
         const tasks = store.listTasks(runId)
         assert.equal(tasks.length, 2)
-        assert.equal(tasks[0].status, 'unproven')
-        assert.equal(tasks[1].status, 'unproven', 'the dependent ran — and is judged on its own evidence')
-        assert.ok(tasks[1].result, 'the dependent produced a result')
+        assert.equal(tasks[0].status, 'completed')
+        assert.equal(tasks[0].verificationStatus, 'UNKNOWN')
+        assert.equal(tasks[1].status, 'queued', 'the dependent waits: unproven is not a passed dependency')
+        const waiting = store.listEvents(runId).find((event) => event.type === 'task.waiting')
+        assert.ok(waiting, 'the wait is on the chain')
+        assert.match(String(waiting.payload.reason), /must be proven or waived/)
 
-        const handoff = store.listEvents(runId).find((event) => event.type === 'worker.handoff')
-        assert.ok(handoff, 'the dependent got its handoff')
-        assert.equal(handoff.payload.unproven, true, 'the handoff says the ground is unproven')
-        assert.equal(handoff.payload.fromCache, false)
+        // A waiver needs a reason, and it is the explicit policy that lets
+        // the dependent proceed.
+        const refused = await request('POST', `/api/runs/${runId}/tasks/${tasks[0].id}/waive`, {})
+        assert.equal(refused.status, 400, 'a waiver without a reason is refused')
+        const waived = await request('POST', `/api/runs/${runId}/tasks/${tasks[0].id}/waive`, { reason: 'The map is informational; the build check proves the outcome.' })
+        assert.equal(waived.status, 200, JSON.stringify(waived.payload))
+        assert.equal(waived.payload.waived.verificationStatus, 'waived')
+        assert.ok(store.listEvents(runId).find((event) => event.type === 'task.waived'), 'the waiver is on the chain')
+
+        const deadline = Date.now() + 15_000
+        while (Date.now() < deadline && store.getRun(runId).status === 'executing') await new Promise((resolve) => setTimeout(resolve, 100))
+        assert.equal(store.getRun(runId).status, 'review')
+        assert.ok(store.listTasks(runId).find((task) => task.title === 'Build on it')?.result, 'the dependent ran after the waiver')
       }, { model, workspaceRoot: directory })
     })
   })

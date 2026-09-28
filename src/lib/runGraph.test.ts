@@ -81,10 +81,10 @@ describe('buildGraph', () => {
     expect(edges.find((edge) => edge.from === 'task-2' && edge.to === 'head')?.tone).toBe('wait')
   })
 
-  it('gives an unproven task its own state, distinct from done', () => {
-    const unproven = [{ ...tasks[0], status: 'unproven' }, tasks[1]]
-    const { nodes } = buildGraph({ run: run('review'), plan: plan(), tasks: unproven, toolCalls: noCalls, byTask: [] })
-    expect(nodes.find((node) => node.id === 'task-1')?.state).toBe('unproven')
+  it('keeps execution and verification separate: a completed task is done, its verdict is another axis', () => {
+    const unproven = [{ ...tasks[0], status: 'completed', verificationStatus: 'UNKNOWN' }, tasks[1]]
+    const { nodes } = buildGraph({ run: run('review'), plan: plan(), tasks: unproven as any, toolCalls: noCalls, byTask: [] })
+    expect(nodes.find((node) => node.id === 'task-1')?.state).toBe('done')
     expect(nodes.find((node) => node.id === 'task-2')?.state).toBe('working')
   })
 
