@@ -138,3 +138,98 @@ test('a configured check without an engine is recorded, not hidden', async () =>
     }, { model })
   })
 })
+
+/** A plan whose one task carries an approved check of the given shape. */
+const planWithCheck = (check) => JSON.stringify({
+  objective: 'Machine-checked.',
+  tasks: [{ role: 'builder', title: 'Write it', instructions: 'Write checked.txt.', check, dependsOn: [] }],
+})
+
+const modelWithCheck = (plan) => async ({ messages, options }) => {
+  const instructions = String(options?.instructions ?? '')
+  if (instructions.includes('You plan work')) return { text: plan, toolCalls: [], usage: null }
+  if (instructions.includes('Forge') && !messages.some((message) => message.role === 'tool')) {
+    return { text: 'Writing.', toolCalls: [{ id: 'w1', name: 'workspace.write', arguments: { path: 'checked.txt', content: 'checked\n' } }], usage: null }
+  }
+  return { text: 'Summary.', toolCalls: [], usage: null }
+}
+
+test('an approved command check runs, and its receipt is the proof', async () => {
+  const seen = []
+  const execution = { run: async (argv) => { seen.push(argv); return { stdout: 'ok\n', stderr: '', container: 'stub' } } }
+  await withKey(async () => {
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'command check fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
+      const runId = run.payload.run.id
+      assert.equal(await runToReview(request, store, runId), 'review', `unexpected status ${store.getRun(runId).status}`)
+
+      assert.ok(seen.some((argv) => argv.join(' ') === 'npm test'), 'the approved check ran in the container')
+      const receipt = store.listEvents(runId).find((event) => event.type === 'check.receipt')
+      assert.ok(receipt, 'the receipt is on the chain')
+      assert.equal(receipt.payload.exitCode, 0)
+      assert.equal(receipt.payload.passed, true)
+      assert.equal(typeof receipt.payload.outputSha256, 'string')
+      const task = store.listTasks(runId)[0]
+      assert.equal(task.status, 'completed')
+      assert.equal(task.verificationStatus, 'PASS', 'the receipt is the proof — no model judgment needed')
+      assert.match(store.getTaskVerdict(task.id).results[0].criterion, /exited 0 \(expected 0\)/)
+    }, { model: modelWithCheck(planWithCheck({ type: 'command', command: 'npm', args: ['test'], expectExit: 0 })), execution })
+  })
+})
+
+test('a failing command check fails the task, with the check named', async () => {
+  const execution = { run: async () => { throw Object.assign(new Error('The command failed. (exit 1)\nboom'), { code: 1 }) } }
+  await withKey(async () => {
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'failing check fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
+      const runId = run.payload.run.id
+      assert.equal(await runToReview(request, store, runId), 'failed', `unexpected status ${store.getRun(runId).status}`)
+
+      const receipt = store.listEvents(runId).find((event) => event.type === 'check.receipt')
+      assert.equal(receipt.payload.passed, false)
+      const task = store.listTasks(runId)[0]
+      assert.equal(task.status, 'failed')
+      assert.equal(task.verificationStatus, 'FAIL')
+      assert.match(String(task.result), /Approved check: `npm test` exited 1 \(expected 0\)/)
+    }, { model: modelWithCheck(planWithCheck({ type: 'command', command: 'npm', args: ['test'], expectExit: 0 })), execution })
+  })
+})
+
+test('a missing engine means the approved check did not run — never a pass', async () => {
+  await withKey(async () => {
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'checkless engine fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
+      const runId = run.payload.run.id
+      assert.equal(await runToReview(request, store, runId), 'review', `unexpected status ${store.getRun(runId).status}`)
+
+      const notRun = store.listEvents(runId).find((event) => event.type === 'check.not_run')
+      assert.ok(notRun, 'the check that could not run is accounted for')
+      assert.match(String(notRun.payload.reason), /no execution runtime/)
+      assert.equal(store.listEvents(runId).some((event) => event.type === 'check.receipt'), false)
+      const task = store.listTasks(runId)[0]
+      assert.equal(task.status, 'completed')
+      assert.equal(task.verificationStatus, 'UNKNOWN', 'not run is not proven')
+    }, { model: modelWithCheck(planWithCheck({ type: 'command', command: 'npm', args: ['test'], expectExit: 0 })) })
+  })
+})
+
+test('a file assertion is evaluated against the covered workspace', async () => {
+  await withKey(async () => {
+    await withServer(async ({ request, store }) => {
+      const project = await request('POST', '/api/projects', { name: 'file check fixture' })
+      const run = await request('POST', '/api/runs', { projectId: project.payload.project.id, permissionMode: 'autopilot' })
+      const runId = run.payload.run.id
+      assert.equal(await runToReview(request, store, runId), 'review', `unexpected status ${store.getRun(runId).status}`)
+
+      const assertion = store.listEvents(runId).find((event) => event.type === 'check.assertion')
+      assert.ok(assertion, 'the assertion is on the chain')
+      assert.equal(assertion.payload.passed, true)
+      assert.match(String(assertion.payload.detail), /checked\.txt exists and contains "checked"/)
+      const task = store.listTasks(runId)[0]
+      assert.equal(task.verificationStatus, 'PASS')
+    }, { model: modelWithCheck(planWithCheck({ type: 'file', path: 'checked.txt', contains: 'checked' })) })
+  })
+})

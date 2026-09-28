@@ -410,6 +410,26 @@ export class FulkrumToolBroker {
     return next
   }
 
+  /**
+   * Run one approved acceptance-check command in the container (P2.3),
+   * returning the outcome instead of throwing: a nonzero exit is a receipt,
+   * not an exception, and a missing engine is "not run", never a pass. The
+   * plan's approval covered this command; a check that parked for a second
+   * approval would stall verification.
+   */
+  async runCheck(argv, { runId = null } = {}) {
+    if (!this.execution) return { ran: false, reason: 'no execution runtime is configured' }
+    try {
+      const result = await this.withWriteLock(() => this.execution.run(argv, { cwd: '.', runId }))
+      return { ran: true, exitCode: 0, stdout: String(result.stdout ?? ''), stderr: String(result.stderr ?? '') }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'the command failed'
+      const exit = message.match(/\(exit (\d+)\)/)
+      if (exit) return { ran: true, exitCode: Number(exit[1]), stdout: '', stderr: message }
+      return { ran: false, reason: message }
+    }
+  }
+
   list() {
     return toolDefinitions.map((tool) => ({ ...tool }))
   }

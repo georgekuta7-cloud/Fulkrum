@@ -30,6 +30,16 @@ All notable changes to Fulkrum are documented here. This project follows
   proven (PASS or waived) separately from unproven.
 
 ### Added
+- **Approved checks run, and their receipts are the proof.** Per P2.3, a
+  command check runs in the container after the worker pass — the plan's
+  approval covered it — and lands as a `check.receipt` with exit code,
+  expected exit, and output hash; a file assertion reads the covered
+  workspace and lands as `check.assertion`; a human criterion stays with the
+  verifier. A failing check fails the task with the check named. A missing
+  engine is `check.not_run` with an UNKNOWN verdict — never a pass. When a
+  machine check passed and there are no claims to judge, no model judgment is
+  needed and an unusable reviewer cannot drag a receipt-backed PASS to
+  UNKNOWN.
 - **One write-capable run per live workspace.** A second write-capable run —
   any run, since workers hold shell — queues behind the holder with the
   holder named on its chain (`workspace.waiting`), starts no work while

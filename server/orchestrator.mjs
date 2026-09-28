@@ -7,7 +7,7 @@ import { asToolResult, findInjectionAttempts } from './injection.mjs'
 import { maybeExportTrace } from './otel.mjs'
 import { scanArguments } from './redaction.mjs'
 import { fingerprintToolCall, resolveWorkspacePath } from './permissions.mjs'
-import { planContentHash, planLayers, scoreComplexity, splitLayerForConcurrency, validatePlan } from './plans.mjs'
+import { checkText, planContentHash, planLayers, scoreComplexity, splitLayerForConcurrency, validatePlan } from './plans.mjs'
 import { agentRoles, roleOrDefault } from './roles.mjs'
 import { resolveReasoning } from './reasoning.mjs'
 import { routeTurn } from './router.mjs'
@@ -1015,9 +1015,46 @@ Rules:
           }
         }
 
+        // P2.3: the approved check runs before judgment. A command runs in the
+        // container; a file assertion reads the covered workspace; a human
+        // criterion stays with the verifier. Missing engine means "not run",
+        // never a pass.
+        const approvedCheck = planTask.check ?? null
+        if (approvedCheck?.type === 'command') {
+          const argv = [approvedCheck.command, ...(approvedCheck.args ?? [])]
+          const outcome = toolBroker?.runCheck ? await toolBroker.runCheck(argv, { runId }) : { ran: false, reason: 'no tool broker is available' }
+          if (!outcome.ran) {
+            store.appendEvent({ runId, type: 'check.not_run', agentId: 'head', payload: { taskId: task.id, title: task.title, check: approvedCheck, reason: outcome.reason } })
+            deterministic.push({ criterion: `Approved check: \`${argv.join(' ')}\` could not run (${outcome.reason})`, status: 'UNKNOWN', evidence: [] })
+          } else {
+            const expected = approvedCheck.expectExit ?? 0
+            const passed = outcome.exitCode === expected
+            const outputSha256 = createHash('sha256').update(`${outcome.stdout}\n${outcome.stderr}`, 'utf8').digest('hex')
+            store.appendEvent({ runId, type: 'check.receipt', agentId: 'head', payload: { taskId: task.id, title: task.title, command: argv.join(' '), exitCode: outcome.exitCode, expectExit: expected, outputSha256, passed } })
+            deterministic.push({ criterion: `Approved check: \`${argv.join(' ')}\` exited ${outcome.exitCode} (expected ${expected})`, status: passed ? 'PASS' : 'FAIL', evidence: [] })
+          }
+        }
+        if (approvedCheck?.type === 'file') {
+          let content = null
+          try {
+            const target = resolveWorkspacePath(toolBroker.workspaceRoot, approvedCheck.path)
+            content = readFileSync(target.resolved, 'utf8')
+          } catch {
+            content = null
+          }
+          const exists = content !== null
+          const passed = approvedCheck.exists === false ? !exists : exists && (!approvedCheck.contains || content.includes(approvedCheck.contains))
+          store.appendEvent({ runId, type: 'check.assertion', agentId: 'head', payload: { taskId: task.id, title: task.title, check: approvedCheck, passed, detail: checkText(approvedCheck) } })
+          deterministic.push({ criterion: `Approved check: ${checkText(approvedCheck)}`, status: passed ? 'PASS' : 'FAIL', evidence: [] })
+        }
+
         let results = deterministic
         let checkedBy = 'deterministic'
-        if (!deterministic.some((result) => result.status === 'FAIL')) {
+        // A machine check that passed and no claims to judge needs no model
+        // judgment: the receipt is the proof, and an unusable reviewer must
+        // not drag a receipt-backed PASS down to UNKNOWN.
+        const machineOnly = Boolean(approvedCheck) && approvedCheck.type !== 'human' && store.listTaskClaims(task.id).length === 0
+        if (!deterministic.some((result) => result.status === 'FAIL') && !machineOnly) {
           const digest = buildTaskHandoffDigest({ summary: cleanResult, evidence: store.listTaskEvidence(task.id), artifacts: listWritePointers(store, runId, task.agentId) })
           // The reviewer has its own routing slot: whoever judges the work is
           // cast like any other role, and visible as one. Unset, the task's
