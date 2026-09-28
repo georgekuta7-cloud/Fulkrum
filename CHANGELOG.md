@@ -30,6 +30,13 @@ All notable changes to Fulkrum are documented here. This project follows
   proven (PASS or waived) separately from unproven.
 
 ### Added
+- **Opt-in notifications, and a replan handoff that shows what changed.**
+  Per P3.2, the attention queue offers to enable browser notifications
+  (explicit permission only; generic text that never names a project), and
+  notifies once per new item — denied permission changes nothing in-app. A
+  revised draft now carries a revision summary (added / removed / changed
+  tasks against the previous version, with the new estimate below it), and
+  a run waiting in review with a draft says so inside the run.
 - **One attention centre, derived from state.** Per P3.1, a bell in the
   header carries a live count of everything waiting on a human across every
   run: parked approvals and questions, budget stops, failed and interrupted

@@ -144,6 +144,9 @@ export function ChatView({ bridge, onOpenSettings }: { bridge: Bridge; onOpenSet
   return (
     <div className="w-full max-w-4xl mx-auto px-3 sm:px-4 py-4 pb-48 flex flex-col gap-4 min-w-0">
       {!providersReady ? <div className="flex items-start gap-3 p-4 rounded-lg bg-error-container/20 border border-error/40" role="alert"><Icon name="key_off" className="text-error text-xl" /><div className="space-y-2 min-w-0"><p className="text-body-md">No provider has a key, so nothing can answer yet. Configure a provider in Settings.</p>{onOpenSettings ? <Button onClick={onOpenSettings}>Open provider settings</Button> : null}</div></div> : null}
+      {run?.status === 'review' && plan?.plan.status === 'draft' ? (
+        <p role="status" className="text-label-sm text-primary">This run is waiting on you: a revised plan needs approval below.</p>
+      ) : null}
       <RunRecovery key={run?.id} bridge={bridge} />
       <CheckpointNotice bridge={bridge} />
       <WorkerStrip bridge={bridge} />

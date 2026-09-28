@@ -108,6 +108,7 @@ export type PlanTask = {
 export type Plan = {
   plan: { id: string; version: number; objective: string; contentHash: string; status: string; source: string; approvedAt?: number | null }
   tasks: PlanTask[]
+  revision?: { previousVersion: number; previousStatus: string; added: string[]; removed: string[]; changed: string[] } | null
   fallbackReason?: string | null
   created?: boolean
   demo?: boolean

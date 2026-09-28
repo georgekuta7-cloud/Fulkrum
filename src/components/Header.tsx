@@ -32,6 +32,11 @@ function AttentionQueue({ bridge, onOpenChat }: { bridge: Bridge; onOpenChat: ()
       </button>
       {open ? (
         <div role="menu" aria-label="Waiting on you" className="absolute right-0 top-full mt-2 w-80 max-h-96 overflow-y-auto bg-surface-container-high border border-outline-variant/40 rounded-lg shadow-panel p-2 space-y-1 z-50">
+          {typeof Notification !== 'undefined' && Notification.permission !== 'granted' ? (
+            <button type="button" className="w-full text-left p-2 rounded-lg hover:bg-surface-container text-label-sm text-primary" onClick={() => void Notification.requestPermission()}>
+              Enable notifications for blocked work
+            </button>
+          ) : null}
           {attention.items.length ? attention.items.map((item) => (
             <button
               key={item.id}

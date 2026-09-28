@@ -1770,7 +1770,29 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
             return
           }
           const direction = store.listMessages(runId).filter((message) => message.role === 'user').at(-1)?.content ?? ''
-          sendJson(response, 200, { ...plan, roles: agentRoles, complexity: scoreComplexity({ direction, plan: { objective: plan.plan.objective, tasks: plan.tasks } }) })
+          // A draft that supersedes a previous version is a revision: the
+          // handoff shows what changed, not just the new text (P3.2).
+          let revision = null
+          if (plan.plan.status === 'draft') {
+            const previous = store.getPlanVersion(plan.plan.projectId, plan.plan.version - 1)
+            if (previous) {
+              const byTitle = new Map(previous.tasks.map((task) => [task.title, task]))
+              const currentTitles = new Set(plan.tasks.map((task) => task.title))
+              revision = {
+                previousVersion: previous.plan.version,
+                previousStatus: previous.plan.status,
+                added: plan.tasks.filter((task) => !byTitle.has(task.title)).map((task) => task.title),
+                removed: previous.tasks.filter((task) => !currentTitles.has(task.title)).map((task) => task.title),
+                changed: plan.tasks
+                  .filter((task) => {
+                    const old = byTitle.get(task.title)
+                    return old && (old.instructions !== task.instructions || (old.acceptanceCheck ?? '') !== (task.acceptanceCheck ?? '') || JSON.stringify(old.dependsOn) !== JSON.stringify(task.dependsOn))
+                  })
+                  .map((task) => task.title),
+              }
+            }
+          }
+          sendJson(response, 200, { ...plan, roles: agentRoles, complexity: scoreComplexity({ direction, plan: { objective: plan.plan.objective, tasks: plan.tasks } }), revision })
           return
         }
         if (request.method === 'PATCH') {

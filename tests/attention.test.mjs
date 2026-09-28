@@ -61,3 +61,29 @@ test('a finished run awaiting its review and a revised draft read as review and 
     assert.equal(replanned.payload.items.find((item) => item.runId === runId)?.kind, 'replan')
   })
 })
+
+test('a revised draft reports what changed from the previous version', async () => {
+  await withServer(async ({ request, store }) => {
+    const project = await request('POST', '/api/projects', { name: 'revision fixture' })
+    const projectId = project.payload.project.id
+    const run = await request('POST', '/api/runs', { projectId })
+    const runId = run.payload.run.id
+    const first = store.createPlan({ projectId, runId, objective: 'v1', contentHash: 'h1', source: 'test', tasks: [
+      { role: 'research', title: 'Look', instructions: 'Read.', dependsOn: [] },
+      { role: 'builder', title: 'Build', instructions: 'Write.', dependsOn: [0] },
+    ] })
+    store.approvePlan(first.plan.id)
+    store.createPlan({ projectId, runId, objective: 'v2', contentHash: 'h2', source: 'test', tasks: [
+      { role: 'research', title: 'Look', instructions: 'Read deeper.', dependsOn: [] },
+      { role: 'builder', title: 'Ship', instructions: 'Write.', dependsOn: [0] },
+    ] })
+
+    const plan = await request('GET', `/api/runs/${runId}/plan`)
+    assert.equal(plan.status, 200)
+    assert.equal(plan.payload.revision.previousVersion, 1)
+    assert.equal(plan.payload.revision.previousStatus, 'approved')
+    assert.deepEqual(plan.payload.revision.changed, ['Look'])
+    assert.deepEqual(plan.payload.revision.added, ['Ship'])
+    assert.deepEqual(plan.payload.revision.removed, ['Build'])
+  })
+})

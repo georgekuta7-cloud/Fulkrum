@@ -133,6 +133,23 @@ describe('conversation decisions', () => {
     expect(screen.getByText(/never the score/)).toBeInTheDocument()
   })
 
+  it('shows a revised plan against its previous version, and the reminder inside the run', () => {
+    const revision = { previousVersion: 1, previousStatus: 'approved', added: ['Ship it'], removed: ['Old task'], changed: ['Look'] }
+    const { unmount } = render(<ChatView bridge={fixture({
+      plan: { plan: { id: 'plan2', version: 2, status: 'draft', objective: 'O', contentHash: 'h2', source: 'model' }, tasks: [{ id: 'pt1', orderIndex: 0, role: 'research', title: 'Look', instructions: 'I', acceptanceCheck: 'C', dependsOn: [] }], revision },
+    })} />)
+    expect(screen.getByText(/Revised from v1 \(approved\)/)).toBeInTheDocument()
+    expect(screen.getByText(/added: Ship it/)).toBeInTheDocument()
+    expect(screen.getByText(/removed: Old task/)).toBeInTheDocument()
+    unmount()
+
+    render(<ChatView bridge={fixture({
+      run: { id: 'r1', projectId: 'p1', status: 'review', budgetUsd: 10 } as Bridge['run'],
+      plan: { plan: { id: 'plan2', version: 2, status: 'draft', objective: 'O', contentHash: 'h2', source: 'model' }, tasks: [{ id: 'pt1', orderIndex: 0, role: 'research', title: 'Look', instructions: 'I', acceptanceCheck: 'C', dependsOn: [] }] },
+    })} />)
+    expect(screen.getByText(/a revised plan needs approval below/)).toBeInTheDocument()
+  })
+
   it('shows each worker its last tool call', () => {    render(<ChatView bridge={fixture({
       tasks: [{ id: 't1', agentId: 'research', title: 'Read files', status: 'running' } as any],
       toolCalls: [

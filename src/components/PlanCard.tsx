@@ -85,6 +85,17 @@ export function PlanCard({ bridge }: { bridge: Bridge }) {
           {recordedEstimate ? ' · recorded at approval' : ''}
         </p>
       ) : null}
+      {plan.revision && plan.plan.status === 'draft' ? (
+        <div className="p-2 rounded-lg bg-surface-container-lowest text-label-sm space-y-0.5">
+          <p className="text-on-surface">
+            Revised from v{plan.revision.previousVersion} ({plan.revision.previousStatus})
+            {plan.revision.added.length ? ` · added: ${plan.revision.added.join(', ')}` : ''}
+            {plan.revision.removed.length ? ` · removed: ${plan.revision.removed.join(', ')}` : ''}
+            {plan.revision.changed.length ? ` · changed: ${plan.revision.changed.join(', ')}` : ''}
+          </p>
+          <p className="text-outline">Approving this version replaces the old plan; the estimate below is the new one.</p>
+        </div>
+      ) : null}
       {editing ? (
         <form className="space-y-4" onSubmit={async (event) => {
           event.preventDefault()

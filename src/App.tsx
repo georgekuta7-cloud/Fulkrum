@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useBridge } from './hooks/useBridge'
+import { attentionNotification, newAttentionItems } from './lib/attentionNotify'
 import { Header } from './components/Header'
 import { Nav, type NavView } from './components/Nav'
 import { ChatView } from './components/ChatView'
@@ -43,6 +44,26 @@ export default function App() {
     const timer = setTimeout(() => setNotice(null), 6000)
     return () => clearTimeout(timer)
   }, [notice, setNotice])
+
+  // Opt-in browser notifications for genuinely blocked work (P3.2): one per
+  // new item, only when permission was granted, generic text, and the in-app
+  // queue is unaffected when permission is denied or the API is missing.
+  const seenAttentionRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const items = bridge.attention?.items ?? []
+    const fresh = newAttentionItems(items, seenAttentionRef.current)
+    for (const item of items) seenAttentionRef.current.add(item.id)
+    if (!fresh.length) return
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
+    for (const item of fresh.slice(0, 3)) {
+      const note = attentionNotification(item)
+      const notification = new Notification(note.title, { body: note.body })
+      notification.onclick = () => {
+        window.focus()
+        void bridge.openRun(item.runId)
+      }
+    }
+  }, [bridge, bridge.attention])
 
   const openSettings = useCallback(() => setView('settings'), [])
   const openChat = useCallback(() => setView('chat'), [])

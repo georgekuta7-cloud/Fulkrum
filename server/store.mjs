@@ -1539,6 +1539,12 @@ export class FulkrumStore {
     return row ? this.getPlan(row.id) : null
   }
 
+  /** One plan version of a project, for revision comparisons (P3.2). */
+  getPlanVersion(projectId, version) {
+    const row = this.database.prepare('SELECT * FROM plans WHERE project_id = ? AND version = ?').get(projectId, Number(version))
+    return row ? this.getPlan(row.id) : null
+  }
+
   approvePlan(planId) {
     this.database.prepare("UPDATE plans SET status = 'approved', approved_at = ? WHERE id = ?").run(Date.now(), planId)
     return this.getPlan(planId)
