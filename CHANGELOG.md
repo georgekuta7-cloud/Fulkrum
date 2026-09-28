@@ -5,6 +5,17 @@ All notable changes to Fulkrum are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+- **A limit and what is left of it are different facts.** The approval
+  surface now shows the run's remaining allowance beside its limit and the
+  day's spend beside the daily ceiling, refreshed with every full snapshot —
+  "Limit $5.00 · $4.9600 left · today $0.0400 of $10.00" — instead of a
+  bare ceiling or a bare "no spending limit".
+- **A failed refresh no longer passes stale data off as fresh.** When a load
+  fails while data is already on screen, the panel keeps showing it but says
+  so: "showing the last loaded data; the refresh failed." Failure, empty,
+  and stale are now three distinct states.
+
 ### Changed
 - **Acceptance checks are typed and never blank.** Per P2.2, every plan task
   carries a check: a runnable command (with args and expected exit), a file
