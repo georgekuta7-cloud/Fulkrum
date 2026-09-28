@@ -17,6 +17,13 @@ All notable changes to Fulkrum are documented here. This project follows
   and stale are now three distinct states.
 
 ### Changed
+- **The browser policy blocks injected stylesheets.** Per P0.5, the CSP
+  drops `'unsafe-inline'` from `style-src`: stylesheets come only from the
+  built CSS, while style *attributes* stay allowed (`style-src-attr`) because
+  the graph positions nodes and bars with them and no nonce covers an
+  attribute. A browser test injects a `<style>` element and proves it does
+  not apply, while a style attribute still does — and every other CSP error
+  remains a test failure.
 - **Acceptance checks are typed and never blank.** Per P2.2, every plan task
   carries a check: a runnable command (with args and expected exit), a file
   assertion (path, exists, optional contains), or a human-review criterion.

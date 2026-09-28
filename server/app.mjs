@@ -257,7 +257,11 @@ export function createApp({ store, toolBroker, providerRegistry, orchestrator, c
       'Cache-Control': file === uiIndex ? 'no-store' : 'public, max-age=31536000, immutable',
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
-      'Content-Security-Policy': "default-src 'self'; font-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+      // P0.5: stylesheets come only from self (the built CSS), and style
+      // *attributes* stay allowed because the graph positions nodes and bars
+      // with them — no nonce can cover an attribute. Injected <style> blocks
+      // are therefore blocked while the app keeps rendering both themes.
+      'Content-Security-Policy': "default-src 'self'; font-src 'self'; img-src 'self' data:; style-src 'self'; style-src-attr 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
     })
     response.end(request.method === 'HEAD' ? undefined : body)
   }

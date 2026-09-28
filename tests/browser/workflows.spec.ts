@@ -12,6 +12,9 @@ const test = base.extend<{ expectedFailedRequests: string[] }>({
       if (message.type() !== 'error') return
       const url = message.location()?.url ?? ''
       if (/^Failed to load resource/.test(message.text()) && expectedFailedRequests.some((fragment) => url.includes(fragment))) return
+      // The one refusal the CSP test deliberately provokes; every other CSP
+      // error is still a failure.
+      if (/inline style violates|Refused to apply inline style/.test(message.text())) return
       errors.push({ text: message.text(), url })
     })
     page.on('pageerror', (error) => errors.push({ text: `pageerror: ${error.message}`, url: '' }))
@@ -208,6 +211,28 @@ test('provider forms persist edits, retain rejected input, and remove keys only 
   await expect(card.getByRole('button', { name: 'Edit', exact: true })).toBeVisible()
   const removed = (await (await request.get('/api/providers')).json()).providers.find((p: { id: string }) => p.id === provider.id)
   expect(removed).toMatchObject({ model: 'model-three', hasKey: false })
+})
+
+test('an injected stylesheet is blocked while style attributes still apply', async ({ page }) => {
+  await page.goto('/')
+  // A <style> element must not take effect under style-src 'self'.
+  const injectedApplied = await page.evaluate(() => {
+    const style = document.createElement('style')
+    style.textContent = 'body { background-color: rgb(1, 2, 3) !important; }'
+    document.head.appendChild(style)
+    return getComputedStyle(document.body).backgroundColor === 'rgb(1, 2, 3)'
+  })
+  expect(injectedApplied).toBe(false)
+  // A style attribute still works: the graph positions nodes and bars with them.
+  const attributeApplied = await page.evaluate(() => {
+    const probe = document.createElement('div')
+    probe.style.setProperty('background-color', 'rgb(4, 5, 6)')
+    document.body.appendChild(probe)
+    const applied = getComputedStyle(probe).backgroundColor === 'rgb(4, 5, 6)'
+    probe.remove()
+    return applied
+  })
+  expect(attributeApplied).toBe(true)
 })
 
 test('a failed resource load says so and retries instead of showing an empty state', async ({ page, request, expectedFailedRequests }) => {
